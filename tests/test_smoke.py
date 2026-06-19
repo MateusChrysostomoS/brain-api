@@ -8,13 +8,15 @@ honeypot). Asserts the never-leak rule (no password_hash in /auth/me).
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from jose import jwt
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from brain_api.config import get_settings
 from brain_api.core.database import Base, get_session
 from brain_api.core.security import hash_password
 from brain_api.main import app
-from brain_api.models import Entitlement, Tenant, User
+from brain_api.models import Entitlement, PrecheckAccountLink, Tenant, User
 from brain_api.models.user import ROLE_TENANT_OWNER
 
 # Environment for settings is configured in tests/conftest.py (loaded first).
@@ -26,6 +28,11 @@ OWNER_CLINIC = "Consultório Dr. Aurélio Lima"
 # A second tenant WITHOUT an entitlement row, to exercise default resolution.
 PLAIN_EMAIL = "sem.plano@clinica.com.br"
 PLAIN_PASSWORD = "semplano1"
+
+# A third tenant: entitled to PreCheck AND linked to a PreCheck user (SSO success path).
+LINKED_EMAIL = "linked@clinica.com.br"
+LINKED_PASSWORD = "linked123"
+LINKED_PRECHECK_ID = 4242
 
 
 @pytest_asyncio.fixture
@@ -75,6 +82,36 @@ async def client():
                 name="Sem Plano",
                 password_hash=hash_password(PLAIN_PASSWORD),
                 role=ROLE_TENANT_OWNER,
+            )
+        )
+
+        # Third tenant: entitled to PreCheck AND linked to PreCheck user 4242.
+        t3 = Tenant(clinic_name="Clínica Vinculada")
+        session.add(t3)
+        await session.flush()
+        u3 = User(
+            tenant_id=t3.id,
+            email=LINKED_EMAIL,
+            name="Linked Owner",
+            password_hash=hash_password(LINKED_PASSWORD),
+            role=ROLE_TENANT_OWNER,
+        )
+        session.add(u3)
+        await session.flush()
+        session.add(
+            Entitlement(
+                tenant_id=t3.id,
+                precheck_enabled=True,
+                secretaria_enabled=False,
+                plan="precheck",
+                status="active",
+            )
+        )
+        session.add(
+            PrecheckAccountLink(
+                brain_user_id=u3.id,
+                precheck_user_id=LINKED_PRECHECK_ID,
+                tenant_id=t3.id,
             )
         )
 
@@ -235,3 +272,65 @@ async def test_demo_request_honeypot_drops_silently(client):
         assert count == 0
     finally:
         await gen.aclose()
+
+
+# ---------------------------------------------------------------------------
+# SSO — POST /sso/precheck/token (brain -> PreCheck handoff, CONTRACTS.md §5)
+# ---------------------------------------------------------------------------
+
+
+def _decode_like_precheck(token: str) -> dict:
+    """Validate the token EXACTLY as PreCheck does — not a mock.
+
+    Mirrors PreCheck `app/core/security.py: decode_token` (the same jose call, the same
+    pinned HS256) and `app/core/deps.py` (`User.id == int(payload["sub"])`). It uses the
+    shared SECRET_KEY from settings — the mesh-secret contract both services rely on. If
+    this decode succeeds and the sub maps to the linked id, PreCheck's real auth accepts it.
+    """
+    return jwt.decode(token, get_settings().SECRET_KEY, algorithms=["HS256"])
+
+
+async def test_sso_precheck_token_success(client):
+    """Entitled + linked brain user -> a token PreCheck's own auth accepts."""
+    token = await _token(client, LINKED_EMAIL, LINKED_PASSWORD)
+    resp = await client.post(
+        "/sso/precheck/token", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["token_type"] == "bearer"
+    assert body["expires_in"] > 0
+
+    # Prove the minted token validates the PreCheck way and resolves to the linked INTEGER
+    # user id (PreCheck does User.id == int(payload["sub"])).
+    payload = _decode_like_precheck(body["token"])
+    assert int(payload["sub"]) == LINKED_PRECHECK_ID
+    assert "exp" in payload
+    # No brain identity/secret rides along — PreCheck reads only sub/exp.
+    assert "tenant_id" not in payload
+    assert "role" not in payload
+
+
+async def test_sso_precheck_not_entitled(client):
+    """A tenant without PreCheck entitlement -> 403 precheck_not_entitled."""
+    token = await _token(client, PLAIN_EMAIL, PLAIN_PASSWORD)
+    resp = await client.post(
+        "/sso/precheck/token", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == "precheck_not_entitled"
+
+
+async def test_sso_precheck_not_linked(client):
+    """Entitled but unlinked brain user -> 409 precheck_account_not_linked."""
+    token = await _token(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = await client.post(
+        "/sso/precheck/token", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "precheck_account_not_linked"
+
+
+async def test_sso_precheck_requires_token(client):
+    resp = await client.post("/sso/precheck/token")
+    assert resp.status_code == 401

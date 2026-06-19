@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     # Access-token lifetime in minutes (keep short; this token cannot be revoked
     # before it expires).
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    # Lifetime of the PreCheck-compatible SSO handoff token (POST /sso/precheck/token).
+    # This token BECOMES the PreCheck session (the ported dashboard stores it as its
+    # `precheck_token` and uses it for every PreCheck-backend call), so its lifetime is
+    # the PreCheck session length — matched to PreCheck's own `access_token_expire_minutes`
+    # default of 60. The handoff is same-origin (written straight to localStorage, never
+    # placed in a URL/Referer/log), so the usual "short bootstrap" rationale does not apply;
+    # it is still short and unrevocable, per the auth-jwt-multitenant skill.
+    PRECHECK_TOKEN_EXPIRE_MINUTES: int = 60
 
     # --- CORS (the Next.js Brain portal) ---
     # Comma-separated list of allowed browser origins for the portal.

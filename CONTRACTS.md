@@ -24,13 +24,18 @@ task.
    HS256, signed with `SECRET_KEY`, claims `sub` / `tenant_id` / `role` / `iat` / `exp`.
    `sub` is the brain **user UUID** (string). Passwords are bcrypt.
 
-2. **SSO into PreCheck is OUT OF SCOPE (deferred).** PreCheck mints its own minimal
-   token (`precheck_token`, claims `sub`=*integer* user id + `exp`, pbkdf2 passwords,
-   its own `users` table). A brain-api JWT is **not** a drop-in `precheck_token`
-   (UUID vs int `sub`, different user store), even though both use `SECRET_KEY`/HS256.
-   Reconciling them (unified SSO that hands `/dashboard` a valid PreCheck token) is the
-   follow-up the previous run flagged — it touches PreCheck's backend contract and is
-   **not** done here. The PreCheck product dashboard (`/dashboard`) keeps its own login.
+2. **SSO into PreCheck is IMPLEMENTED (this task; full contract in §10).** PreCheck mints
+   its own minimal token (`precheck_token`, claims `sub`=*integer* user id + `exp`, its
+   own `users` table), so a brain-api JWT (UUID `sub`) is **not** a drop-in `precheck_token`.
+   The bridge does **not** reuse the brain JWT — `POST /sso/precheck/token` MINTS a second,
+   PreCheck-shaped token (`sub` = the **integer** PreCheck user id, `exp`, HS256, signed
+   with the **same** `SECRET_KEY`) for a brain user that (a) belongs to a tenant entitled to
+   PreCheck and (b) has a row in the new `precheck_account_links` table mapping their brain
+   UUID → PreCheck integer id. PreCheck validates it with its existing auth **unchanged** —
+   no PreCheck code change; the only requirement is the shared-secret invariant (§10.5). The
+   portal's `/dashboard` is the ported PreCheck app served **same-origin** inside
+   `brain-frontend`, so the minted token is written straight to `localStorage["precheck_token"]`
+   and the dashboard picks it up — no second login.
 
 3. **Product-access lives in `GET /entitlements`, NOT in the JWT and NOT in
    `/auth/me`.** Per `auth-jwt-multitenant` (no entitlements in the token) and
@@ -315,7 +320,19 @@ task requires.
 | `status` | String(32) | not null, server_default `'new'`; `new` \| `contacted` \| `converted` \| `dismissed` |
 | `created_at` | DateTime(tz) | server_default now(), indexed |
 
-One **single initial Alembic migration** creates all four tables.
+### 6.5 `precheck_account_links` (SSO identity map — added in migration `0002`)
+Maps a brain user (UUID) to their PreCheck user (integer). One row per brain user; it is
+the only thing that authorizes minting a PreCheck token for a brain login (§10).
+| column | type | notes |
+|---|---|---|
+| `id` | UUID | PK |
+| `brain_user_id` | UUID FK → `users.id` `ON DELETE CASCADE` | **unique** (`uq_precheck_links_brain_user`) — one PreCheck user per brain user |
+| `precheck_user_id` | BigInteger | not null, **unique** (`uq_precheck_links_precheck_user`); logical ref to `precheck.users.id` in PreCheck's **separate** DB — **no FK** by design |
+| `tenant_id` | UUID FK → `tenants.id` `ON DELETE CASCADE` | not null, indexed; asserted to match the acting principal's tenant before minting |
+| `created_at` | DateTime(tz) | server_default now() |
+
+Migration **`0001`** creates `tenants`/`users`/`entitlements`/`demo_requests`; migration
+**`0002`** adds `precheck_account_links`.
 
 ---
 
@@ -326,8 +343,9 @@ One **single initial Alembic migration** creates all four tables.
 | `APP_ENV` | `dev` | env name (`dev`/`staging`/`production`) |
 | `LOG_LEVEL` | `INFO` | structlog level |
 | `DATABASE_URL` | `postgresql+asyncpg://…/brain` | the **brain** database |
-| `SECRET_KEY` | — | JWT HS256 signing key (shared mesh secret) |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | access-token TTL |
+| `SECRET_KEY` | — | JWT HS256 signing key. **MUST be byte-identical to the PreCheck backend's `SECRET_KEY`** — the minted SSO token (§10) is only valid if both services share it |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | brain access-token TTL |
+| `PRECHECK_TOKEN_EXPIRE_MINUTES` | `60` | TTL of the minted PreCheck SSO token (§10); matches PreCheck's own session length |
 | `CORS_ALLOW_ORIGINS` | `http://localhost:3000` | comma-separated portal origins |
 | `INTERNAL_API_KEY` | `""` | reserved for future service-to-service (unused this task) |
 | `DEMO_RATE_LIMIT_PER_MIN` | `5` | basic demo-request anti-spam |
@@ -346,6 +364,7 @@ Typed client functions, env-based base URL, no hardcoded domain:
 | `getMe()` | `GET /auth/me` | optional identity hydrate |
 | `getEntitlements(session)` | `GET /entitlements` (Bearer) | `/app` dashboard shell |
 | `submitDemoRequest(payload)` | `POST /demo-requests` | `ContactForm` (Brain + secretarIA) |
+| `getPrecheckSsoToken(session)` | `POST /sso/precheck/token` (Bearer) | `/app` "Abrir painel completo" → store `precheck_token` → `/dashboard` |
 
 - Login flow: existing design (`AuthShell` + `PasswordField`) → `login()` → store JWT in
   the brain session (`brain.session`, sessionStorage — the key `/app` already reads) →
@@ -354,6 +373,11 @@ Typed client functions, env-based base URL, no hardcoded domain:
   — nothing to remove; the existing `/login` design is the one we keep/wire.
 - `ContactForm.handleSubmit` calls `submitDemoRequest()` and shows the existing success
   state on `201`.
+- **PreCheck SSO handoff:** `/app`'s "Abrir painel completo" calls `getPrecheckSsoToken()`,
+  writes the returned token to `localStorage["precheck_token"]` (the ported `lib/auth.ts
+  setToken`, same origin as `/dashboard`), then routes to `/dashboard`. `403
+  precheck_not_entitled` and `409 precheck_account_not_linked` render inline messages (via
+  `ManageApiError.status`), never a crash.
 
 ---
 
@@ -365,3 +389,91 @@ Typed client functions, env-based base URL, no hardcoded domain:
 | `models/entitlement.py`, `services/entitlements.py`, `GET /entitlements` | `stripe-billing-entitlements` |
 | `schemas/*Out` whitelists (no `*_encrypted`/`password_hash`), `core/logging.py` `redact_secrets` | `tenant-secrets-encryption` |
 | `POST /demo-requests` (sync, isolated) | n/a — `whatsapp-webhook-arq` explicitly skipped (no async work) |
+| `core/security.py create_precheck_token`, `services/sso.py`, `api/sso.py` | `auth-jwt-multitenant` (pinned HS256, minimal claims, short TTL, shared secret) |
+| `services/sso.py` entitlement gate (reuses `resolve_entitlement`) | `stripe-billing-entitlements` (in-process read, never Stripe) |
+| `models/precheck_link.py` (identity map; never serialized/logged) | `tenant-secrets-encryption` (never-leak posture) |
+
+---
+
+## 10. Cross-product SSO — PreCheck handoff (implemented)
+
+The bridge that lets a PreCheck-entitled brain user open the PreCheck dashboard from the
+portal **without a second login**. brain-api does **not** proxy PreCheck and does **not**
+reuse the brain JWT; it mints a separate, PreCheck-shaped token and lets PreCheck validate
+it with its existing, **unchanged** auth.
+
+### 10.1 `POST /sso/precheck/token` — mint a PreCheck session (protected)
+
+**Auth:** `Authorization: Bearer <brain jwt>` required; tenant resolved server-side
+(`require_tenant` — a platform `admin` with no tenant gets `409 "No tenant in context"`).
+
+**Flow (`services/sso.py`):**
+1. Resolve entitlements in-process (the same `resolve_entitlement` as §3 — **no Stripe**).
+   If `products.precheck` is false → **`403 {"detail": "precheck_not_entitled"}`**.
+2. Look up `precheck_account_links` by `brain_user_id` (the JWT `sub`). No row →
+   **`409 {"detail": "precheck_account_not_linked"}`** (a typed signal, not a crash — the
+   portal shows "ask your admin to connect your PreCheck account"). Defense-in-depth: if
+   the link's `tenant_id` ≠ the principal's tenant, also `409`.
+3. Mint with `create_precheck_token(link.precheck_user_id)` and return it.
+
+**Response `200`**
+```json
+{ "token": "<precheck-compatible jwt>", "token_type": "bearer", "expires_in": 3600 }
+```
+| field | type | notes |
+|---|---|---|
+| `token` | string | PreCheck-shaped JWT (see §10.2) |
+| `token_type` | string | `"bearer"` |
+| `expires_in` | int | seconds; `PRECHECK_TOKEN_EXPIRE_MINUTES × 60` |
+
+**Status codes:** `200`; `401` missing/invalid brain token; `403` not entitled to PreCheck;
+`409` no tenant in context **or** account not linked.
+
+### 10.2 The minted token (how it conforms to PreCheck)
+
+PreCheck validates with `jose.jwt.decode(token, SECRET_KEY, algorithms=["HS256"])` and then
+`User.id == int(payload["sub"])` (PreCheck `app/core/security.py` + `app/core/deps.py`). It
+reads **only** `sub` and `exp`. The minted token therefore is:
+
+| claim | value |
+|---|---|
+| `sub` | the **integer** `precheck_user_id`, as a **string** (PreCheck casts to `int`) |
+| `iat` | issued-at (UTC) — hygiene; PreCheck ignores it |
+| `exp` | `iat + PRECHECK_TOKEN_EXPIRE_MINUTES` (default 60) |
+
+Algorithm **HS256**, signed with **`SECRET_KEY`**. No brain identity, tenant, role, or
+secret rides along — only what PreCheck's verifier needs (`auth-jwt-multitenant`).
+
+### 10.3 Lifetime
+
+The minted token **becomes** the PreCheck session (the ported dashboard stores it as
+`precheck_token` and uses it for every PreCheck-backend call), so its TTL is the PreCheck
+session length — matched to PreCheck's own default (60 min) via
+`PRECHECK_TOKEN_EXPIRE_MINUTES`. The handoff is same-origin (written directly to localStorage,
+never placed in a URL/Referer/log), so there is no URL-leak surface demanding a shorter
+bootstrap token.
+
+### 10.4 Frontend handoff (same-origin)
+
+`/dashboard` is the **ported PreCheck app inside `brain-frontend`** (route group `(SignIn)`),
+served from the **same origin** as `/app`. So `/app` writes the minted token to
+`localStorage["precheck_token"]` (the ported `lib/auth.ts setToken`) and navigates to
+`/dashboard`; the dashboard's existing guard (`isAuthed()` → `precheck_token`) passes and its
+`lib/api.ts` sends `Authorization: Bearer <token>` to the **real PreCheck backend**
+(`NEXT_PUBLIC_API_URL`), which validates as in §10.2. No token ever appears in a URL.
+
+### 10.5 Deployment invariant (REQUIRED) & onboarding
+
+- **Shared secret:** brain-api `SECRET_KEY` **must equal** the PreCheck backend `SECRET_KEY`
+  (both read the env var `SECRET_KEY`; PreCheck via `app/core/config.py` `secret_key`,
+  brain-api via `config.py` `SECRET_KEY`). If they differ, PreCheck rejects the minted token
+  with 401. This is the **only** coupling; no PreCheck code changed.
+- **Creating a link (onboarding):** `uv run python scripts/link_precheck_account.py
+  --brain-email <email> --precheck-user-id <int>` (idempotent; guards the reverse-unique).
+  The PreCheck integer id comes from PreCheck's own users table (separate DB). For a local
+  end-to-end, `make seed` also creates the demo link when `DEMO_PRECHECK_USER_ID` is set.
+- **No PreCheck change required.** PreCheck's backend already trusts any `SECRET_KEY`-signed
+  HS256 token whose `sub` resolves to a real `users.id`; its frontend isn't in the path (the
+  portal uses the same-origin ported copy). Had the portal instead linked to a *separate*
+  PreCheck origin, a thin token-intake route on PreCheck would have been required — it is not,
+  here.

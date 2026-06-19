@@ -49,8 +49,29 @@ class Settings(BaseSettings):
     # Max POST /demo-requests per client IP per minute (basic, in-process).
     DEMO_RATE_LIMIT_PER_MIN: int = 5
 
-    # --- Reserved (future service-to-service into secretaria/precheck) ---
-    # Present for forward-compat; not used by any endpoint in the current scope.
+    # --- Platform admin bootstrap (scripts/seed_admin.py) ---
+    # Credentials for the single platform admin seeded into a fresh DB. The seed is
+    # idempotent and reads ONLY from the environment — no admin password lives in code.
+    # The password is bcrypt-hashed on insert and never logged.
+    ADMIN_EMAIL: str = ""
+    ADMIN_PASSWORD: str = ""
+
+    # --- Service-to-service (BFF proxy into precheck) ---
+    # Base URL of the PreCheck backend, e.g. http://precheck:8000 on the internal
+    # network (empty in dev disables the proxy routes' upstream call). brain-api proxies
+    # admin "inbound" and doctor "anamneses" to precheck, FORWARDING the caller's brain
+    # JWT (precheck validates it itself via brain_auth) — no separate internal key here.
+    PRECHECK_BASE_URL: str = ""
+    # Timeout (seconds) for the precheck proxy httpx client.
+    PRECHECK_TIMEOUT_SECONDS: float = 10.0
+    # Base URL of the (internal-only) secretaria service. Reserved: the /doctor
+    # appointments + patients routes are stubs until secretaria exposes them; when it
+    # does, brain-api will call it here with X-Internal-Api-Key (INTERNAL_API_KEY).
+    SECRETARIA_BASE_URL: str = ""
+
+    # --- Internal service-to-service key (into secretaria) ---
+    # Sent as X-Internal-Api-Key when brain-api calls secretaria (fail-closed on the
+    # secretaria side if unset). Unused while appointments/patients remain stubs.
     INTERNAL_API_KEY: str = ""
 
     @property

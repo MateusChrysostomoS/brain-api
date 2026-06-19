@@ -293,9 +293,7 @@ def _decode_like_precheck(token: str) -> dict:
 async def test_sso_precheck_token_success(client):
     """Entitled + linked brain user -> a token PreCheck's own auth accepts."""
     token = await _token(client, LINKED_EMAIL, LINKED_PASSWORD)
-    resp = await client.post(
-        "/sso/precheck/token", headers={"Authorization": f"Bearer {token}"}
-    )
+    resp = await client.post("/sso/precheck/token", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["token_type"] == "bearer"
@@ -314,9 +312,7 @@ async def test_sso_precheck_token_success(client):
 async def test_sso_precheck_not_entitled(client):
     """A tenant without PreCheck entitlement -> 403 precheck_not_entitled."""
     token = await _token(client, PLAIN_EMAIL, PLAIN_PASSWORD)
-    resp = await client.post(
-        "/sso/precheck/token", headers={"Authorization": f"Bearer {token}"}
-    )
+    resp = await client.post("/sso/precheck/token", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403, resp.text
     assert resp.json()["detail"] == "precheck_not_entitled"
 
@@ -324,9 +320,7 @@ async def test_sso_precheck_not_entitled(client):
 async def test_sso_precheck_not_linked(client):
     """Entitled but unlinked brain user -> 409 precheck_account_not_linked."""
     token = await _token(client, OWNER_EMAIL, OWNER_PASSWORD)
-    resp = await client.post(
-        "/sso/precheck/token", headers={"Authorization": f"Bearer {token}"}
-    )
+    resp = await client.post("/sso/precheck/token", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 409, resp.text
     assert resp.json()["detail"] == "precheck_account_not_linked"
 

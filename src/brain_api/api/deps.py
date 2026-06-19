@@ -11,6 +11,7 @@ from uuid import UUID
 from fastapi import Depends, Header, HTTPException, status
 
 from brain_api.core.security import decode_token
+from brain_api.models.user import ROLE_TENANT_OWNER, ROLE_TENANT_STAFF
 
 
 @dataclass(frozen=True)
@@ -54,4 +55,17 @@ def require_tenant(p: Principal = Depends(get_current_principal)) -> Principal:
     """
     if p.tenant_id is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "No tenant in context")
+    return p
+
+
+def require_doctor(p: Principal = Depends(get_current_principal)) -> Principal:
+    """Require a tenant-scoped doctor user (`tenant_owner` or `tenant_staff`).
+
+    Platform `admin` tokens are rejected with 403 — admins use `/admin/*`, not the doctor
+    portal (RBAC task: "/doctor/* routes return 403 for admin tokens, wrong portal"). A
+    doctor role always carries a `tenant_id`; its absence is a malformed principal, also
+    403. The route then scopes purely by `p.tenant_id` (never a client-supplied id).
+    """
+    if p.role not in (ROLE_TENANT_OWNER, ROLE_TENANT_STAFF) or p.tenant_id is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Doctor access required")
     return p

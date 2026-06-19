@@ -20,6 +20,8 @@ dependencies = [
     # last fully-compatible bcrypt. Revisit if passlib ships a 1.7.5+.
     "bcrypt==4.0.1",
     "structlog>=24.4.0",
+    # Async HTTP client for the BFF proxy into PreCheck (services/precheck_client.py).
+    "httpx>=0.28.0",
 ]
 
 [dependency-groups]
@@ -27,7 +29,7 @@ dev = [
     "ruff>=0.8.0",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
-    "httpx>=0.28.0",
+    # httpx is also a runtime dep (see [project].dependencies); kept here implicitly.
     "aiosqlite>=0.20.0",
 ]
 

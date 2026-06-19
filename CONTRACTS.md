@@ -7,8 +7,11 @@
 `brain-api` is the **identity authority + BFF** for the Brain platform. It owns
 `users`, `tenants`, `entitlements`, and `demo_requests` inside its own **`brain`
 database** in the shared Postgres service. It faces the browser (the unified portal in
-`brain-frontend`). `secretaria` and `precheck` remain internal-only services and are
-**not** called by anything in this task.
+`brain-frontend`). In Phase 1, `secretaria` and `precheck` were internal-only and not
+called from here. **The RBAC round (§11–§12) extends this:** brain-api now exposes
+role-gated `/admin/*` and `/doctor/*` portals and acts as a **read proxy into PreCheck**
+(forwarding the caller's brain JWT). `secretaria` remains uncalled (its `/doctor`
+appointments/patients are stubs); no browser ever calls `precheck`/`secretaria` directly.
 
 Stack (mirrors `secretarIA`): Python 3.12, FastAPI, async SQLAlchemy 2.0 (asyncpg),
 Alembic (async env), pydantic v2 / pydantic-settings, structlog, uv + hatchling.
@@ -347,8 +350,13 @@ Migration **`0001`** creates `tenants`/`users`/`entitlements`/`demo_requests`; m
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | brain access-token TTL |
 | `PRECHECK_TOKEN_EXPIRE_MINUTES` | `60` | TTL of the minted PreCheck SSO token (§10); matches PreCheck's own session length |
 | `CORS_ALLOW_ORIGINS` | `http://localhost:3000` | comma-separated portal origins |
-| `INTERNAL_API_KEY` | `""` | reserved for future service-to-service (unused this task) |
 | `DEMO_RATE_LIMIT_PER_MIN` | `5` | basic demo-request anti-spam |
+| `ADMIN_EMAIL` | `""` | platform admin bootstrap (`scripts/seed_admin.py`); env-only, never in code |
+| `ADMIN_PASSWORD` | `""` | platform admin bootstrap; bcrypt-hashed on insert, never logged |
+| `PRECHECK_BASE_URL` | `""` | PreCheck backend base URL for the BFF read proxy (§11.1). Empty → list proxies return an empty page locally |
+| `PRECHECK_TIMEOUT_SECONDS` | `10` | timeout for the precheck proxy httpx client |
+| `SECRETARIA_BASE_URL` | `""` | reserved; secretaria appointments/patients are stubs until it exposes them |
+| `INTERNAL_API_KEY` | `""` | reserved: `X-Internal-Api-Key` for the future brain-api → secretaria call (§12) |
 
 `get_settings()` is `@lru_cache`d. `cors_origins` is a parsed-list property.
 
@@ -477,3 +485,56 @@ served from the **same origin** as `/app`. So `/app` writes the minted token to
   portal uses the same-origin ported copy). Had the portal instead linked to a *separate*
   PreCheck origin, a thin token-intake route on PreCheck would have been required — it is not,
   here.
+
+---
+
+## 11. Platform-admin API (RBAC round) — role `admin`
+
+Every `/admin/*` route is gated by `require_role("admin")` at the **router** level: a
+non-admin brain JWT gets `403 {"detail": "Insufficient role"}`, no token `401`, before any
+handler runs. Admins have `tenant_id = null` and act across all tenants. Responses use
+whitelisted `*Out` schemas (never `password_hash` / `*_encrypted`). List endpoints share a
+**`Page`** envelope `{ "items": [...], "total": N, "skip": s, "limit": l }` with `skip >= 0`,
+`1 <= limit <= 100` (default 50), newest first.
+
+| method | path | notes |
+|---|---|---|
+| `GET` | `/admin/tenants` | `Page` of `{id, clinic_name, created_at, plan, status, precheck_enabled, secretaria_enabled, users_count}` |
+| `GET` | `/admin/tenants/{tenant_id}` | detail `{id, clinic_name, created_at, updated_at, users_count, entitlements{…}}`; `404` if unknown. **No credentials fields** |
+| `GET` | `/admin/tenants/{tenant_id}/entitlements` | entitlement record (coherent defaults if no row); `404` unknown tenant |
+| `PATCH` | `/admin/tenants/{tenant_id}/entitlements` | partial `{precheck_enabled?, secretaria_enabled?, plan?, status?, addons?, limits?}`; **upserts** the row; `404` unknown tenant. How a product is manually switched on pre-Stripe |
+| `GET` | `/admin/users` | `Page` of `{id, tenant_id, clinic_name|null, email, name, role, created_at}`. **Never** `password_hash` |
+| `POST` | `/admin/users` | `201` create in any tenant/role. Body `{email, name, password(1–72), role, tenant_id?}`. `admin` ⇒ `tenant_id` must be null; tenant roles ⇒ `tenant_id` required+existing. `409` dup email, `404` unknown tenant, `422` bad combo / >72-byte password |
+| `GET` | `/admin/demo_requests` | `Page` of brain's own demo leads, newest first |
+| `PATCH` | `/admin/demo_requests/{id}` | set `status ∈ {contacted, converted, dismissed}`; `404` unknown, `422` other value. (Portal actions "Marcar como contatado" / "Converter em tenant" / "Descartar") |
+| `GET` | `/admin/inbound` | **proxy** → PreCheck `GET /api/v1/admin/inbound` (§11.1); returns PreCheck's payload verbatim |
+
+### 11.1 brain-api → PreCheck read proxy (supersedes §0's "not called")
+
+The RBAC round adds read proxies where brain-api forwards the **caller's brain JWT**
+verbatim to PreCheck, which validates it itself (`precheck app/core/brain_auth.py`) and
+role-gates/scopes the result. There is **no separate internal key**: the same token that
+authorized the brain-api route authorizes the upstream call. `PRECHECK_BASE_URL` selects the
+upstream; **unset** ⇒ list proxies return an empty page `{items:[], total:0, …, "stub":true}`
+(keeps the portal rendering locally) and detail ⇒ `503 precheck_not_configured`. An upstream
+`4xx` (e.g. PreCheck's own `403` for a non-admin) is surfaced verbatim; `5xx`/network ⇒ `502`.
+The forwarded `Authorization` header is never logged. Proxy routes: `GET /admin/inbound`,
+`GET /doctor/anamneses[/{id}]`.
+
+---
+
+## 12. Doctor (tenant) API (RBAC round) — roles `tenant_owner` / `tenant_staff`
+
+Every `/doctor/*` route is gated by `require_doctor` at the router level: a valid brain JWT
+whose `role ∈ {tenant_owner, tenant_staff}` **and** that carries a `tenant_id`. A platform
+`admin` token gets `403` (wrong portal — admins use `/admin/*`). The acting tenant is ALWAYS
+`principal.tenant_id` from the validated token; **`tenant_id` is never accepted as a query or
+body param**, so a doctor cannot read another tenant's data by forging an id.
+
+| method | path | notes |
+|---|---|---|
+| `GET` | `/doctor/me` | `{user{id,email,name,role}, tenant{id,clinic_name}, entitlements{…}}`. Identity + products, no secrets |
+| `GET` | `/doctor/appointments` | **stub** `{"data": [], "stub": true}` — secretaria has no internal endpoint yet (then brain-api → secretaria via `X-Internal-Api-Key`, scoped to the tenant) |
+| `GET` | `/doctor/patients` | **stub** `{"data": [], "stub": true}` (same as appointments) |
+| `GET` | `/doctor/anamneses` | **proxy** → PreCheck `GET /api/v1/doctor/anamneses` (§11.1); tenant-scoped by the forwarded token |
+| `GET` | `/doctor/anamneses/{id}` | **proxy** → PreCheck `GET /api/v1/doctor/anamneses/{id}`; PreCheck enforces the record belongs to the token's tenant/clinic |

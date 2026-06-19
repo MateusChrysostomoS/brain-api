@@ -42,9 +42,7 @@ class PrecheckToken:
     expires_in: int
 
 
-async def issue_precheck_token(
-    session: AsyncSession, principal: Principal
-) -> PrecheckToken:
+async def issue_precheck_token(session: AsyncSession, principal: Principal) -> PrecheckToken:
     """Mint a PreCheck session for an entitled, linked brain user.
 
     Raises HTTPException 403 (`precheck_not_entitled`) or 409
@@ -56,9 +54,7 @@ async def issue_precheck_token(
     # 1) Entitlement gate — local, in-process; identical source to GET /entitlements.
     ent = await resolve_entitlement(session, principal.tenant_id)
     if not ent.products.precheck:
-        logger.info(
-            "precheck_sso_denied_not_entitled", tenant_id=str(principal.tenant_id)
-        )
+        logger.info("precheck_sso_denied_not_entitled", tenant_id=str(principal.tenant_id))
         raise HTTPException(status.HTTP_403_FORBIDDEN, "precheck_not_entitled")
 
     # 2) Account-link gate — the brain user must be mapped to a PreCheck user.

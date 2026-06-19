@@ -82,9 +82,7 @@ async def ensure_demo_link() -> None:
             logger.warning("seed_link_skipped_no_demo_user")
             return
         existing = await session.scalar(
-            select(PrecheckAccountLink).where(
-                PrecheckAccountLink.brain_user_id == user.id
-            )
+            select(PrecheckAccountLink).where(PrecheckAccountLink.brain_user_id == user.id)
         )
         if existing is not None:
             existing.precheck_user_id = precheck_user_id

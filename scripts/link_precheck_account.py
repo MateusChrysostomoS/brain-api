@@ -48,9 +48,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 async def _resolve_user(session, args: argparse.Namespace) -> User | None:
     if args.brain_email:
-        return await session.scalar(
-            select(User).where(User.email == args.brain_email.lower())
-        )
+        return await session.scalar(select(User).where(User.email == args.brain_email.lower()))
     try:
         uid = UUID(args.brain_user_id)
     except ValueError:
@@ -92,9 +90,7 @@ async def link(argv: list[str]) -> int:
             return 1
 
         existing = await session.scalar(
-            select(PrecheckAccountLink).where(
-                PrecheckAccountLink.brain_user_id == user.id
-            )
+            select(PrecheckAccountLink).where(PrecheckAccountLink.brain_user_id == user.id)
         )
         if existing is not None:
             existing.precheck_user_id = args.precheck_user_id

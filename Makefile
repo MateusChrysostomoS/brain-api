@@ -1,4 +1,4 @@
-.PHONY: help install dev migrate makemigration seed test lint format up down logs
+.PHONY: help install dev migrate makemigration seed seed-admin test lint format up down logs
 
 help:
 	@echo "install        - sync dependencies into .venv"
@@ -6,6 +6,7 @@ help:
 	@echo "migrate        - apply database migrations (alembic upgrade head)"
 	@echo "makemigration  - autogenerate a migration: make makemigration m=\"message\""
 	@echo "seed           - create a development tenant + owner user + entitlement"
+	@echo "seed-admin     - create the platform admin from ADMIN_EMAIL/ADMIN_PASSWORD (idempotent)"
 	@echo "dev            - run the API with autoreload"
 	@echo "test           - run the test suite"
 	@echo "lint           - run ruff checks (lint + format check)"
@@ -31,6 +32,9 @@ makemigration:
 
 seed:
 	uv run python scripts/seed_dev.py
+
+seed-admin:
+	uv run python scripts/seed_admin.py
 
 dev:
 	uv run uvicorn brain_api.main:app --reload --host 0.0.0.0 --port 8000

@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from brain_api.api import auth, demo, entitlements, health, sso
+from brain_api.api import admin, auth, demo, doctor, entitlements, health, sso
 from brain_api.config import get_settings
 from brain_api.core.logging import get_logger, setup_logging
 
@@ -48,6 +48,8 @@ def create_app() -> FastAPI:
     app.include_router(entitlements.router, tags=["entitlements"])
     app.include_router(sso.router, tags=["sso"])
     app.include_router(demo.router, tags=["demo"])
+    app.include_router(admin.router, tags=["admin"])
+    app.include_router(doctor.router, tags=["doctor"])
     return app
 
 

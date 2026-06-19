@@ -1,0 +1,28 @@
+# Local development infrastructure ONLY.
+# In production (Easypanel) Postgres is a native panel service; the `brain`
+# database lives inside the shared Postgres instance. Do NOT deploy this file.
+#
+# Usage:  docker compose up -d
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: brain-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: brain
+      POSTGRES_PASSWORD: brain
+      POSTGRES_DB: brain
+    ports:
+      - "5432:5432"
+    volumes:
+      - brain_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brain -d brain"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  brain_pgdata:
+    name: brain_pgdata

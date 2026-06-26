@@ -11,7 +11,7 @@ Responses serialize through whitelisted `*Out` schemas (no `password_hash`, no
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.api.deps import Principal, get_current_principal, require_role
@@ -28,7 +28,8 @@ from brain_api.schemas.admin import (
     EntitlementPatchIn,
     Page,
 )
-from brain_api.services import admin as admin_service, precheck_client
+from brain_api.schemas.secretaria import SecretariaResetIn
+from brain_api.services import admin as admin_service, precheck_client, secretaria_client
 
 logger = get_logger(__name__)
 
@@ -200,3 +201,53 @@ async def get_inbound(
     """
     logger.info("admin_inbound_proxy", actor_user_id=principal.user_id)
     return await precheck_client.get_inbound(authorization or "", skip, limit)
+
+
+# --- secretaria (service-to-service admin connection) ----------------------
+# secretaria has no user identity to authorize against, so unlike the PreCheck proxy above
+# (which forwards the caller's JWT) these forward NOTHING from the caller — brain-api
+# authenticates to secretaria with the shared SECRETARIA_ADMIN_TOKEN. The brain `admin`
+# role is enforced by the router-level gate; the service credential lives in the client.
+
+
+@router.get("/secretaria/tenants", summary="secretaria tenants (proxied admin)")
+async def get_secretaria_tenants(
+    principal: Principal = Depends(get_current_principal),
+) -> object:
+    """List secretaria clinics + calendar health (brain-api -> secretaria `/admin/tenants`).
+
+    Returns secretaria's payload verbatim. 503 if secretaria's base URL or admin token is
+    not configured on brain-api; 502 if secretaria is unreachable. The shared admin token is
+    never logged or echoed.
+    """
+    logger.info("admin_secretaria_tenants_proxy", actor_user_id=principal.user_id)
+    return await secretaria_client.list_tenants()
+
+
+@router.post(
+    "/secretaria/reset",
+    summary="Wipe secretaria conversation data (DESTRUCTIVE)",
+    responses={
+        400: {"description": "confirm was not true."},
+        502: {"description": "secretaria unreachable."},
+        503: {"description": "secretaria base URL / admin token not configured."},
+    },
+)
+async def reset_secretaria(
+    payload: SecretariaResetIn,
+    principal: Principal = Depends(get_current_principal),
+) -> object:
+    """Proxy secretaria's destructive data wipe (brain-api -> secretaria `/admin/reset`).
+
+    TWO independent guards run before anything is wiped: the brain `admin` role (router
+    gate) and an explicit `confirm: true` body here. The actor is logged at WARNING; the
+    shared admin token is never logged or echoed.
+    """
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Set confirm: true to proceed.")
+    logger.warning(
+        "admin_secretaria_reset_invoked",
+        actor_user_id=principal.user_id,
+        include_tenants=payload.include_tenants,
+    )
+    return await secretaria_client.reset_data(include_tenants=payload.include_tenants)

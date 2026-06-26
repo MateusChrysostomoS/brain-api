@@ -6,6 +6,8 @@ default-resolution paths), and demo-request capture (happy path, validation,
 honeypot). Asserts the never-leak rule (no password_hash in /auth/me).
 """
 
+from uuid import uuid4
+
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from jose import jwt
@@ -14,10 +16,17 @@ from sqlalchemy.pool import StaticPool
 
 from brain_api.config import get_settings
 from brain_api.core.database import Base, get_session
-from brain_api.core.security import hash_password
+from brain_api.core.security import create_access_token, hash_password
 from brain_api.main import app
 from brain_api.models import Entitlement, PrecheckAccountLink, Tenant, User
-from brain_api.models.user import ROLE_TENANT_OWNER
+from brain_api.models.user import ROLE_ADMIN, ROLE_TENANT_OWNER
+
+
+def _admin_token() -> str:
+    """A platform-admin JWT (role=admin, no tenant). No admin user row is needed: the admin
+    routes authorize purely from the token's role claim (require_role) — server state for
+    the secretaria proxy lives upstream, not in brain's DB."""
+    return create_access_token(sub=str(uuid4()), tenant_id=None, role=ROLE_ADMIN)
 
 # Environment for settings is configured in tests/conftest.py (loaded first).
 
@@ -328,3 +337,71 @@ async def test_sso_precheck_not_linked(client):
 async def test_sso_precheck_requires_token(client):
     resp = await client.post("/sso/precheck/token")
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Cross-API admin — brain-api -> secretaria service-to-service (CONTRACTS.md §11)
+# ---------------------------------------------------------------------------
+
+
+async def test_secretaria_proxy_requires_admin_role(client):
+    """A tenant_owner (non-admin) is rejected by the router gate before any upstream call."""
+    token = await _token(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = await client.get(
+        "/admin/secretaria/tenants", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 403, resp.text
+
+
+async def test_secretaria_proxy_requires_token(client):
+    resp = await client.get("/admin/secretaria/tenants")
+    assert resp.status_code == 401
+
+
+async def test_secretaria_tenants_unconfigured_is_503(client):
+    """Admin role passes the gate; with no SECRETARIA_BASE_URL/token, fail closed (503)."""
+    resp = await client.get(
+        "/admin/secretaria/tenants", headers={"Authorization": f"Bearer {_admin_token()}"}
+    )
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == "secretaria_not_configured"
+
+
+async def test_secretaria_reset_requires_confirm(client):
+    """The brain-api route's own guard rejects confirm=false BEFORE touching secretaria."""
+    resp = await client.post(
+        "/admin/secretaria/reset",
+        headers={"Authorization": f"Bearer {_admin_token()}"},
+        json={"confirm": False},
+    )
+    assert resp.status_code == 400, resp.text
+
+
+async def test_secretaria_reset_unconfigured_is_503(client):
+    """confirm=true but no upstream configured -> 503 (never silently 'succeeds')."""
+    resp = await client.post(
+        "/admin/secretaria/reset",
+        headers={"Authorization": f"Bearer {_admin_token()}"},
+        json={"confirm": True},
+    )
+    assert resp.status_code == 503, resp.text
+
+
+async def test_secretaria_tenants_success_proxies_verbatim(client, monkeypatch):
+    """When the upstream client returns data, the route relays it unchanged.
+
+    Patches the client function (not the network) so the test is deterministic and proves
+    the route forwards secretaria's payload verbatim, the way the PreCheck inbound proxy does.
+    """
+
+    async def _fake_list_tenants():
+        return [{"id": "t-1", "clinic_name": "Clínica X", "calendar_healthy": True}]
+
+    monkeypatch.setattr(
+        "brain_api.services.secretaria_client.list_tenants", _fake_list_tenants
+    )
+    resp = await client.get(
+        "/admin/secretaria/tenants", headers={"Authorization": f"Bearer {_admin_token()}"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == [{"id": "t-1", "clinic_name": "Clínica X", "calendar_healthy": True}]

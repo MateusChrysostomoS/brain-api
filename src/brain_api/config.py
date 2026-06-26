@@ -74,6 +74,20 @@ class Settings(BaseSettings):
     # secretaria side if unset). Unused while appointments/patients remain stubs.
     INTERNAL_API_KEY: str = ""
 
+    # --- secretaria admin (cross-API admin connection into secretaria's /admin/*) ---
+    # secretaria has NO user/role system; its only privileged surface is `/admin/*`, guarded
+    # by the `X-Admin-Token` header checked against secretaria's OWN `ADMIN_TOKEN` env var
+    # (secretaria api/admin.py: require_admin). That is a DIFFERENT mechanism from
+    # INTERNAL_API_KEY/X-Internal-Api-Key above, so it needs its own value here. A brain
+    # PLATFORM ADMIN cannot "log in" to secretaria — instead brain-api calls secretaria's
+    # admin routes on the admin's behalf, presenting this token. It MUST equal secretaria's
+    # ADMIN_TOKEN byte-for-byte or secretaria returns 403; empty here fails closed (brain-api
+    # raises 503 before any call). It guards a DESTRUCTIVE wipe endpoint — treat it as a
+    # production credential and NEVER log it.
+    SECRETARIA_ADMIN_TOKEN: str = ""
+    # Timeout (seconds) for the secretaria admin httpx client.
+    SECRETARIA_TIMEOUT_SECONDS: float = 10.0
+
     @property
     def cors_origins(self) -> list[str]:
         """Parse CORS_ALLOW_ORIGINS into a clean list of origins."""

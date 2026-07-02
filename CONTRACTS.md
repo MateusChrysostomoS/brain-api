@@ -10,8 +10,9 @@ database** in the shared Postgres service. It faces the browser (the unified por
 `brain-frontend`). In Phase 1, `secretaria` and `precheck` were internal-only and not
 called from here. **The RBAC round (§11–§12) extends this:** brain-api now exposes
 role-gated `/admin/*` and `/doctor/*` portals and acts as a **read proxy into PreCheck**
-(forwarding the caller's brain JWT). `secretaria` remains uncalled (its `/doctor`
-appointments/patients are stubs); no browser ever calls `precheck`/`secretaria` directly.
+(forwarding the caller's brain JWT). It also calls **`secretaria`** two ways: the admin
+connection (`X-Admin-Token`, §11.2) and the **doctor appointments/patients data path**
+(`X-Internal-Api-Key`, §12.1). No browser ever calls `precheck`/`secretaria` directly.
 
 Stack (mirrors `secretarIA`): Python 3.12, FastAPI, async SQLAlchemy 2.0 (asyncpg),
 Alembic (async env), pydantic v2 / pydantic-settings, structlog, uv + hatchling.
@@ -353,10 +354,11 @@ Migration **`0001`** creates `tenants`/`users`/`entitlements`/`demo_requests`; m
 | `DEMO_RATE_LIMIT_PER_MIN` | `5` | basic demo-request anti-spam |
 | `ADMIN_EMAIL` | `""` | platform admin bootstrap (`scripts/seed_admin.py`); env-only, never in code |
 | `ADMIN_PASSWORD` | `""` | platform admin bootstrap; bcrypt-hashed on insert, never logged |
+| `IMPERSONATION_DEMO_EMAIL` | `dra.demo@clinica.com.br` | tenant (clinic) owner the admin "Modo médico" switch enters (§11.4). Must be a `tenant_owner`/`tenant_staff` carrying a `tenant_id`, else `POST /admin/impersonate/token` is `404`. Defaults to the seeded dev clinic; in production point at a real sandbox clinic owner |
 | `PRECHECK_BASE_URL` | `""` | PreCheck backend base URL for the BFF read proxy (§11.1). Empty → list proxies return an empty page locally |
 | `PRECHECK_TIMEOUT_SECONDS` | `10` | timeout for the precheck proxy httpx client |
-| `SECRETARIA_BASE_URL` | `""` | secretaria base URL. Used by the admin connection (§11.2); also reserved for the future doctor appointments/patients calls. Empty → §11.2 routes return `503` |
-| `INTERNAL_API_KEY` | `""` | reserved: `X-Internal-Api-Key` for the future brain-api → secretaria call (§12) |
+| `SECRETARIA_BASE_URL` | `""` | secretaria base URL. Used by the doctor appointments/patients data path (§12.1) **and** the admin connection (§11.2). Empty → §12.1 returns an empty page; §11.2 routes return `503` |
+| `INTERNAL_API_KEY` | `""` | **active:** `X-Internal-Api-Key` for brain-api → secretaria `/internal/*` (§12.1). **MUST equal secretaria's own `INTERNAL_API_KEY`** byte-for-byte; a **mismatch** ⇒ secretaria `401` ⇒ brain-api `502`. **Unset on either side** ⇒ empty page (brain-api short-circuits if its own is empty; secretaria answers `403` if its own is empty, which brain-api also degrades to an empty page). Random machine secret; never logged |
 | `SECRETARIA_ADMIN_TOKEN` | `""` | secretaria admin connection (§11.2): sent as `X-Admin-Token`. **MUST equal secretaria's own `ADMIN_TOKEN`** or secretaria returns `403`. A DESTRUCTIVE-endpoint secret — never logged. Empty → §11.2 routes `503` |
 | `SECRETARIA_TIMEOUT_SECONDS` | `10` | timeout for the secretaria admin httpx client |
 
@@ -400,6 +402,7 @@ Typed client functions, env-based base URL, no hardcoded domain:
 | `schemas/*Out` whitelists (no `*_encrypted`/`password_hash`), `core/logging.py` `redact_secrets` | `tenant-secrets-encryption` |
 | `POST /demo-requests` (sync, isolated) | n/a — `whatsapp-webhook-arq` explicitly skipped (no async work) |
 | `core/security.py create_precheck_token`, `services/sso.py`, `api/sso.py` | `auth-jwt-multitenant` (pinned HS256, minimal claims, short TTL, shared secret) |
+| `services/secretaria_internal.py` (`X-Internal-Api-Key` data calls), secretaria `api/internal.py` (`require_internal_api_key`) | `auth-jwt-multitenant` (service-to-service shared key, fail-closed, constant-time compare, key never logged) |
 | `services/sso.py` entitlement gate (reuses `resolve_entitlement`) | `stripe-billing-entitlements` (in-process read, never Stripe) |
 | `models/precheck_link.py` (identity map; never serialized/logged) | `tenant-secrets-encryption` (never-leak posture) |
 
@@ -512,6 +515,7 @@ whitelisted `*Out` schemas (never `password_hash` / `*_encrypted`). List endpoin
 | `GET` | `/admin/inbound` | **proxy** → PreCheck `GET /api/v1/admin/inbound` (§11.1); returns PreCheck's payload verbatim |
 | `GET` | `/admin/secretaria/tenants` | **proxy** → secretaria `GET /admin/tenants` (§11.2); clinics + calendar health, verbatim |
 | `POST` | `/admin/secretaria/reset` | **proxy** → secretaria `POST /admin/reset` (§11.2). **DESTRUCTIVE.** Body `{confirm: true, include_tenants?: false}`; `400` if `confirm` not true |
+| `POST` | `/admin/impersonate/token` | mint a tenant-scoped **doctor** token for the admin "Modo médico" switch (§11.4). No body; targets `IMPERSONATION_DEMO_EMAIL`. `404 impersonation_target_unavailable` if that clinic is not seeded/configured |
 
 ### 11.1 brain-api → PreCheck read proxy (supersedes §0's "not called")
 
@@ -553,7 +557,55 @@ The brain admin already reaches PreCheck's brain-portal admin routes via the sha
 `SECRET_KEY`; the PreCheck superadmin row is what unlocks PreCheck's **native** console
 (`/admin/clinics`, `/admin/users`, rotate-key), which a brain UUID-`sub` token cannot.
 **Admin SSO is intentionally not wired** — `/sso/precheck/token` requires a tenant and admins
-have none; brain portal and PreCheck remain separate logins.
+have none; brain portal and PreCheck remain separate logins. The **one** deliberate exception
+is the admin-only "Modo médico" dev switch (§11.4), which does not SSO the admin *as an admin*
+but instead lets them **act as a chosen clinic's doctor** via a minted tenant-scoped token.
+
+### 11.4 Admin "Modo médico" impersonation (`POST /admin/impersonate/token`)
+
+A platform admin has no tenant, so by default it cannot use the doctor portal or open
+PreCheck/secretarIA (every `/doctor/*` route + `/sso/precheck/token` reject a tenant-less
+token — §12, §10). This endpoint is an **admin-only convenience for developing the website +
+API**: it lets an admin enter the doctor portal **as a real clinic user**, with live data, in
+one click — without a second login.
+
+**Auth:** `Authorization: Bearer <admin jwt>`; the router-level `require_role("admin")` gate is
+the sole authorization (a non-admin gets `403`). **No request body.**
+
+**Flow (`services/admin.issue_impersonation_token`):**
+1. Resolve `IMPERSONATION_DEMO_EMAIL` (the configured demo/sandbox clinic owner) to a user.
+   If absent, tenant-less, or not a `tenant_owner`/`tenant_staff` → **`404
+   {"detail": "impersonation_target_unavailable"}`** (an admin must never become a "doctor
+   with no tenant", which would violate `require_doctor`'s invariant).
+2. Mint a **normal** access token via `create_access_token(sub=<doctor user>, tenant_id, role)`
+   — byte-identical in shape to that user's own `/auth/token` login (§2.1). No extra claim, no
+   secret. The admin's own token is untouched and not embedded.
+
+**Response `200`**
+```json
+{
+  "access_token": "<doctor jwt>",
+  "token_type": "bearer",
+  "tenant_id": "2b9a…uuid",
+  "clinic_name": "Consultório Dr. Aurélio Lima",
+  "email": "dra.demo@clinica.com.br",
+  "role": "tenant_owner",
+  "expires_in": 3600
+}
+```
+The non-`access_token` fields are non-secret display data for the portal's "you are in doctor
+mode" banner. **Status codes:** `200`; `401` missing/invalid admin token; `403` not an admin;
+`404` target clinic not seeded/configured.
+
+**Audit:** each mint logs `admin_impersonation_issued` at **WARNING** with the acting admin's
+`user_id` + the target user/tenant/role. The minted token is **never** logged.
+
+**Frontend handoff (`brain-frontend`, same-origin sessionStorage):** the admin header's "Modo
+médico" button calls this, **stashes** the admin session, swaps the minted doctor session into
+`brain.session`, records a `brain.impersonation` marker, and routes to `/doctor/dashboard`. The
+doctor portal shows a banner whose "Voltar ao admin" **restores** the stashed admin session.
+Because the minted token is an ordinary doctor token, the existing doctor guards + `/doctor/*`
+calls + the PreCheck SSO all work unchanged. (Logging out clears the marker + stash.)
 
 ---
 
@@ -568,7 +620,43 @@ body param**, so a doctor cannot read another tenant's data by forging an id.
 | method | path | notes |
 |---|---|---|
 | `GET` | `/doctor/me` | `{user{id,email,name,role}, tenant{id,clinic_name}, entitlements{…}}`. Identity + products, no secrets |
-| `GET` | `/doctor/appointments` | **stub** `{"data": [], "stub": true}` — secretaria has no internal endpoint yet (then brain-api → secretaria via `X-Internal-Api-Key`, scoped to the tenant) |
-| `GET` | `/doctor/patients` | **stub** `{"data": [], "stub": true}` (same as appointments) |
+| `GET` | `/doctor/appointments` | **proxy** → secretaria `GET /internal/tenants/{tenant_id}/appointments` (§12.1), `X-Internal-Api-Key`, scoped to `principal.tenant_id`. `{"data": [...]}`; query `skip>=0`, `1<=limit<=100`. Unconfigured mesh → `{"data": [], "stub": true}` |
+| `GET` | `/doctor/patients` | **proxy** → secretaria `GET /internal/tenants/{tenant_id}/patients` (§12.1) (same auth/scope/fallback as appointments) |
 | `GET` | `/doctor/anamneses` | **proxy** → PreCheck `GET /api/v1/doctor/anamneses` (§11.1); tenant-scoped by the forwarded token |
 | `GET` | `/doctor/anamneses/{id}` | **proxy** → PreCheck `GET /api/v1/doctor/anamneses/{id}`; PreCheck enforces the record belongs to the token's tenant/clinic |
+
+### 12.1 brain-api → secretaria internal data connection (service-to-service)
+
+The doctor portal's appointments + patients come from `secretaria`, which is **internal-only**
+(no browser, no human, no JWT ever reaches it — `auth-jwt-multitenant`). secretaria exposes an
+`/internal/*` surface guarded by a shared **`X-Internal-Api-Key`** secret; brain-api calls it
+with `INTERNAL_API_KEY` (`services/secretaria_internal.py`). This is a **third, distinct**
+service-to-service shape:
+
+- **vs PreCheck proxy (§11.1):** PreCheck forwards the caller's *brain JWT*; here nothing from
+  the caller is forwarded — secretaria has no notion of the user. The acting tenant is carried
+  in the **URL path** and filled by brain-api from `principal.tenant_id` (never a client param),
+  so a doctor cannot read another tenant's data by forging an id.
+- **vs secretaria admin (§11.2):** that uses `X-Admin-Token` / `SECRETARIA_ADMIN_TOKEN` on
+  `/admin/*` (a different secret + surface). `INTERNAL_API_KEY` ≠ `SECRETARIA_ADMIN_TOKEN`.
+
+**Key pairing (deployment invariant):** brain-api `INTERNAL_API_KEY` **must equal** secretaria's
+own `INTERNAL_API_KEY`, byte-for-byte (set both in Easypanel; generate with
+`python -c "import secrets; print(secrets.token_hex(32))"`). A random machine secret — it comes
+from no external provider. On **either** side empty / mismatched: secretaria's `require_internal_api_key`
+rejects with **401** (missing/wrong key) or **403** (server key unconfigured); the key is never logged.
+
+**brain-api behaviour (`services/secretaria_internal.py`):** an **unconfigured** mesh degrades, a
+**misconfigured** one errors. `SECRETARIA_BASE_URL` **or** `INTERNAL_API_KEY` unset *here* ⇒ the
+list calls fail closed to an empty page `{"data": [], "stub": true}` (the portal still renders) —
+**no** upstream call, **no** `500`. If **secretaria's own** key is unset it answers `403`, which
+brain-api **also** degrades to that empty page (an unset key on **either** side ⇒ empty page, per
+acceptance criterion #1). A genuinely failing upstream — network, secretaria `5xx`, **or** a key
+**mismatch** (both sides set but different ⇒ secretaria `401`) — collapses to **`502`** with a
+generic detail; secretaria's status/body is never surfaced and a key problem is never mis-reported
+as the doctor's own `401`. Routes: `GET /doctor/appointments`, `GET /doctor/patients`.
+
+**secretaria endpoints** (`api/internal.py`, every route `Depends(require_internal_api_key)`):
+`GET /internal/tenants/{tenant_id}/appointments` and `.../patients`, each `{"data": [...]}` with
+lean per-row schemas (`schemas/internal.py`) that deliberately omit internal Google ids; query
+`limit` (`1..200`, default 50) + `offset` (`>=0`).

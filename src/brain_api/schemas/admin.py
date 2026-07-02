@@ -179,3 +179,25 @@ class AdminDemoRequestPatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["contacted", "converted", "dismissed"]
+
+
+# --- Doctor-mode impersonation ("Modo médico") -----------------------------
+
+
+class ImpersonationTokenOut(BaseModel):
+    """A minted doctor session for the admin "Modo médico" handoff.
+
+    `access_token` is shape-identical to that doctor's own `/auth/token` login (claims
+    `sub`=doctor user / `tenant_id` / `role`), so the doctor portal + PreCheck SSO accept
+    it UNCHANGED — the admin literally acts as that clinic's user. The remaining fields are
+    non-secret display data the portal shows in the "you are in doctor mode" banner; no
+    `password_hash` or other secret ever rides along.
+    """
+
+    access_token: str
+    token_type: str = "bearer"
+    tenant_id: UUID
+    clinic_name: str
+    email: str
+    role: str
+    expires_in: int

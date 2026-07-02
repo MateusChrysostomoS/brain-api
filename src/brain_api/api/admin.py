@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.api.deps import Principal, get_current_principal, require_role
+from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.schemas.admin import (
@@ -26,6 +27,7 @@ from brain_api.schemas.admin import (
     AdminUserOut,
     EntitlementAdminOut,
     EntitlementPatchIn,
+    ImpersonationTokenOut,
     Page,
 )
 from brain_api.schemas.secretaria import SecretariaResetIn
@@ -182,6 +184,44 @@ async def patch_demo_request(
         new_status=patch.status,
     )
     return result
+
+
+# --- Doctor-mode impersonation ("Modo médico") -----------------------------
+
+
+@router.post(
+    "/impersonate/token",
+    response_model=ImpersonationTokenOut,
+    summary="Mint a doctor session for the admin 'Modo médico' switch",
+    responses={
+        404: {"description": "Configured impersonation target clinic not found/seeded."},
+    },
+)
+async def impersonate_token(
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_session),
+) -> ImpersonationTokenOut:
+    """Mint a tenant-scoped doctor token so an admin can enter the doctor portal ("Modo
+    médico") with REAL PreCheck/secretarIA data — for developing the website + API.
+
+    One-click: it always targets the configured demo clinic (`IMPERSONATION_DEMO_EMAIL`);
+    the admin does not choose a tenant. The router-level `require_role("admin")` gate is the
+    sole authorization. Each mint is logged at WARNING with the acting admin + target user /
+    tenant (the minted token itself is NEVER logged). This deliberately crosses the
+    "admin SSO is not wired" boundary (CONTRACTS §11.3 / §11.4) for an admin-only dev tool;
+    the issued token is shape-identical to that doctor's own login. Returns
+    `404 impersonation_target_unavailable` if the demo clinic is not seeded/configured.
+    """
+    target_email = get_settings().IMPERSONATION_DEMO_EMAIL
+    result = await admin_service.issue_impersonation_token(session, target_email)
+    logger.warning(
+        "admin_impersonation_issued",
+        actor_user_id=principal.user_id,
+        target_user_id=str(result.target_user_id),
+        target_tenant_id=str(result.out.tenant_id),
+        target_role=result.out.role,
+    )
+    return result.out
 
 
 # --- Inbound (proxied from PreCheck) ---------------------------------------

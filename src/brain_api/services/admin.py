@@ -8,14 +8,17 @@ Nothing here returns a `password_hash` or any secret — callers serialize throu
 whitelisted `*Out` schemas in `schemas/admin.py`.
 """
 
+from dataclasses import dataclass
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_api.core.security import hash_password
+from brain_api.config import get_settings
+from brain_api.core.security import create_access_token, hash_password
 from brain_api.models import DemoRequest, Entitlement, Tenant, User
+from brain_api.models.user import ROLE_TENANT_OWNER, ROLE_TENANT_STAFF
 from brain_api.schemas.admin import (
     AdminDemoRequestOut,
     AdminTenantDetailOut,
@@ -24,6 +27,7 @@ from brain_api.schemas.admin import (
     AdminUserOut,
     EntitlementAdminOut,
     EntitlementPatchIn,
+    ImpersonationTokenOut,
 )
 
 
@@ -261,3 +265,65 @@ async def update_demo_request(
     await session.commit()
     await session.refresh(row)
     return AdminDemoRequestOut.model_validate(row)
+
+
+# --- Doctor-mode impersonation ("Modo médico") -----------------------------
+
+
+@dataclass(frozen=True)
+class ImpersonationMint:
+    """The minted doctor session plus the target user id (for the audit log).
+
+    `target_user_id` is kept OUT of the response (it is not in `ImpersonationTokenOut`) and
+    handed back separately so the route can log a stable actor→target reference without ever
+    serializing an internal id to the client.
+    """
+
+    out: ImpersonationTokenOut
+    target_user_id: UUID
+
+
+async def issue_impersonation_token(
+    session: AsyncSession, target_email: str
+) -> ImpersonationMint:
+    """Mint a tenant-scoped doctor token for the admin "Modo médico" handoff.
+
+    Resolves `target_email` (the configured demo clinic owner) to a tenant doctor user and
+    mints a NORMAL access token for them — `create_access_token(sub=user, tenant_id, role)`,
+    byte-identical in shape to that user's own login — so `/doctor/*`, `/entitlements` and
+    the PreCheck SSO accept it without any special-casing.
+
+    Refuses with **404 `impersonation_target_unavailable`** when the target does not exist,
+    has no tenant, or is not a doctor role: an admin must never become a "doctor with no
+    tenant", which would violate `require_doctor`'s invariant. Read-only (mints, never
+    writes); the caller logs the impersonation.
+    """
+    email = target_email.strip().lower()
+    user = await session.scalar(select(User).where(User.email == email))
+    if (
+        user is None
+        or user.tenant_id is None
+        or user.role not in (ROLE_TENANT_OWNER, ROLE_TENANT_STAFF)
+    ):
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "impersonation_target_unavailable"
+        )
+    tenant = await session.get(Tenant, user.tenant_id)
+    if tenant is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "impersonation_target_unavailable"
+        )
+
+    settings = get_settings()
+    token = create_access_token(
+        sub=str(user.id), tenant_id=str(user.tenant_id), role=user.role
+    )
+    out = ImpersonationTokenOut(
+        access_token=token,
+        tenant_id=user.tenant_id,
+        clinic_name=tenant.clinic_name,
+        email=user.email,
+        role=user.role,
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    return ImpersonationMint(out=out, target_user_id=user.id)

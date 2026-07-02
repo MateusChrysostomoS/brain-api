@@ -437,8 +437,13 @@ async def test_doctor_me_scoped_and_no_secrets(client):
     assert "password_hash" not in str(body)
 
 
-async def test_doctor_stub_routes(client):
-    """appointments/patients are wired stubs scoped behind the doctor gate."""
+async def test_doctor_appointments_patients_empty_when_secretaria_unconfigured(client):
+    """appointments/patients sit behind the doctor gate and fail closed to an empty page.
+
+    With no SECRETARIA_BASE_URL / INTERNAL_API_KEY in the test env, the secretaria internal
+    call is skipped (no network) and returns a safe empty page — never a 500. The configured
+    path (passthrough, tenant scoping, 502 mapping) is covered in test_doctor_secretaria.py.
+    """
     owner_a_token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
     for route in ["/doctor/appointments", "/doctor/patients"]:
         resp = await client.get(route, headers=_bearer(owner_a_token))

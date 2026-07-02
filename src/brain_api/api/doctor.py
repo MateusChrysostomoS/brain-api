@@ -6,8 +6,9 @@ token gets `403` (wrong portal). The tenant is ALWAYS taken from the token
 (`principal.tenant_id`) — `tenant_id` is never accepted as a query/body param, so a doctor
 cannot read another tenant's data by forging an id.
 
-`/doctor/appointments` and `/doctor/patients` are stubs until secretaria exposes them;
-the auth+scoping pattern is wired so swapping in the real internal call is mechanical.
+`/doctor/appointments` and `/doctor/patients` call secretaria's INTERNAL-ONLY `/internal/*`
+surface over `X-Internal-Api-Key` (`services/secretaria_internal.py`), scoped to this
+tenant; they degrade to an empty page when the secretaria mesh is unconfigured locally.
 `/doctor/anamneses` is proxied to PreCheck (which re-validates the forwarded brain JWT).
 """
 
@@ -18,7 +19,7 @@ from brain_api.api.deps import Principal, require_doctor
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.schemas.doctor import DoctorMeOut
-from brain_api.services import precheck_client
+from brain_api.services import precheck_client, secretaria_internal
 from brain_api.services.doctor import get_doctor_me
 
 logger = get_logger(__name__)
@@ -37,31 +38,39 @@ async def doctor_me(
     return await get_doctor_me(session, principal)
 
 
-@router.get("/appointments", summary="Tenant appointments (stub)")
+@router.get("/appointments", summary="Tenant appointments")
 async def appointments(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
     principal: Principal = Depends(require_doctor),
-) -> dict:
-    """Appointments for the doctor's tenant.
+) -> object:
+    """Appointments for the doctor's tenant (brain-api -> secretaria `/internal`).
 
-    STUB: secretaria does not expose an internal appointments endpoint yet. The auth gate
-    and tenant scope (`principal.tenant_id`) are in place; the real call will go
-    brain-api -> secretaria over `X-Internal-Api-Key`, scoped to this tenant.
+    Scoped to `principal.tenant_id` from the validated token — `tenant_id` is never a
+    client param, so a doctor cannot read another tenant's appointments. Degrades to an
+    empty page when the secretaria mesh is unconfigured locally; upstream/key failures
+    surface as `502` (never secretaria's body, never a config issue as the doctor's 401).
     """
-    logger.info("doctor_appointments_stub", tenant_id=str(principal.tenant_id))
-    return {"data": [], "stub": True}
+    logger.info("doctor_appointments", tenant_id=str(principal.tenant_id))
+    return await secretaria_internal.list_appointments(
+        principal.tenant_id, skip=skip, limit=limit
+    )
 
 
-@router.get("/patients", summary="Tenant patients (stub)")
+@router.get("/patients", summary="Tenant patients")
 async def patients(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
     principal: Principal = Depends(require_doctor),
-) -> dict:
-    """Patients for the doctor's tenant.
+) -> object:
+    """Patients for the doctor's tenant (brain-api -> secretaria `/internal`).
 
-    STUB (see `appointments`): wired with the auth gate + tenant scope; the real call
-    will be proxied from secretaria, scoped to `principal.tenant_id`.
+    Same tenant-scoping and fail-closed behaviour as `appointments`.
     """
-    logger.info("doctor_patients_stub", tenant_id=str(principal.tenant_id))
-    return {"data": [], "stub": True}
+    logger.info("doctor_patients", tenant_id=str(principal.tenant_id))
+    return await secretaria_internal.list_patients(
+        principal.tenant_id, skip=skip, limit=limit
+    )
 
 
 @router.get("/anamneses", summary="Tenant anamneses (proxied from PreCheck)")

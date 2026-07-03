@@ -21,11 +21,32 @@ class LoginRequest(BaseModel):
 
 
 class TokenResponse(BaseModel):
-    """The brain-api access token. Shape mirrors PreCheck's `TokenResponse` and the
-    frontend's existing `LoginResponse` (client stores `access_token` unchanged)."""
+    """The brain-api session pair. Shape mirrors PreCheck's `TokenResponse` and the
+    frontend's existing `LoginResponse` (client stores `access_token` unchanged);
+    `refresh_token`/`expires_in` are ADDITIVE fields (auth-hardening round) that
+    existing consumers ignore.
+
+    `refresh_token` is the opaque, revocable long-lived leg — returned exactly once
+    per issue/rotation (only its hash is stored server-side). `expires_in` is the
+    ACCESS token's lifetime in seconds.
+    """
 
     access_token: str
     token_type: str = "bearer"
+    refresh_token: str | None = None
+    expires_in: int | None = None
+
+
+class RefreshRequest(BaseModel):
+    """`POST /auth/refresh` body — exchange a refresh token for a new session pair."""
+
+    refresh_token: str = Field(min_length=1, max_length=512)
+
+
+class LogoutRequest(BaseModel):
+    """`POST /auth/logout` body — revoke a refresh token (ends the revocable leg)."""
+
+    refresh_token: str = Field(min_length=1, max_length=512)
 
 
 class UserOut(BaseModel):

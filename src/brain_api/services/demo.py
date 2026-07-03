@@ -9,57 +9,26 @@ is no shared limiter backend in play).
 tenant, touch entitlements, or call Stripe (CONTRACTS.md §0.4 / §4.1).
 """
 
-import threading
-import time
-from collections import defaultdict, deque
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
 from brain_api.core.logging import get_logger
+from brain_api.core.ratelimit import SlidingWindowLimiter
 from brain_api.models import DemoRequest
 from brain_api.schemas.demo import DemoRequestCreate
 
 logger = get_logger(__name__)
 
-# Sliding window length for the per-IP limit.
-_WINDOW_SECONDS = 60.0
-
-# client IP -> monotonic timestamps of recent allowed hits within the window.
-# Module-level (per-process) state; this resets on restart, which is fine for a
-# best-effort anti-spam control.
-_hits: dict[str, deque[float]] = defaultdict(deque)
-# Guards `_hits` against concurrent access (FastAPI may serve requests on threads).
-_lock = threading.Lock()
+_limiter = SlidingWindowLimiter("demo", lambda: get_settings().DEMO_RATE_LIMIT_PER_MIN)
 
 
 def check_rate_limit(client_ip: str) -> bool:
     """Return True if `client_ip` is under the per-minute limit, else False.
 
     Allows up to `Settings.DEMO_RATE_LIMIT_PER_MIN` requests per 60s sliding window per
-    IP. FAIL-OPEN by contract: any unexpected error returns True (allow) rather than
-    raising — the limiter must never break lead capture.
+    IP (core/ratelimit.py; fail-open — the limiter must never break lead capture).
     """
-    try:
-        limit = get_settings().DEMO_RATE_LIMIT_PER_MIN
-        # A non-positive limit disables throttling (treat as unlimited / allow).
-        if limit <= 0:
-            return True
-
-        now = time.monotonic()
-        cutoff = now - _WINDOW_SECONDS
-        with _lock:
-            bucket = _hits[client_ip]
-            # Drop timestamps that have aged out of the window.
-            while bucket and bucket[0] <= cutoff:
-                bucket.popleft()
-            if len(bucket) >= limit:
-                return False
-            bucket.append(now)
-            return True
-    except Exception:  # noqa: BLE001 - fail-open: never break the request path.
-        logger.warning("demo_rate_limit_failopen")
-        return True
+    return _limiter.allow(client_ip)
 
 
 async def create_demo_request(session: AsyncSession, payload: DemoRequestCreate) -> DemoRequest:

@@ -6,9 +6,11 @@ future round — there is NO Stripe call to answer a read.
 
 Extended beyond the base skill shape with explicit product-access flags
 (`precheck_enabled` / `secretaria_enabled`) which the portal uses to show/link products.
-`addons` / `limits` / `usage` are JSON scaffolds (empty for the MVP); mutate them with
-`flag_modified` when the billing recompute lands, or SQLAlchemy won't persist in-place
-JSON edits.
+`addons` and `limits` carry the formalized keysets declared in `services/catalog.py`
+(add-on id -> bool; limit key -> int), materialized by admin PATCH today and by the
+Stripe webhook recompute in the billing round; `usage` stays a scaffold until metering.
+Mutate JSON columns by whole-dict reassignment (or `flag_modified`), or SQLAlchemy won't
+persist in-place edits.
 """
 
 import uuid

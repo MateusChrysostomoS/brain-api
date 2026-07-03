@@ -27,7 +27,10 @@ class ProductsOut(BaseModel):
 class EntitlementOut(BaseModel):
     """`GET /entitlements` payload — resolved entitlement state for one tenant.
 
-    `addons` / `limits` / `usage` are JSON scaffolds (empty `{}` for the MVP). No
+    `addons` / `limits` carry the FULL formalized keysets from `services/catalog.py`
+    (every add-on id -> bool; every limit key -> int), normalized through the catalog so
+    even a pre-catalog row reads as a complete shape. `secretaria_tier` is derived from
+    the plan (additive field; the frontend's four consumed fields are unchanged). No
     secrets and no plan flags ever live in the JWT; this is the source of truth the
     frontend `getEntitlements()` consumes.
     """
@@ -38,6 +41,7 @@ class EntitlementOut(BaseModel):
     clinic_name: str
     products: ProductsOut
     plan: str
+    secretaria_tier: str | None = None
     status: str
     addons: dict = Field(default_factory=dict)
     limits: dict = Field(default_factory=dict)

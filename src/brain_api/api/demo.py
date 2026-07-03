@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
+from brain_api.core.ratelimit import client_ip as _client_ip
 from brain_api.schemas.demo import DemoRequestConfirmation, DemoRequestCreate
 from brain_api.services.demo import check_rate_limit, create_demo_request
 
@@ -24,20 +25,6 @@ router = APIRouter()
 
 # Fixed confirmation copy shown to every accepted lead (CONTRACTS.md §4.1).
 _CONFIRMATION_MESSAGE = "Recebemos seu pedido! Nossa equipe entra em contato em até 1 dia útil."
-
-
-def _client_ip(request: Request) -> str:
-    """Best-effort client IP for the per-IP limiter.
-
-    The service runs behind nginx, so prefer the first hop of `X-Forwarded-For`
-    (the original client) and fall back to the direct peer.
-    """
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        first = forwarded.split(",")[0].strip()
-        if first:
-            return first
-    return request.client.host if request.client else "unknown"
 
 
 @router.post(

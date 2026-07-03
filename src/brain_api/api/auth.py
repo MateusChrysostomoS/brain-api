@@ -11,25 +11,63 @@ logs only a stable `user_id` reference.
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.api.deps import Principal, get_current_principal
+from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
+from brain_api.core.ratelimit import SlidingWindowLimiter, client_ip
 from brain_api.core.security import create_access_token
+from brain_api.models import User
 from brain_api.schemas.auth import (
     LoginRequest,
+    LogoutRequest,
     MeResponse,
+    RefreshRequest,
     TenantOut,
     TokenResponse,
     UserOut,
 )
-from brain_api.services.auth import authenticate, get_tenant, get_user
+from brain_api.services.auth import (
+    authenticate,
+    get_tenant,
+    get_user,
+    issue_refresh_token,
+    revoke_refresh_token,
+    rotate_refresh_token,
+)
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/auth")
+
+# One bucket for the credential-bearing endpoints (login + refresh) — blunts credential
+# stuffing / token brute force. In-process + fail-open per CONTRACTS.md §5.
+_limiter = SlidingWindowLimiter("auth", lambda: get_settings().AUTH_RATE_LIMIT_PER_MIN)
+
+
+def _check_auth_rate_limit(request: Request) -> None:
+    """429 when the client IP exceeds the per-minute auth budget (fail-open inside)."""
+    if not _limiter.allow(client_ip(request)):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many attempts. Try again in a minute.",
+        )
+
+
+def _session_pair(user: User, refresh_token: str) -> TokenResponse:
+    """Assemble the access+refresh response for a (re)authenticated user."""
+    return TokenResponse(
+        access_token=create_access_token(
+            sub=str(user.id),
+            tenant_id=str(user.tenant_id) if user.tenant_id else None,
+            role=user.role,
+        ),
+        refresh_token=refresh_token,
+        expires_in=get_settings().ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
 
 
 @router.post(
@@ -40,13 +78,16 @@ router = APIRouter(prefix="/auth")
     responses={
         401: {"description": "Unknown email or bad password."},
         422: {"description": "Malformed email or password longer than 72 bytes."},
+        429: {"description": "Rate limited (per-IP auth budget)."},
     },
 )
 async def login(
     payload: LoginRequest,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> TokenResponse:
-    """Authenticate the credentials and mint a short-lived access token."""
+    """Authenticate the credentials and mint the access + refresh session pair."""
+    _check_auth_rate_limit(request)
     user = await authenticate(session, payload.email, payload.password)
     if user is None:
         # Same message for unknown email and bad password — do not distinguish.
@@ -54,14 +95,53 @@ async def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciais inválidas",
         )
-    token = create_access_token(
-        sub=str(user.id),
-        tenant_id=str(user.tenant_id) if user.tenant_id else None,
-        role=user.role,
-    )
-    # Stable reference only — never log the email, password or token.
+    refresh = await issue_refresh_token(session, user.id)
+    # Stable reference only — never log the email, password or either token.
     logger.info("login", user_id=str(user.id))
-    return TokenResponse(access_token=token)
+    return _session_pair(user, refresh)
+
+
+@router.post(
+    "/refresh",
+    response_model=TokenResponse,
+    summary="Refresh the session",
+    description="Rotate a refresh token: the presented one is revoked, a new pair is issued.",
+    responses={
+        401: {"description": "Unknown, expired, revoked (or reused) refresh token."},
+        429: {"description": "Rate limited (per-IP auth budget)."},
+    },
+)
+async def refresh(
+    payload: RefreshRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> TokenResponse:
+    """Rotate-on-use: one refresh token yields exactly one successor. Reuse of an
+    already-rotated token revokes the user's whole refresh family (theft signal)."""
+    _check_auth_rate_limit(request)
+    result = await rotate_refresh_token(session, payload.refresh_token)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+        )
+    logger.info("token_refreshed", user_id=str(result.user.id))
+    return _session_pair(result.user, result.new_refresh_token)
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Log out",
+    description="Revoke a refresh token. Always 204 (no token-existence oracle).",
+)
+async def logout(
+    payload: LogoutRequest,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """End the revocable leg. The short-lived access token simply expires."""
+    await revoke_refresh_token(session, payload.refresh_token)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(

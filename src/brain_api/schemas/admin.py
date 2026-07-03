@@ -13,7 +13,9 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+
+from brain_api.services import catalog
 
 
 class Page[T](BaseModel):
@@ -87,11 +89,14 @@ class AdminTenantDetailOut(BaseModel):
 
 
 class EntitlementPatchIn(BaseModel):
-    """Partial update of a tenant's entitlement (admin manual activation, MVP).
+    """Partial update of a tenant's entitlement (admin manual activation, pre-Stripe).
 
-    Every field is optional — only those present are applied. This is how PreCheck or
-    SecretarIA is switched on for a tenant before Stripe exists. `addons`/`limits` accept
-    a full replacement object when present.
+    Every field is optional — only those present are applied. This is how a product/plan
+    is switched on for a tenant before Stripe exists. All values are validated against
+    the catalog (`services/catalog.py`): `plan` must be an assignable catalog plan,
+    `addons` keys must be known add-on ids (bool values), `limits` keys must be known
+    limit keys (non-negative ints). Setting `plan` re-materializes products/addons/limits
+    from the catalog; explicit fields in the same patch override that (see the service).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -100,8 +105,43 @@ class EntitlementPatchIn(BaseModel):
     secretaria_enabled: bool | None = None
     plan: str | None = Field(default=None, max_length=32)
     status: Literal["active", "trialing", "past_due", "canceled", "inactive"] | None = None
-    addons: dict | None = None
-    limits: dict | None = None
+    addons: dict[str, bool] | None = None
+    limits: dict[str, int] | None = None
+
+    @field_validator("plan")
+    @classmethod
+    def _plan_in_catalog(cls, v: str | None) -> str | None:
+        """Only assignable catalog plans may be written (legacy aliases normalize).
+
+        Reserved slots (e.g. `secretaria_bronze_2`, available=False) are rejected until
+        product defines them — no tenant may be put on a plan with no feature set.
+        """
+        if v is None:
+            return v
+        plan = catalog.get_plan(v)
+        if plan is None or plan.id not in catalog.ASSIGNABLE_PLAN_IDS:
+            raise ValueError(
+                f"unknown or unassignable plan {v!r}; "
+                f"assignable: {sorted(catalog.ASSIGNABLE_PLAN_IDS)}"
+            )
+        return plan.id
+
+    @field_validator("addons")
+    @classmethod
+    def _addon_keys_in_catalog(cls, v: dict[str, bool] | None) -> dict[str, bool] | None:
+        if v is not None and (unknown := set(v) - catalog.ADDON_IDS):
+            raise ValueError(f"unknown addon ids: {sorted(unknown)}")
+        return v
+
+    @field_validator("limits")
+    @classmethod
+    def _limit_keys_in_catalog(cls, v: dict[str, int] | None) -> dict[str, int] | None:
+        if v is not None:
+            if unknown := set(v) - catalog.LIMIT_KEYS:
+                raise ValueError(f"unknown limit keys: {sorted(unknown)}")
+            if negative := [k for k, n in v.items() if n < 0]:
+                raise ValueError(f"limits must be >= 0: {sorted(negative)}")
+        return v
 
 
 # --- Users -----------------------------------------------------------------
@@ -132,10 +172,20 @@ class AdminUserCreateIn(BaseModel):
 
     email: EmailStr = Field(max_length=320)
     name: str = Field(min_length=1, max_length=255)
-    password: str = Field(min_length=1, max_length=72)
+    # Policy: 8–72 chars (bcrypt's 72-byte ceiling), at least one letter and one digit.
+    password: str = Field(min_length=8, max_length=72)
     role: Literal["admin", "tenant_owner", "tenant_staff"]
     # Required for tenant roles; must be absent for a platform admin (validated below).
     tenant_id: UUID | None = None
+
+    @field_validator("password")
+    @classmethod
+    def _password_policy(cls, v: str) -> str:
+        """Minimum composition: length is enforced by the Field; require letter + digit
+        so a purely-numeric or purely-alphabetic password is rejected (422)."""
+        if not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
+            raise ValueError("password must contain at least one letter and one digit")
+        return v
 
     @model_validator(mode="after")
     def _check_role_tenant_consistency(self) -> "AdminUserCreateIn":

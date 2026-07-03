@@ -365,8 +365,9 @@ async def test_admin_entitlement_patch_toggles_products(client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["secretaria_enabled"] is True
-    assert body["precheck_enabled"] is True  # untouched field preserved
-    assert body["plan"] == "brain-completo"
+    assert body["precheck_enabled"] is True  # the combo plan turns PreCheck on
+    # Legacy plan strings normalize to their canonical catalog id on write.
+    assert body["plan"] == "complete_clinic_combo"
 
     # Persisted: a fresh read reflects it, and never leaks an _encrypted field.
     read = (

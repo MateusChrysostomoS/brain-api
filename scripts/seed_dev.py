@@ -18,6 +18,7 @@ from brain_api.core.logging import get_logger, setup_logging
 from brain_api.core.security import hash_password
 from brain_api.models import Entitlement, PrecheckAccountLink, Tenant, User
 from brain_api.models.user import ROLE_TENANT_OWNER
+from brain_api.services import catalog
 
 setup_logging()
 logger = get_logger(__name__)
@@ -47,13 +48,16 @@ async def seed() -> None:
                 role=ROLE_TENANT_OWNER,
             )
         )
+        # Seed on the catalog's combo plan with materialized addons/limits — the same
+        # state an admin PATCH { "plan": "complete_clinic_combo" } would write. Rows
+        # from older seeds keep working via the "brain-completo" legacy alias.
+        state = catalog.compute_entitlement_state(catalog.PLAN_COMPLETE_CLINIC_COMBO)
         session.add(
             Entitlement(
                 tenant_id=tenant.id,
-                precheck_enabled=True,
-                secretaria_enabled=True,
-                plan="brain-completo",
+                plan=catalog.PLAN_COMPLETE_CLINIC_COMBO,
                 status="active",
+                **state,
             )
         )
 

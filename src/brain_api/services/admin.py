@@ -29,6 +29,7 @@ from brain_api.schemas.admin import (
     EntitlementPatchIn,
     ImpersonationTokenOut,
 )
+from brain_api.services import catalog
 
 
 def _entitlement_out(tenant_id: UUID, ent: Entitlement | None) -> EntitlementAdminOut:
@@ -139,11 +140,18 @@ async def get_entitlement(session: AsyncSession, tenant_id: UUID) -> Entitlement
 async def update_entitlement(
     session: AsyncSession, tenant_id: UUID, patch: EntitlementPatchIn
 ) -> EntitlementAdminOut:
-    """Apply a partial entitlement update (manual product activation, MVP).
+    """Apply a partial entitlement update, materialized through the catalog (pre-Stripe).
 
     Upserts: a tenant with no entitlement row yet gets one created. Only the fields the
     client actually sent are applied (`exclude_unset`); a `null` for a non-nullable
     column is ignored rather than written.
+
+    Materialization order (CONTRACTS.md §11): setting `plan` first rewrites the product
+    flags, `addons` and `limits` from the catalog (`compute_entitlement_state` — the same
+    derivation the future Stripe webhook recompute uses); explicit fields in the SAME
+    patch then override that. A patched `addons` is normalized to the full catalog keyset
+    and `limits` recomputed from it; an explicit `limits` finally merges on top as a
+    manual override.
     """
     if await session.get(Tenant, tenant_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Tenant not found")
@@ -153,11 +161,35 @@ async def update_entitlement(
         ent = Entitlement(tenant_id=tenant_id)
         session.add(ent)
 
-    for key, value in patch.model_dump(exclude_unset=True).items():
-        if value is not None:
-            # Reassigning the whole dict (addons/limits) is what triggers change
-            # tracking; in-place edits to a JSON column would not persist.
-            setattr(ent, key, value)
+    data = patch.model_dump(exclude_unset=True)
+
+    if data.get("plan") is not None:
+        # Schema validation guarantees an assignable catalog plan (aliases normalized).
+        ent.plan = data["plan"]
+        state = catalog.compute_entitlement_state(ent.plan)
+        ent.precheck_enabled = state["precheck_enabled"]
+        ent.secretaria_enabled = state["secretaria_enabled"]
+        # Whole-dict reassignment is what triggers JSON change tracking; in-place edits
+        # to a JSON column would not persist without flag_modified.
+        ent.addons = state["addons"]
+        ent.limits = state["limits"]
+
+    if data.get("status") is not None:
+        ent.status = data["status"]
+    if data.get("precheck_enabled") is not None:
+        ent.precheck_enabled = data["precheck_enabled"]
+    if data.get("secretaria_enabled") is not None:
+        ent.secretaria_enabled = data["secretaria_enabled"]
+
+    if data.get("addons") is not None:
+        # Normalize to the full keyset: plan defaults, then the patched flags on top.
+        ent.addons = {**catalog.default_addons(ent.plan), **data["addons"]}
+        ent.limits = catalog.compute_limits(ent.plan, ent.addons)
+
+    if data.get("limits") is not None:
+        # Manual override merges over the (re)computed limits — an admin can raise one
+        # cap without restating the rest.
+        ent.limits = {**catalog.compute_limits(ent.plan, ent.addons or {}), **data["limits"]}
 
     await session.commit()
     await session.refresh(ent)

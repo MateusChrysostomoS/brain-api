@@ -9,12 +9,56 @@ not Stripe. This module performs a pure local DB read — no network, no Stripe 
 """
 
 from dataclasses import dataclass
+from typing import Protocol
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.models import Entitlement, Tenant
 from brain_api.schemas.entitlement import EntitlementOut, ProductsOut
+from brain_api.services import catalog
+
+#: Subscription states under which any gate may pass (mirrors `check_quota`).
+ACTIVE_STATUSES = ("active", "trialing")
+
+
+class EntitlementLike(Protocol):
+    """The three fields `is_entitled` reads — satisfied by both the `Entitlement` ORM row
+    and the resolved `EntitlementOut`, so callers on either side of the API (brain-api
+    gates now, secretarIA's plugin gates later) share one semantics."""
+
+    plan: str
+    status: str
+    addons: dict
+
+
+def is_entitled(ent: EntitlementLike, key: str) -> bool:
+    """THE single yes/no gate: is this tenant allowed to use `key`, right now?
+
+    `key` is either an add-on id (catalog `ADDON_IDS`) or a secretarIA tier
+    (catalog `SECRETARIA_TIERS`). Pure and in-process — no network, no Stripe.
+
+    Rules (fail-closed throughout):
+    - status not active/trialing -> False, whatever was bought.
+    - add-on -> ON in `ent.addons`, OR implied by the plan (a combo is a plan that
+      implies add-ons — an unmaterialized row still answers correctly).
+    - tier   -> the plan's tier ranks >= the asked tier (tiers are cumulative:
+      bronze_1 includes everything ferro does). Unknown/legacy plans rank below all.
+    - a `key` that is neither an add-on nor a tier is a programmer error -> ValueError
+      (loud, so a typo'd gate id can't silently deny — or grant — forever).
+    """
+    if key in catalog.ADDON_IDS:
+        if ent.status not in ACTIVE_STATUSES:
+            return False
+        if (ent.addons or {}).get(key) is True:
+            return True
+        plan = catalog.get_plan(ent.plan)
+        return plan is not None and key in plan.included_addons
+    if key in catalog.SECRETARIA_TIERS:
+        if ent.status not in ACTIVE_STATUSES:
+            return False
+        return catalog.tier_rank(catalog.plan_tier(ent.plan)) >= catalog.tier_rank(key)
+    raise ValueError(f"unknown_entitlement_key:{key}")
 
 
 async def resolve_entitlement(session: AsyncSession, tenant_id: UUID) -> EntitlementOut:
@@ -41,13 +85,20 @@ async def resolve_entitlement(session: AsyncSession, tenant_id: UUID) -> Entitle
             tenant_id=tenant_id,
             clinic_name=clinic_name,
             products=ProductsOut(precheck=False, secretaria=False),
-            plan="free",
+            plan=catalog.PLAN_FREE,
+            secretaria_tier=None,
             status="inactive",
-            addons={},
-            limits={},
+            addons=catalog.default_addons(catalog.PLAN_FREE),
+            limits=catalog.compute_limits(catalog.PLAN_FREE),
             usage={},
         )
 
+    # Normalize through the catalog: the full formalized keysets, with whatever the row
+    # materialized layered on top — a pre-catalog row (empty `{}` scaffolds) still reads
+    # as a coherent, complete shape. Product flags stay the row's own columns (they can
+    # legitimately diverge from the plan via an explicit admin override).
+    addons = {**catalog.default_addons(ent.plan), **(ent.addons or {})}
+    limits = {**catalog.compute_limits(ent.plan, addons), **(ent.limits or {})}
     return EntitlementOut(
         tenant_id=tenant_id,
         clinic_name=clinic_name,
@@ -56,9 +107,10 @@ async def resolve_entitlement(session: AsyncSession, tenant_id: UUID) -> Entitle
             secretaria=ent.secretaria_enabled,
         ),
         plan=ent.plan,
+        secretaria_tier=catalog.plan_tier(ent.plan),
         status=ent.status,
-        addons=ent.addons or {},
-        limits=ent.limits or {},
+        addons=addons,
+        limits=limits,
         usage=ent.usage or {},
     )
 

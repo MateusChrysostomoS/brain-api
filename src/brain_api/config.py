@@ -29,9 +29,25 @@ class Settings(BaseSettings):
     # HS256 signing key, shared with precheck (shared mesh secret). Generate with
     # `openssl rand -hex 64`. Empty in dev fails closed at token issue/verify time.
     SECRET_KEY: str = ""
+    # Previous signing key, accepted for VERIFICATION ONLY during a rotation window
+    # (tokens are always minted with SECRET_KEY). Set to the old key while rotating,
+    # then clear once every token minted with it has expired. See docs/key-rotation.md.
+    SECRET_KEY_PREVIOUS: str = ""
     # Access-token lifetime in minutes (keep short; this token cannot be revoked
-    # before it expires).
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    # before it expires — the refresh token below is the revocable long-lived leg).
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    # Refresh-token lifetime in days. Stored HASHED server-side (revocable) and
+    # rotated on every use; a presented-again (already-rotated) token revokes the
+    # user's whole refresh family (reuse = theft signal).
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 14
+    # Max POST /auth/token + /auth/refresh attempts per client IP per minute
+    # (in-process sliding window, same machinery as the demo limiter; fail-open).
+    # 0 disables (hermetic tests set 0; production keeps the default).
+    AUTH_RATE_LIMIT_PER_MIN: int = 10
+    # Lifetime of the tenant-scoped secretarIA HUB token minted by
+    # POST /doctor/secretaria/hub-token (scope="secretaria_hub"; NOT a user JWT).
+    # secretarIA introspects it against /internal/secretaria/hub-token/verify.
+    HUB_TOKEN_EXPIRE_MINUTES: int = 60
     # Lifetime of the PreCheck-compatible SSO handoff token (POST /sso/precheck/token).
     # This token BECOMES the PreCheck session (the ported dashboard stores it as its
     # `precheck_token` and uses it for every PreCheck-backend call), so its lifetime is
@@ -76,6 +92,13 @@ class Settings(BaseSettings):
     PRECHECK_BASE_URL: str = ""
     # Timeout (seconds) for the precheck proxy httpx client.
     PRECHECK_TIMEOUT_SECONDS: float = 10.0
+    # PreCheck's internal/n8n token (X-Internal-Token), used ONLY for the LGPD privacy
+    # orchestration (services/privacy.py -> PreCheck POST /api/v1/internal/privacy/*,
+    # CONTRACTS.md §14). A DIFFERENT mechanism from the forwarded-brain-JWT proxy above:
+    # this is a service credential, not the caller's token. Empty here => the precheck
+    # leg of an erasure/export reports "skipped_unconfigured" (the rest of the
+    # orchestration still runs). NEVER logged.
+    PRECHECK_INTERNAL_TOKEN: str = ""
     # Base URL of the (internal-only) secretaria service, e.g. http://secretaria:8000 on
     # the internal network. Used by the /doctor appointments + patients data calls
     # (services/secretaria_internal.py, with X-Internal-Api-Key) AND the admin connection
@@ -91,6 +114,10 @@ class Settings(BaseSettings):
     # to an empty page (no upstream call). A random machine secret — NEVER logged. This is
     # a DIFFERENT mechanism from SECRETARIA_ADMIN_TOKEN below (X-Admin-Token / /admin/*).
     SECRETARIA_API_KEY: str = ""
+    # Previous shared key, accepted for VERIFICATION ONLY on brain-api's own inbound
+    # /internal/* surface during a rotation window (outbound calls always send the
+    # current SECRETARIA_API_KEY). See docs/key-rotation.md.
+    SECRETARIA_API_KEY_PREVIOUS: str = ""
 
     # --- secretaria admin (cross-API admin connection into secretaria's /admin/*) ---
     # secretaria has NO user/role system; its only privileged surface is `/admin/*`, guarded
@@ -105,6 +132,25 @@ class Settings(BaseSettings):
     SECRETARIA_ADMIN_TOKEN: str = ""
     # Timeout (seconds) for the secretaria admin httpx client.
     SECRETARIA_TIMEOUT_SECONDS: float = 10.0
+
+    # --- Stripe billing (stripe-billing-entitlements skill) ---
+    # Secret API key (sk_test_... / sk_live_...). Empty disables the billing endpoints
+    # (503 billing_not_configured) — reads NEVER call Stripe either way.
+    STRIPE_SECRET_KEY: str = ""
+    # Webhook endpoint signing secret (whsec_...) for POST /webhooks/stripe. Empty
+    # fails CLOSED: the webhook rejects every delivery (400).
+    STRIPE_WEBHOOK_SECRET: str = ""
+    # JSON object mapping catalog ids (plans AND add-ons, services/catalog.py) to
+    # Stripe price ids, e.g. {"secretaria_ferro": "price_123", "ehr": "price_456"}.
+    # Per-environment (test vs live prices); the catalog itself never hardcodes one.
+    STRIPE_PRICE_MAP: str = "{}"
+    # Where Stripe Checkout / the Billing Portal send the browser back to.
+    STRIPE_CHECKOUT_SUCCESS_URL: str = "http://localhost:3000/app?checkout=success"
+    STRIPE_CHECKOUT_CANCEL_URL: str = "http://localhost:3000/app?checkout=cancelled"
+    STRIPE_PORTAL_RETURN_URL: str = "http://localhost:3000/app"
+    # Stripe API base + client timeout (base overridable only for local stubs).
+    STRIPE_API_BASE: str = "https://api.stripe.com"
+    STRIPE_TIMEOUT_SECONDS: float = 15.0
 
     @property
     def cors_origins(self) -> list[str]:

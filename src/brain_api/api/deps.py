@@ -28,6 +28,10 @@ def get_current_principal(authorization: str | None = Header(default=None)) -> P
     claims = decode_token(authorization[7:].strip())
     if claims is None or "sub" not in claims:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
+    if claims.get("scope"):
+        # Purpose-scoped service tokens (e.g. the secretarIA hub token) are NOT user
+        # sessions — they must never authenticate a browser-facing route.
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
     tid = claims.get("tenant_id")
     return Principal(
         user_id=claims["sub"],

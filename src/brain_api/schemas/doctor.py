@@ -22,3 +22,17 @@ class DoctorMeOut(BaseModel):
     user: UserOut
     tenant: TenantOut
     entitlements: EntitlementOut
+
+
+class HubTokenOut(BaseModel):
+    """`POST /doctor/secretaria/hub-token` — the minted hub session.
+
+    `hub_token` is purpose-scoped (`scope=secretaria_hub`, tenant in `sub`) and is NOT
+    a brain user JWT: brain-api's own auth rejects it, and secretarIA accepts it only
+    after live introspection. Deliberately not named `access_token` so no client ever
+    stores it in the brain-session slot.
+    """
+
+    hub_token: str
+    token_type: str = "bearer"
+    expires_in: int

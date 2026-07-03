@@ -11,6 +11,7 @@ from brain_api.models.privacy_request import PrivacyRequest
 from brain_api.models.processed_stripe_event import ProcessedStripeEvent
 from brain_api.models.refresh_token import RefreshToken
 from brain_api.models.tenant import Tenant
+from brain_api.models.usage_event import UsageEvent
 from brain_api.models.user import User
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "ProcessedStripeEvent",
     "RefreshToken",
     "Tenant",
+    "UsageEvent",
     "User",
 ]

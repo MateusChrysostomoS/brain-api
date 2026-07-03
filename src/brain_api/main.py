@@ -18,6 +18,7 @@ from brain_api.api import (
     doctor,
     entitlements,
     health,
+    internal,
     privacy,
     sso,
 )
@@ -62,6 +63,7 @@ def create_app() -> FastAPI:
     app.include_router(privacy.router, tags=["admin", "privacy"])
     app.include_router(doctor.router, tags=["doctor"])
     app.include_router(billing.router, tags=["billing"])
+    app.include_router(internal.router)
     return app
 
 

@@ -24,7 +24,7 @@ from tests.test_rbac import OWNER_A_EMAIL, OWNER_A_PASSWORD, _bearer, _token
 
 CONFIGURED = SimpleNamespace(
     SECRETARIA_BASE_URL="http://secretaria:8000",
-    INTERNAL_API_KEY="match-key",
+    SECRETARIA_API_KEY="match-key",
     SECRETARIA_TIMEOUT_SECONDS=10.0,
 )
 

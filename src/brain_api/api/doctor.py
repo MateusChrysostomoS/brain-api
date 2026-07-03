@@ -12,15 +12,18 @@ tenant; they degrade to an empty page when the secretaria mesh is unconfigured l
 `/doctor/anamneses` is proxied to PreCheck (which re-validates the forwarded brain JWT).
 """
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.api.deps import Principal, require_doctor
+from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
-from brain_api.schemas.doctor import DoctorMeOut
+from brain_api.core.security import create_hub_token
+from brain_api.schemas.doctor import DoctorMeOut, HubTokenOut
 from brain_api.services import precheck_client, secretaria_internal
 from brain_api.services.doctor import get_doctor_me
+from brain_api.services.entitlements import ACTIVE_STATUSES, resolve_entitlement
 
 logger = get_logger(__name__)
 
@@ -70,6 +73,40 @@ async def patients(
     logger.info("doctor_patients", tenant_id=str(principal.tenant_id))
     return await secretaria_internal.list_patients(
         principal.tenant_id, skip=skip, limit=limit
+    )
+
+
+@router.post(
+    "/secretaria/hub-token",
+    response_model=HubTokenOut,
+    summary="Mint a secretarIA hub session for this tenant",
+    responses={
+        403: {"description": "Tenant not entitled to secretarIA (or admin token)."},
+    },
+)
+async def secretaria_hub_token(
+    principal: Principal = Depends(require_doctor),
+    session: AsyncSession = Depends(get_session),
+) -> HubTokenOut:
+    """Mint the tenant-scoped, purpose-scoped token the portal presents to secretarIA's
+    doctor hub (NOT the doctor's own JWT — no user JWT ever reaches secretarIA).
+
+    Entitlement-gated like the PreCheck SSO mint: the tenant must be active/trialing
+    AND have secretaria enabled, else 403 `secretaria_not_entitled`. The gate is
+    re-checked LIVE on every hub request anyway (secretarIA introspects the token via
+    /internal/secretaria/hub-token/verify), so a cancellation mid-session locks the hub
+    within one request. The minted token is never logged.
+    """
+    ent = await resolve_entitlement(session, principal.tenant_id)
+    if ent.status not in ACTIVE_STATUSES or not ent.products.secretaria:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "secretaria_not_entitled")
+    token = create_hub_token(
+        tenant_id=str(principal.tenant_id), actor_user_id=principal.user_id
+    )
+    logger.info("hub_token_minted", tenant_id=str(principal.tenant_id))
+    return HubTokenOut(
+        hub_token=token,
+        expires_in=get_settings().HUB_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 

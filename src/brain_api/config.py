@@ -65,6 +65,19 @@ class Settings(BaseSettings):
     # Max POST /demo-requests per client IP per minute (basic, in-process).
     DEMO_RATE_LIMIT_PER_MIN: int = 5
 
+    # --- Cold signup anti-spam (public checkout -> auto-provisioning, services/signup.py) ---
+    # Max requests per client IP per minute across the three /public/* signup routes
+    # (signup-intents, checkout-sessions, onboarding-status share ONE bucket — same
+    # in-process/fail-open SlidingWindowLimiter as demo/auth; no Redis).
+    SIGNUP_RATE_LIMIT_PER_MIN: int = 10
+    # Lifetime of the ONE-TIME onboarding token minted by GET /public/onboarding-status
+    # once a signup intent finishes provisioning. Short-lived: the browser is expected to
+    # redeem it via POST /auth/exchange-onboarding-token right away. Only its hash is
+    # stored (signup_intents.onboarding_token_hash); every poll before redemption mints a
+    # fresh one (rotates the hash), so an intercepted-but-unused token from an earlier
+    # poll stops working immediately.
+    ONBOARDING_TOKEN_EXPIRE_MINUTES: int = 15
+
     # --- Platform admin bootstrap (scripts/seed_admin.py) ---
     # Credentials for the single platform admin seeded into a fresh DB. The seed is
     # idempotent and reads ONLY from the environment — no admin password lives in code.
@@ -147,6 +160,12 @@ class Settings(BaseSettings):
     # Where Stripe Checkout / the Billing Portal send the browser back to.
     STRIPE_CHECKOUT_SUCCESS_URL: str = "http://localhost:3000/app?checkout=success"
     STRIPE_CHECKOUT_CANCEL_URL: str = "http://localhost:3000/app?checkout=cancelled"
+    # Cold-signup checkouts land on a PUBLIC onboarding page (the buyer has no session
+    # yet, so /app would bounce them to /login). Empty = fall back to the shared URLs
+    # above. The success URL should carry Stripe's {CHECKOUT_SESSION_ID} template so the
+    # page can poll GET /public/onboarding-status.
+    STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL: str = ""
+    STRIPE_SIGNUP_CHECKOUT_CANCEL_URL: str = ""
     STRIPE_PORTAL_RETURN_URL: str = "http://localhost:3000/app"
     # Stripe API base + client timeout (base overridable only for local stubs).
     STRIPE_API_BASE: str = "https://api.stripe.com"

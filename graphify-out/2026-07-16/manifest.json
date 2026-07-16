@@ -200,9 +200,9 @@
     "semantic_hash": ""
   },
   "src/brain_api/services/catalog.py": {
-    "mtime": 1784219866.6318161,
-    "ast_hash": "f5bd409b3ab23bbb00364c0e752a0f59",
-    "semantic_hash": ""
+    "mtime": 1782958831.8505142,
+    "ast_hash": "2739f9d3762bbf1d7659dd6baab98598",
+    "semantic_hash": "2739f9d3762bbf1d7659dd6baab98598"
   },
   "src/brain_api/services/demo.py": {
     "mtime": 1782961148.7520037,
@@ -335,8 +335,8 @@
     "semantic_hash": "6e1f5b7c12591e59adb3e252d0a25f70"
   },
   "src/brain_api/services/billing.py": {
-    "mtime": 1784219873.985439,
-    "ast_hash": "371dc84e7ccb4143626e58f193be1374",
+    "mtime": 1784216373.4336367,
+    "ast_hash": "9d2f6c7bfcb332526a75498e4039c34a",
     "semantic_hash": ""
   },
   "tests/test_auth_hardening.py": {
@@ -345,9 +345,9 @@
     "semantic_hash": "053d092e139234982c26c171b55b3720"
   },
   "tests/test_billing.py": {
-    "mtime": 1784219954.0271018,
-    "ast_hash": "f12c38c5ece2dcaf115e12e2bde9eee1",
-    "semantic_hash": ""
+    "mtime": 1782962431.6518462,
+    "ast_hash": "6b1695660f073dbc5b8119a1cc5caa85",
+    "semantic_hash": "6b1695660f073dbc5b8119a1cc5caa85"
   },
   "docs/key-rotation.md": {
     "mtime": 1782961865.4919636,

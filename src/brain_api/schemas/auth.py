@@ -8,7 +8,7 @@ not serialized.
 
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class LoginRequest(BaseModel):
@@ -77,3 +77,34 @@ class MeResponse(BaseModel):
 
     user: UserOut
     tenant: TenantOut | None
+
+
+class ExchangeOnboardingTokenIn(BaseModel):
+    """`POST /auth/exchange-onboarding-token` body — redeem the ONE-TIME token minted by
+    `GET /public/onboarding-status` for a real session pair (services/signup.py)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=1, max_length=512)
+
+
+class SetPasswordIn(BaseModel):
+    """`POST /auth/set-password` body — the caller replaces their OWN password.
+
+    Needed because a signup-provisioned tenant owner (services/signup.
+    provision_tenant_from_intent) starts on a random, never-communicated password; this
+    is the only way in. Same composition policy as admin-created users
+    (`schemas/admin.py` `AdminUserCreateIn`): 8-72 chars (bcrypt's ceiling), at least one
+    letter and one digit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    new_password: str = Field(min_length=8, max_length=72)
+
+    @field_validator("new_password")
+    @classmethod
+    def _password_policy(cls, v: str) -> str:
+        if not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
+            raise ValueError("password must contain at least one letter and one digit")
+        return v

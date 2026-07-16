@@ -57,9 +57,12 @@ PLAN_COMPLETE_CLINIC_COMBO = "complete_clinic_combo"
 
 #: Plan strings written before the catalog existed, resolved to their catalog plan so
 #: already-provisioned rows (e.g. the seeded demo clinic's "brain-completo") keep their
-#: tier/add-on semantics without a data migration.
+#: tier/add-on semantics without a data migration. Also covers external config: the
+#: deployed STRIPE_PRICE_MAP keys the secretarIA price as "secretaria_bronze" —
+#: normalized at parse time (services/billing._parse_price_map) to the real plan id.
 LEGACY_PLAN_ALIASES: dict[str, str] = {
     "brain-completo": PLAN_COMPLETE_CLINIC_COMBO,
+    "secretaria_bronze": PLAN_SECRETARIA_BRONZE_1,
 }
 
 

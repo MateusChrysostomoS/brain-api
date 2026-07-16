@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from fastapi import HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +21,7 @@ from brain_api.config import get_settings
 from brain_api.core.logging import get_logger
 from brain_api.core.security import (
     generate_refresh_token,
+    hash_password,
     hash_refresh_token,
     verify_password,
 )
@@ -53,6 +55,20 @@ async def get_tenant(session: AsyncSession, tenant_id: UUID) -> Tenant | None:
     return await session.scalar(select(Tenant).where(Tenant.id == tenant_id))
 
 
+async def set_password(session: AsyncSession, user_id: UUID, new_password: str) -> None:
+    """Overwrite the CALLER'S OWN password hash (`POST /auth/set-password`).
+
+    Needed because a signup-provisioned tenant owner (services/signup.py) starts on a
+    random, never-communicated password. 401 if the user row no longer exists — the same
+    failure mode `GET /auth/me` already handles for a valid token whose user was deleted.
+    """
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
+    user.password_hash = hash_password(new_password)
+    await session.commit()
+
+
 # --- Refresh tokens ---------------------------------------------------------
 
 
@@ -72,8 +88,7 @@ async def issue_refresh_token(session: AsyncSession, user_id: UUID) -> str:
         RefreshToken(
             user_id=user_id,
             token_hash=hash_refresh_token(raw),
-            expires_at=datetime.now(UTC)
-            + timedelta(days=get_settings().REFRESH_TOKEN_EXPIRE_DAYS),
+            expires_at=datetime.now(UTC) + timedelta(days=get_settings().REFRESH_TOKEN_EXPIRE_DAYS),
         )
     )
     await session.commit()

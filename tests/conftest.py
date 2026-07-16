@@ -13,6 +13,10 @@ os.environ.setdefault("APP_ENV", "dev")
 # The whole suite logs in dozens of times from one fake IP inside a minute; disable the
 # per-IP auth limiter by default (the rate-limit tests monkeypatch their own limit).
 os.environ.setdefault("AUTH_RATE_LIMIT_PER_MIN", "0")
+# Same reasoning for the shared /public/* signup limiter (tests/test_signup.py exercises
+# all three routes, sharing ONE bucket, many times per run); the dedicated rate-limit
+# test monkeypatches its own limiter instance instead of relying on this setting.
+os.environ.setdefault("SIGNUP_RATE_LIMIT_PER_MIN", "0")
 
 # Mesh upstreams are UNSET in tests: the proxy / internal-data clients then degrade to an
 # empty page with no network. Force-empty here (real env beats the .env file in

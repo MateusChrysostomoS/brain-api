@@ -20,6 +20,13 @@ webhook route verifies the signature (pure HMAC) and dedupes on `event.id`
 has no Redis/arq (CONTRACTS.md §5), so the apply runs in-request — acceptable because
 it is a handful of local writes, not network work; the skill's "enqueue" guidance
 targets recomputes that call out.
+
+Cold-signup checkouts (services/signup.py) ride the SAME `checkout.session.completed`
+event but carry NO tenant yet: `apply_stripe_event` recognizes them by
+`metadata.kind == "signup_intent"` and routes to `services.signup.
+provision_tenant_from_intent` INSTEAD of the tenant-linking logic below (which would
+otherwise misread the intent id riding `client_reference_id` as a tenant id). Every other
+event — including an "existing_tenant" checkout — is completely unaffected.
 """
 
 import json
@@ -36,7 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
 from brain_api.core.logging import get_logger
-from brain_api.models import Entitlement, ProcessedStripeEvent
+from brain_api.models import Entitlement, ProcessedStripeEvent, SignupIntent
 from brain_api.services import catalog
 
 logger = get_logger(__name__)
@@ -58,17 +65,22 @@ _STATUS_MAP = {
 @lru_cache(maxsize=8)
 def _parse_price_map(raw: str) -> dict[str, str]:
     """Parse STRIPE_PRICE_MAP (keyed by the raw string so a settings monkeypatch in
-    tests gets its own cache slot). Unknown catalog ids are rejected loudly at parse
+    tests gets its own cache slot). Keys are normalized through the catalog's
+    LEGACY_PLAN_ALIASES (the deployed map says "secretaria_bronze" for what the catalog
+    calls secretaria_bronze_1), then unknown catalog ids are rejected loudly at parse
     time — a typo'd map must not silently unsell a product."""
     try:
         mapping = json.loads(raw or "{}")
     except json.JSONDecodeError as exc:
         raise ValueError(f"STRIPE_PRICE_MAP is not valid JSON: {exc}") from exc
+    normalized = {
+        catalog.LEGACY_PLAN_ALIASES.get(str(k), str(k)): str(v) for k, v in mapping.items()
+    }
     known = catalog.PLAN_IDS | catalog.ADDON_IDS
-    unknown = set(mapping) - known
+    unknown = set(normalized) - known
     if unknown:
         raise ValueError(f"STRIPE_PRICE_MAP has unknown catalog ids: {sorted(unknown)}")
-    return {str(k): str(v) for k, v in mapping.items()}
+    return normalized
 
 
 def price_id_for(catalog_id: str) -> str | None:
@@ -133,17 +145,13 @@ def validate_selection(plan_id: str, addon_ids: list[str] | None) -> CheckoutSel
     addons: list[str] = []
     for addon_id in addon_ids or []:
         if addon_id not in catalog.ADDON_IDS:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, f"unknown_addon:{addon_id}"
-            )
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"unknown_addon:{addon_id}")
         if addon_id not in plan.included_addons and addon_id not in addons:
             addons.append(addon_id)
 
     for cid in (plan.id, *addons):
         if price_id_for(cid) is None:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, f"price_not_configured:{cid}"
-            )
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"price_not_configured:{cid}")
     return CheckoutSelection(plan_id=plan.id, addon_ids=tuple(addons))
 
 
@@ -164,6 +172,7 @@ async def create_checkout_session(
         "success_url": settings.STRIPE_CHECKOUT_SUCCESS_URL,
         "cancel_url": settings.STRIPE_CHECKOUT_CANCEL_URL,
         "client_reference_id": str(tenant_id),
+        "metadata[kind]": "existing_tenant",
         "metadata[tenant_id]": str(tenant_id),
         "subscription_data[metadata][tenant_id]": str(tenant_id),
     }
@@ -206,9 +215,7 @@ async def create_portal_session(session: AsyncSession, tenant_id: UUID) -> str:
 # --- Webhook apply path (pure local DB; the ONLY billing writer of entitlements) ----
 
 
-async def _entitlement_for_event(
-    session: AsyncSession, obj: dict[str, Any]
-) -> Entitlement | None:
+async def _entitlement_for_event(session: AsyncSession, obj: dict[str, Any]) -> Entitlement | None:
     """Resolve the entitlement row an event object refers to (fail: None, logged).
 
     Resolution order: our own `metadata.tenant_id` (stamped at checkout — the trusted
@@ -282,6 +289,41 @@ def _state_from_subscription(sub: dict[str, Any]) -> dict[str, Any] | None:
     return state
 
 
+async def _apply_signup_intent_checkout(session: AsyncSession, obj: dict[str, Any]) -> None:
+    """`checkout.session.completed` for a cold signup: provision the tenant it implies.
+
+    Resolution: our own `metadata.signup_intent_id` (stamped at checkout,
+    services/signup.create_checkout_session_for_intent), falling back to
+    `client_reference_id`. An unresolvable/unknown id is logged and dropped — the event
+    is still marked processed by the caller (a redelivery cannot do better).
+    """
+    # Local import: services.signup imports services.billing (validate_selection,
+    # price_id_for, _stripe_post), so a module-level import here would cycle.
+    from brain_api.services import signup as signup_service
+
+    raw = (obj.get("metadata") or {}).get("signup_intent_id") or obj.get("client_reference_id")
+    if not raw:
+        logger.warning("stripe_signup_event_missing_intent_id")
+        return
+    try:
+        intent_id = UUID(str(raw))
+    except ValueError:
+        logger.warning("stripe_signup_event_bad_intent_id")
+        return
+
+    intent = await session.get(SignupIntent, intent_id)
+    if intent is None:
+        logger.warning("stripe_signup_event_unknown_intent", intent_id=str(intent_id))
+        return
+
+    await signup_service.provision_tenant_from_intent(
+        session,
+        intent,
+        stripe_customer_id=str(obj["customer"]) if obj.get("customer") else None,
+        stripe_subscription_id=str(obj["subscription"]) if obj.get("subscription") else None,
+    )
+
+
 async def apply_stripe_event(
     session: AsyncSession, event_id: str, event_type: str, obj: dict[str, Any]
 ) -> bool:
@@ -290,6 +332,8 @@ async def apply_stripe_event(
 
     Handled types (everything else is marked processed and ignored):
     - checkout.session.completed        -> link stripe_customer_id / subscription_id
+      (or, for a cold-signup checkout — `metadata.kind == "signup_intent"` — provision
+      the tenant/user/entitlement via `_apply_signup_intent_checkout` INSTEAD)
     - customer.subscription.created/updated -> full recompute (plan/addons/limits/
       products/status/period) from the subscription items via the catalog
     - customer.subscription.deleted     -> status=canceled, products OFF
@@ -299,6 +343,15 @@ async def apply_stripe_event(
     if await session.get(ProcessedStripeEvent, event_id) is not None:
         return False
     session.add(ProcessedStripeEvent(id=event_id, event_type=event_type))
+
+    if (
+        event_type == "checkout.session.completed"
+        and (obj.get("metadata") or {}).get("kind") == "signup_intent"
+    ):
+        await _apply_signup_intent_checkout(session, obj)
+        await session.commit()
+        logger.info("stripe_event_applied", event_type=event_type, kind="signup_intent")
+        return True
 
     ent = await _entitlement_for_event(session, obj)
     if ent is None:

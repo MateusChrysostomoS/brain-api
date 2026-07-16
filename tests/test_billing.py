@@ -494,3 +494,20 @@ async def test_checkout_requires_tenant_scoped_token(client):
 
     noauth_resp = await client.post("/billing/checkout", json={"plan": "secretaria_ferro"})
     assert noauth_resp.status_code == 401
+
+
+# --- Price map: legacy alias keys ---------------------------------------------
+
+
+def test_price_map_accepts_secretaria_bronze_alias():
+    """The deployed STRIPE_PRICE_MAP keys the secretarIA price as "secretaria_bronze";
+    parsing must normalize it to secretaria_bronze_1 so both lookup directions
+    (price_id_for at checkout, catalog_id_for_price in the webhook recompute) resolve
+    to a real catalog plan."""
+    parsed = billing_service._parse_price_map(
+        '{"secretaria_bronze": "price_alias_test", "precheck": "price_pc_test"}'
+    )
+    assert parsed == {
+        "secretaria_bronze_1": "price_alias_test",
+        "precheck": "price_pc_test",
+    }

@@ -22,14 +22,17 @@ from brain_api.core.ratelimit import SlidingWindowLimiter, client_ip
 from brain_api.core.security import create_access_token
 from brain_api.models import User
 from brain_api.schemas.auth import (
+    ExchangeOnboardingTokenIn,
     LoginRequest,
     LogoutRequest,
     MeResponse,
     RefreshRequest,
+    SetPasswordIn,
     TenantOut,
     TokenResponse,
     UserOut,
 )
+from brain_api.services import signup as signup_service
 from brain_api.services.auth import (
     authenticate,
     get_tenant,
@@ -37,6 +40,7 @@ from brain_api.services.auth import (
     issue_refresh_token,
     revoke_refresh_token,
     rotate_refresh_token,
+    set_password as _set_password,
 )
 
 logger = get_logger(__name__)
@@ -170,3 +174,60 @@ async def me(
         user=UserOut.model_validate(user),
         tenant=TenantOut.model_validate(tenant) if tenant else None,
     )
+
+
+@router.post(
+    "/exchange-onboarding-token",
+    response_model=TokenResponse,
+    summary="Exchange a signup onboarding token for a session",
+    description=(
+        "Redeem the ONE-TIME token minted by GET /public/onboarding-status once a cold "
+        "signup finishes provisioning (services/signup.py). Single-use: burned on success."
+    ),
+    responses={
+        401: {"description": "Unknown, expired, already-used token, or unprovisioned intent."},
+        429: {"description": "Rate limited (per-IP auth budget)."},
+    },
+)
+async def exchange_onboarding_token(
+    payload: ExchangeOnboardingTokenIn,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> TokenResponse:
+    """Mint the SAME session pair a password login would, for the provisioned owner."""
+    _check_auth_rate_limit(request)
+    result = await signup_service.exchange_onboarding_token(session, payload.token)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid_onboarding_token",
+        )
+    refresh = await issue_refresh_token(session, result.user.id)
+    # Stable references only — never the token.
+    logger.info(
+        "onboarding_token_exchanged",
+        intent_id=str(result.intent_id),
+        tenant_id=str(result.user.tenant_id),
+    )
+    return _session_pair(result.user, refresh)
+
+
+@router.post(
+    "/set-password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Set the caller's own password",
+    description=(
+        "Lets the authenticated caller replace their password — needed because a "
+        "signup-provisioned tenant owner starts on a random, never-communicated one."
+    ),
+    responses={401: {"description": "Missing, invalid or expired token."}},
+)
+async def set_password(
+    payload: SetPasswordIn,
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """The caller sets THEIR OWN password (never someone else's — scoped by the token)."""
+    await _set_password(session, UUID(principal.user_id), payload.new_password)
+    logger.info("password_set", user_id=principal.user_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -280,8 +280,8 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "CONTRACTS.md": {
-    "mtime": 1784504850.482649,
-    "ast_hash": "719d0bce9b53fd5f16f80da84e721891",
+    "mtime": 1784501933.3352063,
+    "ast_hash": "ca5d99b2f4ac4a921b0fe3da16621761",
     "semantic_hash": ""
   },
   "docker-compose.yml": {
@@ -335,8 +335,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/services/billing.py": {
-    "mtime": 1784504588.2100062,
-    "ast_hash": "a7f6c56c86352fad984e237d4c373fad",
+    "mtime": 1784501579.978361,
+    "ast_hash": "f5b0dd5276f513a1d7e586eea12719e9",
     "semantic_hash": ""
   },
   "tests/test_auth_hardening.py": {
@@ -505,8 +505,8 @@
     "semantic_hash": ""
   },
   "tests/test_billing_phase1.py": {
-    "mtime": 1784504588.2134054,
-    "ast_hash": "1aca4b2e7c72bae99b0f0450792a7bfb",
+    "mtime": 1784501579.978361,
+    "ast_hash": "ae2f899a33d27026ca1b6e94973e8f42",
     "semantic_hash": ""
   },
   "tests/test_onboarding_endpoints.py": {
@@ -520,8 +520,8 @@
     "semantic_hash": ""
   },
   "docs/CHECKPOINT_onboarding_multiprofessional.md": {
-    "mtime": 1784504897.6930354,
-    "ast_hash": "4d11497c14ba5ff2b813205132fea159",
+    "mtime": 1784502051.4638338,
+    "ast_hash": "1bff4b3ac89f749c9d0058b9ce5420c4",
     "semantic_hash": ""
   }
 }

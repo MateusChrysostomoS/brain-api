@@ -358,6 +358,19 @@ for `updated_at`). Conventions exactly mirror `secretarIA` models.
 | `clinic_name` | String(255) | not null |
 | `created_at` | DateTime(tz) | server_default now() |
 | `updated_at` | DateTime(tz) | server_default now(), onupdate now() |
+| `onboarding_state` | String(40) | not null, server_default `'pending'`; enum + transitions in §16.1. Migration `0007` backfilled every pre-existing tenant to `'ativo'` |
+| `blocker_reason` | String(40) | nullable; enum in §16.1 |
+| `config_status` | String(40) | not null, server_default `'incompleta'`; enum in §16.1. Migration `0007` backfilled every pre-existing tenant to `'completa'` |
+| `onboarding_anchor_at` | DateTime(tz) | nullable; retry-cadence anchor, set at provisioning (§16.1) |
+| `next_retry_at` | DateTime(tz) | nullable; next retry-nudge due time, §16.1/§16.5 |
+| `connected_at` | DateTime(tz) | nullable; set on a passing `POST /doctor/onboarding/attempts`, §16.2 |
+| `activated_at` | DateTime(tz) | nullable; set when `onboarding_state` reaches `ativo`, §16.1 |
+| `secretaria_provisioned_at` | DateTime(tz) | nullable; set once the secretaria provisioning bridge succeeds, §16.5 |
+| `config_reminder_anchor_at` | DateTime(tz) | nullable; config-reminder cadence anchor, §16.5 |
+| `last_config_reminder_at` | DateTime(tz) | nullable; updated by `POST /internal/onboarding/tenants/{id}/events`, §16.5 |
+| `closing_email_sent_at` | DateTime(tz) | nullable; one-shot marker, §16.5 |
+| `manual_review_flagged_at` | DateTime(tz) | nullable; one-shot marker, §16.5 |
+| `retry_paused` / `config_reminder_paused` | Boolean | not null, server_default false; owner kill switches, `POST /doctor/onboarding/pause` (§16.2) |
 
 > Per `tenant-secrets-encryption`, secrets would live in a separate
 > `tenant_credentials` table — **not created in this task** (no tenant secrets are
@@ -375,6 +388,9 @@ for `updated_at`). Conventions exactly mirror `secretarIA` models.
 | `role` | String(32) | not null; `admin` \| `tenant_owner` \| `tenant_staff` |
 | `created_at` | DateTime(tz) | server_default now() |
 | `updated_at` | DateTime(tz) | server_default now(), onupdate now() |
+| `professional_id` | UUID | nullable, **no FK** — cross-service value reference to `secretaria.professionals.id` (same convention as `tenant_id`-style refs elsewhere, §0 of the onboarding contract). Carried into the JWT (§16.4) |
+| `invite_token_hash` | String(64) | nullable, indexed; sha256 of a professional-invite token (`hash_refresh_token`), single-use, §16.3 |
+| `invite_token_expires_at` | DateTime(tz) | nullable; `INVITE_TOKEN_EXPIRE_HOURS` from mint, §16.3 |
 
 ### 6.3 `entitlements` (one row per tenant)
 Shape from `stripe-billing-entitlements`, extended with the explicit product flags the
@@ -393,6 +409,8 @@ task requires.
 | `period_end` | DateTime(tz) | nullable |
 | `stripe_customer_id` | String(64) | nullable, indexed (scaffold; unused this task) |
 | `stripe_subscription_id` | String(64) | nullable (scaffold) |
+| `charge_hardened_at` | DateTime(tz) | nullable; set by `services.billing.harden_charge` once a still-trialing subscription's trial is ended early on reaching `ativo` (idempotent — skipped once set), §13.4/§16.1 |
+| `cancel_scheduled_at` | DateTime(tz) | nullable; set by the `customer.subscription.trial_will_end` handler when it schedules a Stripe `cancel_at` for a tenant that never activated; cleared by `harden_charge` if the tenant activates afterward, §13.6 |
 | `updated_at` | DateTime(tz) | server_default now(), onupdate now() |
 
 ### 6.3a `refresh_tokens` (revocable session leg — §2.1a)
@@ -466,10 +484,52 @@ the only thing that authorizes minting a PreCheck token for a brain login (§10)
 | `result` | JSON | not null; COUNTS + per-service status ONLY — never personal data |
 | `created_at` | DateTime(tz) | server_default now() |
 
+### 6.3e `signup_attempts` (onboarding connection-attempt idempotency ledger — §16.2)
+| column | type | notes |
+|---|---|---|
+| `id` | UUID | **PK** — client-supplied `attempt_id`; the id IS the idempotency key (no server-generated id), mirrors `usage_events`' natural-key dedupe pattern |
+| `tenant_id` | UUID FK → `tenants.id` `ON DELETE CASCADE` | not null, indexed |
+| `source` | String(20) | not null; `user` \| `retry_nudge` \| `intake` |
+| `day_offset` | Integer | nullable |
+| `result` | String(10) | not null; `pass` \| `fail` |
+| `blocker_reason` | String(40) | nullable; the RESOLVED blocker (`map_error_to_blocker`), not the raw error |
+| `error_code` | String(120) | nullable |
+| `created_at` | DateTime(tz) | server_default now() |
+
+> Single writer: `services/onboarding.py::record_attempt` (§16.1) — no other code path
+> inserts here.
+
+### 6.6 `signup_intents` (cold-signup lead → Stripe Checkout → auto-provisioning — §15)
+| column | type | notes |
+|---|---|---|
+| `id` | UUID | PK |
+| `name` | String(255) | not null |
+| `clinic_name` | String(255) | not null |
+| `email` | String(320) | not null; stored lower-cased (mirrors `users.email`), reused as-is for the provisioned `User` row |
+| `whatsapp_phone` | String(32) | not null |
+| `catalog_ids` | JSON | not null, server_default `'[]'`; the validated selection — exactly one plan id + N add-on ids (`schemas/signup.py` enforces this at request time) |
+| `intake` | JSON | nullable; optional pre-checkout eligibility answers (§15.1), consumed once at provisioning by `services.onboarding.provision_defaults` |
+| `status` | String(32) | not null, server_default `'pending_payment'`; `pending_payment` \| `completed` \| `failed` |
+| `failure_reason` | String(255) | nullable; set on `failed` (e.g. `email_already_registered` — the buyer's email raced to registration between intent creation and webhook delivery) |
+| `stripe_session_id` | String(255) | nullable, indexed; the latest Checkout Session for this intent (a retry overwrites it) |
+| `stripe_customer_id` / `stripe_subscription_id` | String(64) | nullable |
+| `tenant_id` | UUID FK → `tenants.id` `ON DELETE SET NULL` | nullable; set once provisioning materializes the tenant |
+| `onboarding_token_hash` | String(64) | nullable, **unique**, indexed; sha256 of the one-time onboarding token (`hash_refresh_token` — same primitive `RefreshToken` uses). Rotated on every `GET /public/onboarding-status` poll until redeemed |
+| `onboarding_token_expires_at` / `onboarding_token_used_at` | DateTime(tz) | nullable |
+| `created_at` / `updated_at` | DateTime(tz) | server_default now() (`updated_at` also onupdate now()) |
+
+> The onboarding token's PLAINTEXT is only ever handed back by the synchronous
+> `GET /public/onboarding-status` poll (never the webhook) — only its hash is persisted.
+> §15 has the full lifecycle.
+
 Migration **`0001`** creates `tenants`/`users`/`entitlements`/`demo_requests`; migration
 **`0002`** adds `precheck_account_links`; migration **`0003`** adds `refresh_tokens` +
 `processed_stripe_events`; migration **`0004`** adds `privacy_requests`; migration
-**`0005`** adds `usage_events`.
+**`0005`** adds `usage_events`; migration **`0006`** adds `signup_intents`; migration
+**`0007`** adds the onboarding-state-machine columns on `tenants` (+ backfill),
+`signup_attempts`, the `professional_id`/invite-token columns on `users`,
+`entitlements.charge_hardened_at`, and `signup_intents.intake`; migration **`0008`** adds
+`entitlements.cancel_scheduled_at` (§13.6, billing meter pricing round).
 
 ---
 
@@ -502,9 +562,22 @@ Migration **`0001`** creates `tenants`/`users`/`entitlements`/`demo_requests`; m
 | `SECRETARIA_TIMEOUT_SECONDS` | `10` | timeout for the secretaria admin httpx client |
 | `STRIPE_SECRET_KEY` | `""` | Stripe secret API key (§13). Empty ⇒ billing endpoints `503`; entitlement reads never touch Stripe regardless |
 | `STRIPE_WEBHOOK_SECRET` | `""` | webhook signing secret (§13.3). Empty **fails CLOSED**: every delivery rejected `400` |
-| `STRIPE_PRICE_MAP` | `{}` | JSON: catalog id (§3.2) → Stripe price id, per environment. Unknown ids rejected at parse time |
+| `STRIPE_PRICE_MAP` | `{}` | JSON: catalog id (§3.2) → Stripe price id, per environment. Unknown ids rejected at parse time. ALSO accepts, per plan, the two fully-metered companion keys `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` (§13.3) — not catalog ids of their own. The SUPERSEDED single `{plan_id}_metered` key is still tolerated (recognized-but-unused, graceful degradation) but no code path reads it anymore |
 | `STRIPE_CHECKOUT_SUCCESS_URL` / `STRIPE_CHECKOUT_CANCEL_URL` / `STRIPE_PORTAL_RETURN_URL` | localhost portal | browser return URLs for Checkout / Billing Portal |
 | `STRIPE_API_BASE` / `STRIPE_TIMEOUT_SECONDS` | `https://api.stripe.com` / `15` | Stripe HTTP client (async httpx; the SDK is used only for webhook signature verification) |
+| `SIGNUP_RATE_LIMIT_PER_MIN` | `10` | per-IP budget shared by all three `/public/*` cold-signup routes (§15.1; `core/ratelimit.py`, in-process, fail-open) |
+| `ONBOARDING_TOKEN_EXPIRE_MINUTES` | `15` | lifetime of the one-time token `GET /public/onboarding-status` mints (§15.2) |
+| `STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL` / `STRIPE_SIGNUP_CHECKOUT_CANCEL_URL` | `""` (falls back to `STRIPE_CHECKOUT_SUCCESS_URL`/`_CANCEL_URL`) | cold-signup Checkout Sessions land on a **public** onboarding page (the buyer has no session yet); the success URL should carry Stripe's `{CHECKOUT_SESSION_ID}` template so the page can poll `GET /public/onboarding-status` (§15.1) |
+| `STRIPE_TRIAL_PERIOD_DAYS` | `0` | trial length (days) applied to EVERY subscription-mode Checkout Session (`subscription_data[trial_period_days]`) when `> 0` — both checkout builders (§13.3). Deploy sets it high enough (recommend ~75) to outlast the 60-day onboarding retry window before Stripe would otherwise charge a still-unconnected tenant; `harden_charge` (§13.4) ends the trial early on activation regardless of this value |
+| `STRIPE_METER_EVENT_BILLABLE_PATIENTS` | `None` | Stripe Meter `event_name` for the `billable_patients` metered price; unset disables the forward entirely — metering-only, no billing impact either way (§13.3) |
+| `STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS` | `None` | Stripe Meter `event_name` for the `active_professionals` metered PLAN price (the fully-metered secretaria_ferro model, §13.3/§13.5); same forward/fail-soft contract as `STRIPE_METER_EVENT_BILLABLE_PATIENTS` — unset disables the forward entirely |
+| `META_APP_ID` / `META_APP_SECRET` | `""` | Meta Graph API app credentials for the WhatsApp Embedded Signup code→token exchange (`POST /doctor/onboarding/attempts` → `services/meta_graph.py`, §16.2). Empty ⇒ the exchange is skipped/fails soft — never a 500 |
+| `META_GRAPH_BASE_URL` | `https://graph.facebook.com/v23.0` | Meta Graph API base for the token exchange |
+| `META_ES_CONFIG_ID` | `""` | Meta Embedded Signup config id; echoed read-only via `GET /doctor/onboarding`'s `embedded_signup` block (§16.2) so the portal knows whether the flow is wired without a second source of truth. Not a secret — unlike `META_APP_SECRET` |
+| `FRONTEND_BASE_URL` | `http://localhost:3000` | builds the professional-invite link (`POST /doctor/professionals/invites` → `{FRONTEND_BASE_URL}/convite?token=...`, §16.3) |
+| `MODE_RESOLVE_FALLBACK_HOURS` | `24` | fallback for the `ativo` transition when secretaria's Coexistence "mode resolved" signal never arrives: a tenant whose `connected_at` is older than this many hours is treated as mode-resolved anyway, so a stalled signal can never permanently block activation (§16.1, `onboarding_sync.refresh_config_status`) |
+| `CONFIG_STATUS_PULL_TTL_SECONDS` | `60` | throttle (in-process TTL cache, per-tenant) on how often `GET /doctor/onboarding` / `GET /doctor/professionals` re-pull secretaria's config-status (§16.5) |
+| `INVITE_TOKEN_EXPIRE_HOURS` | `72` | lifetime of a professional-invite token (`POST /doctor/professionals/invites` → `POST /auth/exchange-invite-token`, §16.3); same hashed-at-rest/single-use scheme as the onboarding token, expressed in hours since a human is expected to check an invite email within days, not minutes |
 
 `get_settings()` is `@lru_cache`d. `cors_origins` is a parsed-list property.
 
@@ -967,6 +1040,7 @@ form-encoded; the `stripe` SDK is used solely for webhook signature verification
 | `checkout.session.completed` | link `stripe_customer_id` + `stripe_subscription_id` (tenant from `metadata.tenant_id`/`client_reference_id`). Plan/status recompute rides the sibling `customer.subscription.*` events |
 | `customer.subscription.created` / `.updated` | **full recompute**: items' price ids → catalog ids (one plan + N add-ons; add-on `quantity` scales its additive limit grants); `compute_entitlement_state` writes plan, products, full-keyset `addons`/`limits`; Stripe status maps `active/trialing/past_due/canceled` → same, anything else → `inactive` (fail closed); `period_start/end` from `current_period_*`. Unknown price ids are logged + ignored; a subscription with NO recognized plan updates status/period only (never guesses a plan) |
 | `customer.subscription.deleted` | `status=canceled`, **both product flags off** (billing-managed access ends with the subscription; admin PATCH can manually re-enable) |
+| `customer.subscription.trial_will_end` | after a row-locked re-read + a LIVE `GET /v1/subscriptions/{id}` verify, schedules a Stripe `cancel_at` (using the LIVE `trial_end`) for a secretarIA-bearing subscription still genuinely trialing that never activated, stamping `cancel_scheduled_at`; no-op once hardened/already scheduled/plan doesn't enable secretarIA/not still trialing locally OR live (§13.6) |
 | `invoice.payment_failed` | `status=past_due` (tenant resolved by `customer` id) |
 | `invoice.paid` | `past_due` recovers to `active` |
 
@@ -981,6 +1055,181 @@ The webhook writing `precheck_enabled`/`secretaria_enabled` is immediately visib
 `403 precheck_not_entitled`), the hub-token mint + introspection (§12.2 —
 `secretaria_not_entitled` / `active:false`), and `is_entitled` tier/add-on gates (§3.2).
 No cache sits between the row and any gate.
+
+### 13.3 Fully-metered plan pricing + subscription trial (billing meter pricing round)
+
+Two additive checkout-time behaviors, both implemented ONCE in `services/billing.py` and
+shared by **both** checkout builders — `create_checkout_session` (§13, the authenticated
+tenant upsell path) and `services.signup.create_checkout_session_for_intent` (§15.1, the
+cold-signup path) — so the two paths can never drift apart:
+
+- **Metered companion prices — TWO per plan, NO anchor.** `catalog.py` still sells only
+  flat-fee plans/add-ons; a plan's metered pricing is expressed purely as a
+  `STRIPE_PRICE_MAP` naming convention: `{plan_id}_metered_patients` and
+  `{plan_id}_metered_professionals` (e.g. `"secretaria_ferro_metered_patients":
+  "price_..."`, `"secretaria_ferro_metered_professionals": "price_..."`) — one companion
+  per Stripe Meter (billable patients, active professionals). `secretaria_ferro` is fully
+  metered under this round's business model: R$80/month per active professional +
+  R$2/month per billable patient, with **NO flat/anchor price on the plan at all**.
+  `_parse_price_map` accepts both keys without requiring them to be a known catalog id
+  (and ALSO still accepts the SUPERSEDED single `{plan_id}_metered` key —
+  recognized-but-unused, graceful degradation for a not-yet-migrated deployed map — but
+  no code path reads it anymore). `_append_checkout_line_items` appends each companion
+  the environment has configured as an EXTRA Checkout line item with **no `quantity`
+  field** (Stripe rejects a `quantity` on a metered price); the plan's own line item is
+  only added when it HAS a direct/flat price (a fully-metered plan gets none). Either,
+  both, or neither companion may be configured independently.
+- **`validate_selection`'s fully-metered waiver — BOTH companions required.** A plan's
+  own `price_id_for(plan.id)` requirement is WAIVED only when **both**
+  `{plan.id}_metered_patients` AND `{plan.id}_metered_professionals` are configured — a
+  half-configured pair (e.g. professionals only) does NOT waive it, because checking out
+  with only one companion would attach a subscription silently missing the other meter:
+  that usage dimension would accrue in the local ledger but never actually get invoiced
+  (silent under-billing). `price_not_configured:{plan.id}` (503) is raised whenever the
+  plan has NEITHER a direct price NOR both companions. Add-ons are unaffected — each
+  still requires its own price regardless of how the plan itself is billed.
+- **Subscription trial.** `_apply_trial` adds
+  `subscription_data[trial_period_days]=<STRIPE_TRIAL_PERIOD_DAYS>` to the Checkout
+  payload whenever that setting is `> 0` (default `0`/off, §7; the deployed value is 75).
+  Applies to every subscription-mode Checkout Session regardless of plan.
+
+These are pure request-building additions, but the webhook recompute (§13.1) DOES need to
+know about them: with no anchor price, a fully-metered subscription's `items` are ONLY the
+two companion prices, so `_state_from_subscription` resolves the plan from a companion
+price id whose stripped plan id is a real catalog plan (`_plan_id_from_metered_companion`)
+— evidence of the plan, exactly like a normal plan-price item, but NEVER added to
+`addon_qty` (a companion item is not an add-on). Either companion (or both, idempotently)
+resolves the same plan. Without this, a fully-metered subscription's items would carry NO
+recognized plan price at all, `_state_from_subscription` would return `None`, and the
+entitlement would never get its `plan`/products/`limits` set — logging
+`stripe_subscription_no_known_plan` forever. A trialing subscription still reports
+`status: "trialing"` through the normal `customer.subscription.*` handling either way.
+
+### 13.4 Charge hardening — ending a trial early on activation
+
+`services.billing.harden_charge(session, tenant)`: once a tenant's onboarding reaches
+`ativo` (§16.1), a subscription still sitting in its Stripe trial no longer needs the
+grace period the trial exists to cover. Reads the entitlement with `session.get(...,
+with_for_update=True, populate_existing=True)` — a row lock (no-op on SQLite, real on
+Postgres) that serializes against a concurrently-applying `trial_will_end` webhook event
+locking the SAME row (§13.6): whichever of the two gets there first commits its marker
+before the other's own locked re-read proceeds, so neither can ever act on a stale
+pre-commit snapshot of the other. Only acts when the (freshly re-read) entitlement
+carries a `stripe_subscription_id` AND `status == "trialing"`; posts `POST
+/v1/subscriptions/{id}` `{trial_end: "now", proration_behavior: "none", cancel_at: ""}`,
+then stamps `entitlements.charge_hardened_at` (§6.3) AND resets `cancel_scheduled_at` to
+`None` in the same commit — idempotent, a no-op once `charge_hardened_at` is already set.
+The `cancel_at: ""` unconditionally CLEARS any Stripe-side scheduled cancellation (a no-op
+when none was scheduled) — the counterpart of the `trial_will_end` handler's `cancel_at`
+scheduling (§13.6): if that handler already scheduled a cancellation before this tenant
+activated, activation must clear it on the Stripe side too, not just guard against future
+redeliveries locally. A Stripe failure is caught, logged, and returns `False` without
+raising (the ativo transition itself is not rolled back). Called from exactly one place:
+`services/onboarding_sync.py::refresh_config_status`, immediately after it flips a tenant
+to `ativo`.
+
+### 13.5 Catalog limit keys (metering only, no quota)
+
+`services/catalog.py::LIMIT_KEYS` carries TWO metering-only keys, same pattern each:
+
+- `LIMIT_BILLABLE_PATIENTS = "billable_patients"` — distinct (professional, patient)
+  pairs billed this month; secretaria's `run_patient_usage_metering` cron (out of this
+  repo) is the caller.
+- `LIMIT_ACTIVE_PROFESSIONALS = "active_professionals"` — monthly metered headcount
+  Stripe bills under the fully-metered secretaria_ferro model (§13.3); a sibling change
+  in secretarIA's own repo emits `feature="active_professionals"` from its cron. NOT the
+  same concern as the pre-existing `LIMIT_PROFESSIONALS = "professionals"` key: that one
+  is the QUOTA (how many may be configured on the calendar, a plan/add-on grant); this
+  one is the BILLED COUNT (how many were active this month, what Stripe actually charges
+  for).
+
+Like every `LIMIT_KEYS` entry, plan base limits stay `0` (unlimited-by-quota) for both —
+they exist purely so `POST /internal/usage-events` (§12.2) accepts `feature:
+"billable_patients"` / `feature: "active_professionals"` (422 otherwise) and so
+`services/usage.py`'s best-effort Stripe meter-event forward (§13.3's metered companion
+prices are what actually bill it; see also `STRIPE_METER_EVENT_BILLABLE_PATIENTS` /
+`STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS`, §7) has a validated feature id to key off per
+feature (`services/usage.py::_METER_EVENT_SETTINGS` maps feature → the Settings attribute
+holding its Stripe Meter `event_name`).
+
+### 13.6 Trial-expiry cancellation (`trial_will_end` → `cancel_at`)
+
+A subscription whose trial expires without the tenant ever reaching `ativo` (Meta never
+approves WhatsApp Coexistence) must be CANCELLED at trial end instead of silently
+charged. `apply_stripe_event`'s `customer.subscription.trial_will_end` branch handles
+Stripe's own pre-expiry warning event (fired ~3 days before `trial_end` by default) by
+scheduling a NATIVE Stripe cancellation rather than brain-api tracking the deadline
+itself. The design went through an adversarial-review hardening pass — the ordering
+below (cheap check → lock → plan scope → live verify → act) is deliberate, cheapest/
+local checks first:
+
+1. **Cheap short-circuit (event payload, no I/O).** `obj.get("status") == "trialing"` on
+   the EVENT's own embedded subscription object. Stripe fires `trial_will_end` in TWO
+   situations: the normal ~3-day pre-expiry warning, AND immediately whenever a trial is
+   ended right now (`trial_end="now"`) — exactly what `harden_charge` does on
+   activation; the immediate-end firing reports a non-`"trialing"` status here. This is
+   NOT the authoritative check (an unverified assumption about what Stripe embeds in the
+   payload) — it exists purely to skip most stale firings for free, before paying for a
+   row lock or a live Stripe call.
+2. **Row-locked re-read.** `session.get(Entitlement, ..., with_for_update=True,
+   populate_existing=True)` — the SAME lock `harden_charge` (§13.4) takes on this row.
+   Locking here serializes the two critical sections: a `trial_will_end` redelivery
+   racing `harden_charge`'s own `trial_end="now"` firing of THIS SAME event type can
+   never be evaluated against a pre-harden snapshot — it blocks until harden's commit
+   lands, then sees `charge_hardened_at` already set. FOR UPDATE is a no-op on SQLite
+   (tests unaffected), real row-locking on Postgres.
+3. **Local guards, evaluated on the FRESH locked state:** `status == "trialing"`;
+   `charge_hardened_at is None` (tenant hasn't activated); `cancel_scheduled_at is None`
+   (idempotency — a cancellation is already scheduled, so a redelivery is at most a
+   harmless no-op and the redundant Stripe call is skipped); `stripe_subscription_id`
+   present.
+4. **Plan scope — secretarIA-bearing plans only.** `catalog.get_plan(ent.plan)` must
+   resolve to a plan with `.secretaria = True`. Coexistence-conditional billing applies
+   ONLY to plans that enable the secretarIA product: a PreCheck-only plan has no
+   WhatsApp/Coexistence component and structurally can never reach `ativo`
+   (`harden_charge` fires only from secretarIA onboarding) — without this gate, a
+   happily-paying PreCheck customer's trial would get auto-cancelled at trial end. An
+   unresolved plan (`None`) is treated the same way: fail toward charging a possibly-
+   legit subscription, never toward killing one.
+5. **Live-subscription verification (the ONE Stripe read in this module).** `GET
+   /v1/subscriptions/{id}` (`_stripe_get`, a GET counterpart of `_stripe_post`, same
+   503/502 mapping) — schedules ONLY when the LIVE `status == "trialing"` AND the LIVE
+   `trial_end` is more than one hour out; the CANCEL uses the LIVE `trial_end`, never the
+   event's. This covers the residual hole step 1-3 cannot: `harden_charge`'s Stripe call
+   can SUCCEED while its own DB commit then FAILS (e.g. a connection drop) — the local
+   markers would stay `None` even though the trial already ended on Stripe's side. The
+   live object is the authority; nothing here trusts what the event payload claims.
+6. **Schedule.** `POST /v1/subscriptions/{id}` `{cancel_at: <LIVE trial_end>,
+   proration_behavior: "none"}`, then stamps `entitlements.cancel_scheduled_at` (§6.3).
+7. **Propagate, don't swallow.** Deliberately NO try/except anywhere in this branch
+   (neither around the GET nor the POST) — unlike `harden_charge`'s fail-soft (which has
+   another retry trigger: the next config-status refresh), this handler has NO other
+   trigger point. A failure here PROPAGATES so the webhook route 500s (`api/billing.py`
+   already documents apply-errors → 500) and Stripe redelivers on its own ~3-day retry
+   schedule, matching this event's lead time. The `ProcessedStripeEvent` marker commits
+   ONLY together with the mutation (§6.3b) — an aborted apply leaves neither committed,
+   so the redelivery reprocesses cleanly rather than being seen as an already-applied
+   duplicate.
+8. **What actually revokes access.** This handler never revokes anything itself — when
+   the scheduled `cancel_at` fires, Stripe emits `customer.subscription.deleted`, and the
+   EXISTING handling (§13.1: `status=canceled`, both product flags off) performs the
+   entitlement revocation, same as any other cancellation.
+9. **Clearing.** `harden_charge` (§13.4, also row-locked) clears both the Stripe-side
+   `cancel_at` and the local `cancel_scheduled_at` marker if the tenant activates after a
+   cancellation was already scheduled.
+
+**Markers do not survive a resubscription.** `apply_stripe_event`'s
+`_reset_markers_if_subscription_changed` resets BOTH `charge_hardened_at` and
+`cancel_scheduled_at` to `None` whenever an incoming, non-null `stripe_subscription_id`
+DIFFERS from the one already stored (checked in both the `checkout.session.completed` and
+the `customer.subscription.created`/`.updated` branches, wherever a subscription id gets
+linked) — a redelivery of the SAME id changes nothing. The markers describe the lifecycle
+of the SUBSCRIPTION they were applied to, not the tenant: without this reset, a tenant's
+SECOND subscription (cancel → resubscribe) would inherit the first one's markers,
+permanently disabling both `harden_charge` and this handler for that tenant — the new
+trial would run out completely unprotected and the tenant would simply get charged
+whether or not it ever activated (empirically confirmed during this round's adversarial
+review).
 
 ---
 
@@ -1073,3 +1322,196 @@ identifier or (for export) the collected data itself. Each erasure additionally 
 `privacy_erasure_executed` at **WARNING** with the acting admin's `user_id`,
 `subject_type`, and `subject_hash` — NEVER the raw email/wa_id (`docs/cross-db-erasure.md`
 "identifiers only as sha256" rule).
+
+---
+
+## 15. Cold signup — self-serve pay-and-provision (public, no human in the loop)
+
+> **Retroactively documented.** This vertical shipped in migration `0006` (2026-07-16),
+> before the onboarding round — it was fully built and tested but had never been written
+> up here. `docs/CHECKPOINT_onboarding_multiprofessional.md` has the full verification
+> note. The onboarding round's only change to it is `signup_intents.intake` (§6.6) and
+> `services.onboarding.provision_defaults` seeding the new tenant's state machine (§16.1)
+> right after provisioning.
+
+The bridge from a public "stranger fills a form" lead to a paying, logged-in tenant, with
+**no admin/human step**. `services/signup.py` is authoritative; `api/public_signup.py`
+exposes three UNAUTHENTICATED, rate-limited routes (`SIGNUP_RATE_LIMIT_PER_MIN`, one
+shared `SlidingWindowLimiter` bucket across all three — same in-process/fail-open
+machinery as §5). Provisioning happens **only** in the Stripe webhook apply path — this
+module is pure request validation + intent bookkeeping + Checkout Session creation, same
+"webhook is the sole writer" invariant §13 documents for the existing tenant billing flow.
+
+### 15.1 Endpoints
+
+| method | path | auth | notes |
+|---|---|---|---|
+| `POST` | `/public/signup-intents` | public | Body: `name`, `clinic_name`, `email`, `whatsapp_phone`, `catalog_ids` (exactly one assignable non-free plan id + any number of add-on ids, else `422`), optional `intake` (§15.1a), honeypot `website`. `201 {intent_id}`. `409 email_already_registered` (checked NOW so provisioning can never fail on a duplicate AFTER payment). A filled honeypot silently accepts-and-drops (`201` with a synthetic all-zero id, never persisted — mirrors `POST /demo-requests`, §5) |
+| `POST` | `/public/checkout-sessions` | public | Body `{intent_id}`. Creates a subscription-mode Checkout Session for a `pending_payment` intent; `404` unknown intent, `409` already left `pending_payment`. `client_reference_id`/`metadata[signup_intent_id]` carry the INTENT id (no tenant exists yet), tagged `metadata[kind]=signup_intent` so the webhook (§13.1/15.2) routes it here instead of the tenant-linking path. Reuses `billing.validate_selection` + `_append_checkout_line_items`/`_apply_trial` (§13.3) — an add-on already implied by the chosen plan is never double-billed. `200 {checkout_url}`; `503`/`502` as §13's checkout errors |
+| `GET` | `/public/onboarding-status?session_id=` | public | Resolves a Checkout Session id back to its intent: `{status: "pending"\|"ready"\|"failed", products, onboarding_token}`. While `ready` and unredeemed, MINTS (and rotates on every poll) the one-time onboarding token — only this synchronous poll can hand the plaintext to the browser; only its sha256 (§6.6) is ever persisted. `404` unknown session id |
+| `POST` | `/auth/exchange-onboarding-token` | public | Body `{token}`. Redeems the token from the poll above; `401 invalid_onboarding_token` if unknown/expired/already-used/unprovisioned. Success mints the SAME session pair a password login would (§2.1 `TokenResponse` shape, access+refresh) for the tenant's owner user. Rate-limited on the shared `/auth` budget (§5, `AUTH_RATE_LIMIT_PER_MIN`) |
+| `POST` | `/auth/set-password` | Bearer | Body `{new_password}`. Lets the authenticated caller replace THEIR OWN password — needed because a signup-provisioned owner starts on a random, never-communicated one (`hash_password(secrets.token_urlsafe(32))`, never sent anywhere). `204`; `401` missing/invalid/expired token. Also the second step of the professional-invite flow (§16.3) |
+| `GET` | `/public/checkout-config` | public | `200 {trial_period_days: <STRIPE_TRIAL_PERIOD_DAYS>}` — static, non-secret checkout-funnel config so the pre-checkout disclosure copy can quote the REAL deployed trial length instead of a hardcoded second source of truth. Deliberately NOT part of the shared `_limiter` bucket above (no rate limit, no DB touch) — a pricing-page view must never eat the per-IP signup budget |
+
+#### 15.1a Pre-checkout intake (`SignupIntentCreate.intake`)
+
+Optional; when sent, all three answers are required together (`schemas/signup.py::IntakeIn`,
+`extra="forbid"`): `whatsapp_usage: business_7d_plus|business_recent|none`, `prior_api:
+yes|no|unknown`, `fb_page: yes_admin|yes_unknown_admin|no`. Stored verbatim on
+`signup_intents.intake` (§6.6) and consumed exactly once, at provisioning, by
+`services.onboarding.provision_defaults` → `derive_initial_state` /
+`initial_next_retry_at` (§16.1) to seed the new tenant's initial onboarding state.
+Omitted ⇒ `None`, treated identically to "no signal".
+
+### 15.2 Provisioning (webhook-driven; the only writer)
+
+`services.billing.apply_stripe_event` recognizes a cold-signup `checkout.session.completed`
+by `metadata.kind == "signup_intent"` (§13.1) and routes to
+`_apply_signup_intent_checkout` → `services.signup.provision_tenant_from_intent` INSTEAD
+of the tenant-linking logic — otherwise the intent id riding `client_reference_id` would
+be misread as a tenant id. Idempotent: a no-op once `intent.status == "completed"` or
+`intent.tenant_id` is set (a redelivered event cannot double-provision). Bootstrap order
+mirrors `scripts/seed_dev.py` (`Tenant` → flush → `User` → `Entitlement`):
+
+1. `Tenant(clinic_name=intent.clinic_name)`, flushed for its id.
+2. `services.onboarding.provision_defaults(tenant, intent.intake, now)` (§16.1) — seeds
+   `onboarding_state`/`blocker_reason`/`onboarding_anchor_at`/`config_reminder_anchor_at`/
+   `next_retry_at` before anything else touches the tenant.
+3. Owner `User` (role `tenant_owner`), random unlogged password — reachable only via the
+   onboarding-token exchange (§15.1) + `POST /auth/set-password`.
+4. `Entitlement` materialized directly from `intent.catalog_ids` via
+   `catalog.compute_entitlement_state` (not from the `customer.subscription.created` event,
+   which can arrive before the tenant exists and be unresolvable) — status `active`
+   immediately; later `subscription.*` events reconcile it via the existing
+   `stripe_customer_id` fallback resolution (§13.1).
+5. Raced email (something else registered it between intent creation and webhook
+   delivery): `intent.status = "failed"`, `failure_reason = "email_already_registered"`,
+   no rows inserted — the webhook still acks and marks the Stripe event processed.
+
+Does **not** call the secretaria provisioning bridge inline — `secretaria_provisioned_at`
+(§6.1) stays null coming out of this function. That I/O is a later attachment on top
+(§16.5): `services.billing.apply_stripe_event` calls
+`onboarding_sync.ensure_secretaria_provisioned` in a best-effort, fully self-contained
+try/except right after a successful provision, and `GET /doctor/onboarding` (§16.2)
+lazily retries it on every load — so a secretaria outage at signup time self-heals the
+first time the owner opens the portal.
+
+---
+
+## 16. Onboarding state machine & multi-professional (onboarding round)
+
+Built against the frozen cross-service `CONTRACT_onboarding_v1.md` (scratchpad copy; not
+checked into this repo). Migration `0007_onboarding_state_machine` (§6.1/§6.2/§6.3/§6.3e).
+Scope discipline: `services/onboarding.py` is PURE logic (no HTTP/secretaria/Stripe calls;
+every function either returns a value or mutates the `Tenant`/`SignupAttempt` ORM objects
+it's handed, in memory — the caller commits); `services/onboarding_sync.py` is the I/O
+orchestration layer on top of it.
+
+### 16.1 State machine
+
+**`tenants.onboarding_state`** (String(40)): `pending → aquecimento →
+{aguardando_elegibilidade | aguardando_acao_manual} → conectado → ativo`. `pending` only
+ever appears transiently (nothing persists a tenant in `pending` — `provision_defaults`
+immediately derives a real starting state, §15.2 step 2).
+
+**`tenants.blocker_reason`** (String(40), nullable): `atividade_insuficiente` |
+`numero_em_outro_bsp` | `sem_acesso_admin_waba` | `sem_pagina_facebook` | `outro`.
+
+**`tenants.config_status`** (String(40)): `incompleta` | `configurado_aguardando_numero` |
+`completa` — driven entirely by secretaria's config-status pull (§16.5), never by the
+onboarding-state transitions above.
+
+| transition | trigger | effect |
+|---|---|---|
+| tenant creation | `services.onboarding.provision_defaults` (§15.2) | `derive_initial_state(intake)`: `prior_api=='yes'` → `aguardando_acao_manual`/`numero_em_outro_bsp`; `fb_page=='yes_unknown_admin'` → `aguardando_acao_manual`/`sem_acesso_admin_waba`; `fb_page=='no'` → `aquecimento`/`sem_pagina_facebook`; else (incl. no intake) → `aquecimento`/`None`. Anchors `onboarding_anchor_at`/`config_reminder_anchor_at` at `now`; when the derived state is `aquecimento`/`aguardando_elegibilidade`, calibrates `next_retry_at` via `initial_next_retry_at` (`whatsapp_usage=='business_7d_plus'` → `now`, else `now + 3d`) |
+| `POST /doctor/onboarding/attempts`, pass | `services.onboarding.record_attempt` (§16.2) | → `conectado`; `connected_at=now`; blocker cleared; `next_retry_at=None` |
+| `POST /doctor/onboarding/attempts`, fail | `services.onboarding.record_attempt` | resolves the blocker via `map_error_to_blocker` (below); → `aguardando_acao_manual` when that blocker requires manual action (`numero_em_outro_bsp`/`sem_acesso_admin_waba`/`sem_pagina_facebook`), else `aguardando_elegibilidade`. **Never regresses** a tenant already `ativo`/`conectado` — the attempt is still recorded (audit), the tenant's state/blocker are left untouched |
+| `POST /doctor/onboarding/resolve-blocker` | `services.onboarding.resolve_blocker` | from `aguardando_acao_manual`, or any state still carrying a `blocker_reason` (except `conectado`/`ativo`, untouched): → `aquecimento`, blocker cleared, `next_retry_at = now + 3d` |
+| config-status pull → activation | `services.onboarding_sync.refresh_config_status` (§16.5) | `conectado` AND `config_status=='completa'` AND (secretaria says `mode_resolved` OR `connected_at` older than `MODE_RESOLVE_FALLBACK_HOURS`) → calls secretaria `/activate`; only a genuine `{"activated": true}` → `ativo`, `activated_at=now`, then `services.billing.harden_charge` (§13.4) |
+
+**`map_error_to_blocker(error_code, declared)`** (always returns a valid
+`blocker_reason`, case-insensitive substring match on `error_code`): contains
+`"previously"`/`"another"`/`"in use"` → `numero_em_outro_bsp`; contains
+`"page"`/`"permission"`/`"admin"` → `sem_acesso_admin_waba`; otherwise falls back to
+`declared` when it's a known blocker, else `outro`. (The second rule is an
+implementation addition beyond the original frozen contract text, which specified only
+the first — see the CHECKPOINT doc's Deviations section.)
+
+**`signup_attempts`** (§6.3e) is the append-only audit ledger `record_attempt` writes to,
+keyed by client-supplied `attempt_id` (idempotent replay — same id returns the existing
+row, no second transition).
+
+### 16.2 Doctor onboarding endpoints (`api/onboarding.py`, prefix `/doctor`)
+
+Router-level `require_doctor` (valid JWT, `tenant_owner`/`tenant_staff`, carries
+`tenant_id` — a platform `admin` gets `403`, same convention as §12). `pause` additionally
+requires `require_tenant_owner`.
+
+| method | path | notes |
+|---|---|---|
+| `GET` | `/doctor/onboarding` | `{onboarding_state, blocker_reason, config_status, connected, mode_resolved, secretaria_provisioned, next_retry_at, retry_paused, config_reminder_paused, last_attempt: {attempt_id, result, blocker_reason, error_code, created_at}\|null, embedded_signup: {configured, app_id, config_id}}`. Side effects, both throttled/fail-soft: lazily retries the secretaria provisioning bridge (§15.2), then `refresh_config_status` (§16.5). `embedded_signup.configured` requires BOTH `META_APP_ID` and `META_ES_CONFIG_ID` set (§7) |
+| `POST` | `/doctor/onboarding/attempts` | Body `{attempt_id, result: pass\|fail, code?, phone_number_id?, waba_id?, error_code?}` (`phone_number_id` required when `result=='pass'`, `422` otherwise). **Idempotent on `attempt_id`** — a replay short-circuits before any Meta/secretaria I/O and returns the tenant's current state unchanged. On `pass`: optional Meta Graph code→token exchange (`services/meta_graph.py`; a failure here folds into a `fail` attempt with `error_code="token_exchange_failed"`, never a hard error), then `secretaria_provisioning.connect_whatsapp`. Only a genuinely successful connection ever reaches `record_attempt(result="pass")` — a `409 phone_number_conflict` or any other failure instead records a `fail` attempt with the matching `error_code`, never a 5xx to the caller. A genuine pass fires a fire-and-forget `connection_success` email + a `refresh_config_status` pull. `200 {attempt_id, replayed, onboarding_state, blocker_reason}` |
+| `POST` | `/doctor/onboarding/resolve-blocker` | No body. `200 {onboarding_state, blocker_reason}` |
+| `POST` | `/doctor/onboarding/pause` | owner only. Body `{retries?, config_reminders?}` — each present field sets the matching kill-switch column directly; omitted/`null` leaves it untouched. `200 {onboarding_state, blocker_reason}` |
+
+### 16.3 Professionals & invites (`api/onboarding.py`, prefix `/doctor`)
+
+| method | path | notes |
+|---|---|---|
+| `GET` | `/doctor/professionals` | Proxies secretaria's config-status `professionals[]` (§16.5), joined with the LOCAL `users.professional_id` linkage (email + whether an invite is still pending, i.e. `invite_token_hash is not null`). Runs `refresh_config_status` first. `200 {items: [{id, name, is_active, has_calendar, has_hours, has_services, complete, linked_user_email, invite_pending}]}` |
+| `POST` | `/doctor/professionals/invites` | owner only. Body `{name, email, specialty?}`. `409 email_already_registered`. Creates-or-attaches the secretaria professional (`secretaria_provisioning.create_professional` — `None`/error ⇒ `502 secretaria_unavailable`, a foreground write the doctor is waiting on), then a local `tenant_staff` `User` bound to it (`professional_id` set), mints a single-use invite token (`INVITE_TOKEN_EXPIRE_HOURS`, §7), sends the fail-soft `professional_invite` email. `201 {professional_id, user_id, invite_link}` — `invite_link` is ALWAYS present (even if the email failed) so the owner can share it manually |
+| `POST` | `/doctor/professionals/self` | owner only. Body `{name?, specialty?}` (`name` defaults to the caller's own user name, then the clinic name). `409 already_bound` if the caller already has a `professional_id`. Same secretaria create-or-attach as above (`502` on failure); sets `professional_id` on the OWNER'S OWN user row. `200 {professional_id, created}` |
+
+Invite redemption: `POST /auth/exchange-invite-token` (`api/auth.py`) — body `{token}`,
+mirrors `POST /auth/exchange-onboarding-token` (§15.1) almost exactly (same
+`TokenResponse` shape, same shared `/auth` rate-limit budget, `401 invalid_invite_token`).
+`services/auth.py::exchange_invite_token` nulls `invite_token_hash`/
+`invite_token_expires_at` in the same commit as issuing the session. The invited
+professional then calls `POST /auth/set-password` (§15.1) — same endpoint the cold-signup
+owner flow uses.
+
+### 16.4 JWT `professional_id` claim
+
+`create_access_token(..., professional_id: str | None = None)` and
+`create_hub_token(..., professional_id: str | None = None)` (`core/security.py`) both add
+the claim only when the acting user's `users.professional_id` is set. `Principal`
+(`api/deps.py`) gains `professional_id: UUID | None`, parsed defensively (a malformed
+claim resolves to `None`, never a 500). `GET /auth/me` (§2.2) and the login/refresh
+`TokenResponse` (§2.1) now also expose `professional_id` and `name` on the user block. The
+hub-token leg (§12.2) lets secretarIA's hub scope a professional's own view without a
+second token type.
+
+### 16.5 Internal onboarding surface — secretaria's crons pull/push this
+
+Two internal endpoints on the existing pair-key-gated `api/internal.py` router (§12.1's
+`SECRETARIA_API_KEY` invariant — same secret, same fail-closed-on-mismatch behavior):
+
+| method | path | notes |
+|---|---|---|
+| `GET` | `/internal/onboarding/tenants` | secretaria's `run_onboarding_nudges` cron pulls this hourly. `{items: [{tenant_id, onboarding_state, blocker_reason, config_status, onboarding_anchor_at, next_retry_at, retry_paused, config_reminder_paused, config_reminder_anchor_at, last_config_reminder_at, closing_email_sent_at, manual_review_flagged_at, owner_email, owner_name, clinic_name, subscription_active}]}`. Includes every tenant where `onboarding_state != 'ativo'` OR `config_status != 'completa'` (`onboarding_sync.list_onboarding_tenants`). `subscription_active` = entitlement status in `ACTIVE_STATUSES` (§13). Batched owner + entitlement lookups (avoids N+1, mirrors `services/admin.py::list_tenants`'s style) |
+| `POST` | `/internal/onboarding/tenants/{tenant_id}/events` | Body `{event: retry_nudge_sent\|config_reminder_sent\|closing_email_sent\|manual_review_flagged, at, next_retry_at?}`. `retry_nudge_sent` updates `next_retry_at`; `config_reminder_sent` updates `last_config_reminder_at`; the other two are ONE-SHOT (no-op, `applied:false`, once their `*_at` column is already set) — `closing_email_sent`/`manual_review_flagged` update their own timestamp. `404` unknown tenant. `200 {applied: bool}`, never an HTTP error for an already-applied one-shot |
+
+**`services/secretaria_provisioning.py`** is the outbound half of this integration — the
+WRITE-side sibling of the existing READ-only `services/secretaria_internal.py` (§12.1).
+Same shared secret (`X-Internal-Api-Key` = `SECRETARIA_API_KEY`, must equal secretaria's
+own `INTERNAL_API_KEY` byte-for-byte), same base-url/timeout settings, same
+never-leak-upstream-body discipline. Six functions map 1:1 to secretaria's internal
+surface: `provision_tenant` (§15.2), `connect_whatsapp` (§16.2, returns a 3-way outcome
+`CONNECTION_OK`/`CONNECTION_CONFLICT`/`CONNECTION_ERROR` instead of raising, so the caller
+can fold it into a `signup_attempts` result), `get_config_status` (§16.5 above),
+`create_professional` (§16.3), `activate_tenant` (§16.1), `send_notification_email`
+(fire-and-forget, used by the `connection_success` and `professional_invite` emails).
+Every function returns `None`/a sentinel/`False` on ANY failure instead of raising — an
+unconfigured mesh, network error, secretaria's own `403` (its key unconfigured), a `401`
+key mismatch, or a `5xx` are all "no answer this time"; whether that's fail-soft
+(provisioning bridge, config-status pull, activation, notification emails — all
+best-effort) or must surface as an error (the invite/self-bind routes map a `None` from
+`create_professional` to `502`, since those are foreground writes) is decided at the call
+site, not in this module.
+
+`services/onboarding_sync.py::refresh_config_status` is the throttled puller
+(`CONFIG_STATUS_PULL_TTL_SECONDS`, §7 — an in-process, per-tenant TTL cache, no Redis,
+mirrors `core/ratelimit.py`'s rationale) that both `GET /doctor/onboarding` and `GET
+/doctor/professionals` call before reading. `get_cached_config_status`/
+`mode_resolved_hint` read the last successfully-pulled payload without forcing a new
+pull.

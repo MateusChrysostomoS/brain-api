@@ -41,9 +41,19 @@ portal origin. Run `alembic upgrade head` on release.
 ## Architecture notes / boundaries
 
 - **brain-api is its own identity authority.** Its JWT carries `sub` (user UUID),
-  `tenant_id`, `role`. Product access is resolved server-side via `GET /entitlements`,
-  never carried in the token (see `auth-jwt-multitenant`, `stripe-billing-entitlements`).
-- **SSO into PreCheck is deferred.** PreCheck issues its own `precheck_token` (integer
-  `sub`, separate `users` table). Unifying them is follow-up work, not in this service yet.
-- **No Stripe / Google / async work** in the current scope. The `entitlements` table is
-  scaffolded for the future billing recompute; `GET /entitlements` reads it directly.
+  `tenant_id`, `role` (+ an optional `professional_id`, CONTRACTS.md §16.4). Product access
+  is resolved server-side via `GET /entitlements`, never carried in the token (see
+  `auth-jwt-multitenant`, `stripe-billing-entitlements`).
+- **SSO into PreCheck is implemented.** brain-api mints a separate, PreCheck-shaped token
+  (`POST /sso/precheck/token`) for a brain user linked via `precheck_account_links`;
+  PreCheck validates it with its existing, unchanged auth — see CONTRACTS.md §10.
+- **Stripe billing, Google/Meta connection, and async work are all in scope now.** Stripe
+  Checkout/Portal/webhook recompute is live (CONTRACTS.md §13), including a Phase 1 metered
+  add-on + subscription trial (§13.3/§13.4); the onboarding round wires WhatsApp connection
+  via Meta's Embedded Signup (§16.2) and a Google-Calendar-backed doctor hub through
+  secretaria. Async work happens off-service: secretaria's arq crons poll
+  `GET /internal/onboarding/tenants` and post back to
+  `POST /internal/onboarding/tenants/{id}/events` (§16.5) — brain-api itself still has no
+  Redis/arq of its own. See `docs/CHECKPOINT_onboarding_multiprofessional.md` for the full
+  onboarding + multi-professional + billing-Phase-1 round, and CONTRACTS.md §15/§16 for the
+  contract.

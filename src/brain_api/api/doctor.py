@@ -101,7 +101,9 @@ async def secretaria_hub_token(
     if ent.status not in ACTIVE_STATUSES or not ent.products.secretaria:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "secretaria_not_entitled")
     token = create_hub_token(
-        tenant_id=str(principal.tenant_id), actor_user_id=principal.user_id
+        tenant_id=str(principal.tenant_id),
+        actor_user_id=principal.user_id,
+        professional_id=str(principal.professional_id) if principal.professional_id else None,
     )
     logger.info("hub_token_minted", tenant_id=str(principal.tenant_id))
     return HubTokenOut(

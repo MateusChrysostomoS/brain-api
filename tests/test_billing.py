@@ -115,6 +115,13 @@ def _install_fake_stripe_httpx(monkeypatch, captured: dict, response_body: dict)
         STRIPE_CHECKOUT_SUCCESS_URL="http://localhost:3000/app?checkout=success",
         STRIPE_CHECKOUT_CANCEL_URL="http://localhost:3000/app?checkout=cancelled",
         STRIPE_PORTAL_RETURN_URL="http://localhost:3000/app",
+        # Onboarding round (CONTRACT_onboarding_v1.md §9): create_checkout_session /
+        # create_checkout_session_for_intent both unconditionally read this now (0/off
+        # is a no-op) via services.billing._apply_trial — every fake settings object
+        # standing in for get_settings() needs it, or that call 500s with an
+        # AttributeError. tests/test_billing_phase1.py exercises the non-zero case with
+        # its own extended fake settings.
+        STRIPE_TRIAL_PERIOD_DAYS=0,
     )
     monkeypatch.setattr(billing_service, "get_settings", lambda: fake_settings)
     monkeypatch.setattr(billing_service.httpx, "AsyncClient", _FakeClient)

@@ -55,6 +55,29 @@ async def get_tenant(session: AsyncSession, tenant_id: UUID) -> Tenant | None:
     return await session.scalar(select(Tenant).where(Tenant.id == tenant_id))
 
 
+async def exchange_invite_token(session: AsyncSession, raw_token: str) -> User | None:
+    """Redeem a professional-invite token (`POST /doctor/professionals/invites`) — the
+    professional-linkage sibling of `services.signup.exchange_onboarding_token`. Returns
+    `None` (caller answers 401) for an unknown, expired, or already-burned token. On
+    success burns the token (nulls the hash + expiry) in the SAME commit and returns the
+    invited user, ready for the caller to mint a session; the user is then expected to
+    call `POST /auth/set-password`.
+    """
+    user = await session.scalar(
+        select(User).where(User.invite_token_hash == hash_refresh_token(raw_token))
+    )
+    if (
+        user is None
+        or user.invite_token_expires_at is None
+        or _as_utc(user.invite_token_expires_at) <= datetime.now(UTC)
+    ):
+        return None
+    user.invite_token_hash = None
+    user.invite_token_expires_at = None
+    await session.commit()
+    return user
+
+
 async def set_password(session: AsyncSession, user_id: UUID, new_password: str) -> None:
     """Overwrite the CALLER'S OWN password hash (`POST /auth/set-password`).
 

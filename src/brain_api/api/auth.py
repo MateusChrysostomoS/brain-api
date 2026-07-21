@@ -22,6 +22,7 @@ from brain_api.core.ratelimit import SlidingWindowLimiter, client_ip
 from brain_api.core.security import create_access_token
 from brain_api.models import User
 from brain_api.schemas.auth import (
+    ExchangeInviteTokenIn,
     ExchangeOnboardingTokenIn,
     LoginRequest,
     LogoutRequest,
@@ -35,6 +36,7 @@ from brain_api.schemas.auth import (
 from brain_api.services import signup as signup_service
 from brain_api.services.auth import (
     authenticate,
+    exchange_invite_token as _exchange_invite_token,
     get_tenant,
     get_user,
     issue_refresh_token,
@@ -68,9 +70,12 @@ def _session_pair(user: User, refresh_token: str) -> TokenResponse:
             sub=str(user.id),
             tenant_id=str(user.tenant_id) if user.tenant_id else None,
             role=user.role,
+            professional_id=str(user.professional_id) if user.professional_id else None,
         ),
         refresh_token=refresh_token,
         expires_in=get_settings().ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        name=user.name,
+        professional_id=user.professional_id,
     )
 
 
@@ -210,6 +215,42 @@ async def exchange_onboarding_token(
         tenant_id=str(result.user.tenant_id),
     )
     return _session_pair(result.user, refresh)
+
+
+@router.post(
+    "/exchange-invite-token",
+    response_model=TokenResponse,
+    summary="Exchange a professional-invite token for a session",
+    description=(
+        "Redeem the token minted by POST /doctor/professionals/invites. Single-use: "
+        "burned on success. Mirrors /auth/exchange-onboarding-token exactly."
+    ),
+    responses={
+        401: {"description": "Unknown, expired, or already-used token."},
+        429: {"description": "Rate limited (per-IP auth budget)."},
+    },
+)
+async def exchange_invite_token(
+    payload: ExchangeInviteTokenIn,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> TokenResponse:
+    """Mint the SAME session pair a password login would, for the invited professional."""
+    _check_auth_rate_limit(request)
+    user = await _exchange_invite_token(session, payload.token)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid_invite_token",
+        )
+    refresh = await issue_refresh_token(session, user.id)
+    # Stable references only — never the token.
+    logger.info(
+        "invite_token_exchanged",
+        user_id=str(user.id),
+        tenant_id=str(user.tenant_id) if user.tenant_id else None,
+    )
+    return _session_pair(user, refresh)
 
 
 @router.post(

@@ -29,12 +29,19 @@ class TokenResponse(BaseModel):
     `refresh_token` is the opaque, revocable long-lived leg — returned exactly once
     per issue/rotation (only its hash is stored server-side). `expires_in` is the
     ACCESS token's lifetime in seconds.
+
+    `name`/`professional_id` are ADDITIVE identity fields (onboarding/multi-professional
+    round, CONTRACT_onboarding_v1.md §6) so the portal has them right after login/refresh
+    without a separate `/auth/me` round-trip; `professional_id` is also embedded as a
+    claim on `access_token` itself (see `core.security.create_access_token`).
     """
 
     access_token: str
     token_type: str = "bearer"
     refresh_token: str | None = None
     expires_in: int | None = None
+    name: str | None = None
+    professional_id: UUID | None = None
 
 
 class RefreshRequest(BaseModel):
@@ -58,6 +65,7 @@ class UserOut(BaseModel):
     email: str
     name: str
     role: str
+    professional_id: UUID | None = None
 
 
 class TenantOut(BaseModel):
@@ -82,6 +90,16 @@ class MeResponse(BaseModel):
 class ExchangeOnboardingTokenIn(BaseModel):
     """`POST /auth/exchange-onboarding-token` body — redeem the ONE-TIME token minted by
     `GET /public/onboarding-status` for a real session pair (services/signup.py)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=1, max_length=512)
+
+
+class ExchangeInviteTokenIn(BaseModel):
+    """`POST /auth/exchange-invite-token` body — redeem the professional-invite token
+    minted by `POST /doctor/professionals/invites` for a real session pair. Mirrors
+    `ExchangeOnboardingTokenIn` exactly (CONTRACT_onboarding_v1.md §6)."""
 
     model_config = ConfigDict(extra="forbid")
 

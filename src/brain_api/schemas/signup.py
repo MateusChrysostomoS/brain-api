@@ -15,6 +15,24 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, mo
 from brain_api.services import catalog
 
 
+class IntakeIn(BaseModel):
+    """Pre-checkout intake answers (CONTRACT_onboarding_v1.md §7).
+
+    Stored verbatim on `signup_intents.intake` and consumed once, at provisioning, by
+    `services.onboarding.provision_defaults` (-> `derive_initial_state` /
+    `initial_next_retry_at`) to seed the tenant's initial onboarding state. The whole
+    `intake` object is OPTIONAL on `SignupIntentCreate` (back-compat: omitted -> `None`,
+    treated the same as "no signal" by `derive_initial_state`); when the client does send
+    it, all three answers are required together.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    whatsapp_usage: Literal["business_7d_plus", "business_recent", "none"]
+    prior_api: Literal["yes", "no", "unknown"]
+    fb_page: Literal["yes_admin", "yes_unknown_admin", "no"]
+
+
 class SignupIntentCreate(BaseModel):
     """Body for `POST /public/signup-intents` — the pre-checkout lead + selection.
 
@@ -31,6 +49,8 @@ class SignupIntentCreate(BaseModel):
     email: EmailStr = Field(max_length=320)
     whatsapp_phone: str = Field(min_length=1, max_length=32)
     catalog_ids: list[str] = Field(min_length=1, max_length=16)
+    # Optional eligibility-calibration answers (§7); omitted -> None (back-compat).
+    intake: IntakeIn | None = None
     # HONEYPOT (anti-spam). Never persisted — the API layer accept-and-drops silently.
     website: str | None = None
 
@@ -76,6 +96,16 @@ class CheckoutSessionOut(BaseModel):
     """The Stripe-hosted Checkout page to redirect the browser to."""
 
     checkout_url: str
+
+
+class CheckoutConfigOut(BaseModel):
+    """`GET /public/checkout-config` response — public, non-secret checkout-funnel
+    config. Today just the trial length: the funnel's pre-checkout disclosure copy must
+    quote the REAL deployed `STRIPE_TRIAL_PERIOD_DAYS` rather than hardcoding a second
+    source of truth that could silently drift from what Checkout actually applies.
+    """
+
+    trial_period_days: int
 
 
 class OnboardingStatusOut(BaseModel):

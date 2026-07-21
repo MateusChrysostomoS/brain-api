@@ -9,11 +9,17 @@ no Redis, CONTRACTS.md §5):
 - `GET  /public/onboarding-status` poll for provisioning + mint the one-time onboarding
   token the browser exchanges at `POST /auth/exchange-onboarding-token`.
 
+A FOURTH unauthenticated endpoint, `GET /public/checkout-config`, is deliberately NOT
+part of that shared limiter — static, non-secret, no-DB-touch config (today just
+`STRIPE_TRIAL_PERIOD_DAYS`) that a pricing-page view must never be able to exhaust the
+signup budget over (see its own docstring below).
+
 Nothing here ever writes a tenant/user/entitlement — provisioning happens ONLY in the
 Stripe webhook apply path (`services.billing.apply_stripe_event` ->
 `services.signup.provision_tenant_from_intent`), the same "webhook is the sole writer"
 invariant `services/billing.py` documents for the existing tenant billing flow. This
-module is pure request validation + intent bookkeeping + Checkout Session creation.
+module is pure request validation + intent bookkeeping + Checkout Session creation
+(+ that one static config read).
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -24,6 +30,7 @@ from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.core.ratelimit import SlidingWindowLimiter, client_ip
 from brain_api.schemas.signup import (
+    CheckoutConfigOut,
     CheckoutSessionCreate,
     CheckoutSessionOut,
     OnboardingStatusOut,
@@ -131,3 +138,21 @@ async def onboarding_status(
     """`pending` while awaiting payment; `ready`/`failed` once the webhook resolved it."""
     _check_rate_limit(request)
     return await signup_service.get_onboarding_status(session, session_id)
+
+
+@router.get(
+    "/public/checkout-config",
+    response_model=CheckoutConfigOut,
+    summary="Public checkout-funnel config (trial length)",
+    description=(
+        "Static, non-secret config the pre-checkout funnel needs so its disclosure "
+        "copy can quote the REAL deployed trial length instead of hardcoding a second "
+        "source of truth."
+    ),
+)
+async def checkout_config() -> CheckoutConfigOut:
+    """No rate limit — deliberate. Unlike the three routes above, this touches no DB
+    and returns nothing secret; a pricing-page view must never be able to eat into the
+    shared `_limiter` budget that the actual intent/checkout/status flow depends on.
+    """
+    return CheckoutConfigOut(trial_period_days=get_settings().STRIPE_TRIAL_PERIOD_DAYS)

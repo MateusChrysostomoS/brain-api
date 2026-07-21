@@ -43,7 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
 from brain_api.core.logging import get_logger
-from brain_api.models import Entitlement, ProcessedStripeEvent, SignupIntent
+from brain_api.models import Entitlement, ProcessedStripeEvent, SignupIntent, Tenant
 from brain_api.services import catalog
 
 logger = get_logger(__name__)
@@ -62,13 +62,37 @@ _STATUS_MAP = {
 # --- Price map (catalog id <-> Stripe price id) -----------------------------
 
 
+#: Suffixes marking a plan's TWO metered companion prices (CONTRACT_onboarding_v1.md §9;
+#: fully-metered secretaria_ferro model — NO flat/anchor price on the plan at all):
+#: additional Checkout line items for the same plan, billed by usage rather than a flat
+#: fee, one per Stripe Meter (patients, professionals). Not catalog ids of their own —
+#: `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` are synthetic
+#: STRIPE_PRICE_MAP keys recognized only by `_parse_price_map`'s validation,
+#: `price_id_for`'s callers, and `_state_from_subscription`'s reverse-lookup (plan-
+#: resolution evidence when a subscription carries no anchor-price item at all).
+METERED_PATIENTS_SUFFIX = "_metered_patients"
+METERED_PROFESSIONALS_SUFFIX = "_metered_professionals"
+
+#: SUPERSEDED single-companion convention (pre-fully-metered model, one companion price
+#: per plan). Still ACCEPTED by `_parse_price_map` — recognized-but-unused — so a
+#: deployed STRIPE_PRICE_MAP not yet migrated off it cannot blow up every billing call
+#: (the parser raises loudly on unknown ids); no code path reads it anymore.
+METERED_SUFFIX = "_metered"
+
+
 @lru_cache(maxsize=8)
 def _parse_price_map(raw: str) -> dict[str, str]:
     """Parse STRIPE_PRICE_MAP (keyed by the raw string so a settings monkeypatch in
     tests gets its own cache slot). Keys are normalized through the catalog's
     LEGACY_PLAN_ALIASES (the deployed map says "secretaria_bronze" for what the catalog
     calls secretaria_bronze_1), then unknown catalog ids are rejected loudly at parse
-    time — a typo'd map must not silently unsell a product."""
+    time — a typo'd map must not silently unsell a product. `{plan_id}_metered_patients`
+    / `{plan_id}_metered_professionals` keys (e.g. "secretaria_ferro_metered_patients")
+    are ALSO accepted: the two metered companion prices for a plan's Checkout line items,
+    not catalog ids of their own (§9). The SUPERSEDED single-companion `{plan_id}_metered`
+    key is ALSO accepted, purely for graceful degradation (recognized-but-unused — see
+    METERED_SUFFIX) so a deployed map not yet cleaned up doesn't break every billing call.
+    """
     try:
         mapping = json.loads(raw or "{}")
     except json.JSONDecodeError as exc:
@@ -77,14 +101,20 @@ def _parse_price_map(raw: str) -> dict[str, str]:
         catalog.LEGACY_PLAN_ALIASES.get(str(k), str(k)): str(v) for k, v in mapping.items()
     }
     known = catalog.PLAN_IDS | catalog.ADDON_IDS
-    unknown = set(normalized) - known
+    metered_known = {
+        f"{plan_id}{suffix}"
+        for plan_id in catalog.PLAN_IDS
+        for suffix in (METERED_PATIENTS_SUFFIX, METERED_PROFESSIONALS_SUFFIX, METERED_SUFFIX)
+    }
+    unknown = set(normalized) - known - metered_known
     if unknown:
         raise ValueError(f"STRIPE_PRICE_MAP has unknown catalog ids: {sorted(unknown)}")
     return normalized
 
 
 def price_id_for(catalog_id: str) -> str | None:
-    """The Stripe price id selling a catalog plan/add-on in THIS environment."""
+    """The Stripe price id selling a catalog plan/add-on (or a `{plan_id}_metered_patients`
+    / `{plan_id}_metered_professionals` companion price) in THIS environment."""
     return _parse_price_map(get_settings().STRIPE_PRICE_MAP).get(catalog_id)
 
 
@@ -122,6 +152,31 @@ async def _stripe_post(path: str, data: dict[str, str]) -> dict[str, Any]:
     return resp.json()
 
 
+async def _stripe_get(path: str) -> dict[str, Any]:
+    """GET counterpart of `_stripe_post` (same 503/502 error mapping). Used ONLY by the
+    `customer.subscription.trial_will_end` handler's live-subscription verification
+    (§13.6) — every other Stripe touchpoint in this module is a POST (checkout, portal,
+    cancel scheduling, charge hardening); this is the one read of Stripe's own state,
+    justified because the local `entitlements` row can lag behind what Stripe actually
+    did (see the handler's own comments).
+    """
+    settings = get_settings()
+    if not settings.STRIPE_SECRET_KEY:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "billing_not_configured")
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.STRIPE_API_BASE, timeout=settings.STRIPE_TIMEOUT_SECONDS
+        ) as client:
+            resp = await client.get(path, auth=(settings.STRIPE_SECRET_KEY, ""))
+    except httpx.RequestError as exc:
+        logger.warning("stripe_unreachable", path=path)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "stripe_unavailable") from exc
+    if resp.status_code >= 400:
+        logger.warning("stripe_api_error", path=path, upstream_status=resp.status_code)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "stripe_error")
+    return resp.json()
+
+
 @dataclass(frozen=True)
 class CheckoutSelection:
     """A validated purchase: one assignable plan + optional extra add-ons."""
@@ -136,6 +191,17 @@ def validate_selection(plan_id: str, addon_ids: list[str] | None) -> CheckoutSel
     422 for an unknown/unassignable plan or unknown add-on; 503 when a selected item
     has no Stripe price in this environment (sellable in the catalog but not wired).
     Add-ons the plan already implies are dropped (the combo already charges for them).
+
+    A FULLY METERED plan (CONTRACT_onboarding_v1.md §9 — e.g. secretaria_ferro: no flat/
+    anchor price, only the two `_metered_patients`/`_metered_professionals` companion
+    prices) WAIVES the plan's own `price_id_for(plan.id)` requirement, but ONLY when
+    BOTH companions are configured — a half-configured pair (e.g. professionals but not
+    patients) would check out a subscription missing one metered price entirely, so that
+    dimension of usage would accrue in our ledger but never actually get invoiced
+    (silent under-billing). `price_not_configured:{plan.id}` is raised whenever the plan
+    has NEITHER a direct price NOR both companions. Add-ons are unaffected by this
+    waiver — each still requires its own price regardless of how the plan itself is
+    billed.
     """
     plan = catalog.get_plan(plan_id)
     if plan is None or plan.id not in catalog.ASSIGNABLE_PLAN_IDS:
@@ -149,10 +215,56 @@ def validate_selection(plan_id: str, addon_ids: list[str] | None) -> CheckoutSel
         if addon_id not in plan.included_addons and addon_id not in addons:
             addons.append(addon_id)
 
-    for cid in (plan.id, *addons):
-        if price_id_for(cid) is None:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"price_not_configured:{cid}")
+    plan_has_direct_price = price_id_for(plan.id) is not None
+    plan_is_fully_metered = (
+        price_id_for(f"{plan.id}{METERED_PATIENTS_SUFFIX}") is not None
+        and price_id_for(f"{plan.id}{METERED_PROFESSIONALS_SUFFIX}") is not None
+    )
+    if not plan_has_direct_price and not plan_is_fully_metered:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"price_not_configured:{plan.id}")
+    for addon_id in addons:
+        if price_id_for(addon_id) is None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, f"price_not_configured:{addon_id}"
+            )
     return CheckoutSelection(plan_id=plan.id, addon_ids=tuple(addons))
+
+
+def _append_checkout_line_items(data: dict[str, str], selection: CheckoutSelection) -> None:
+    """Populate `line_items[i][price]`/`[quantity]` for a validated selection, shared by
+    BOTH checkout builders (this module's `create_checkout_session` and
+    `services.signup.create_checkout_session_for_intent`). Fully-metered billing
+    (CONTRACT_onboarding_v1.md §9, secretaria_ferro model — NO flat/anchor price on the
+    plan): the plan itself only gets a line item when it HAS a direct price
+    (`validate_selection` may have waived that requirement); either way, EACH configured
+    `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` companion is
+    appended as an ADDITIONAL line item with NO `quantity` field — Stripe rejects a
+    quantity on a metered price. Both companions are independent: either, both, or
+    neither may be configured (a purely flat-fee plan configures neither).
+    """
+    index = 0
+    plan_price_id = price_id_for(selection.plan_id)
+    if plan_price_id:
+        data[f"line_items[{index}][price]"] = plan_price_id
+        data[f"line_items[{index}][quantity]"] = "1"
+        index += 1
+    for addon_id in selection.addon_ids:
+        data[f"line_items[{index}][price]"] = price_id_for(addon_id) or ""
+        data[f"line_items[{index}][quantity]"] = "1"
+        index += 1
+    for suffix in (METERED_PATIENTS_SUFFIX, METERED_PROFESSIONALS_SUFFIX):
+        companion_price_id = price_id_for(f"{selection.plan_id}{suffix}")
+        if companion_price_id:
+            data[f"line_items[{index}][price]"] = companion_price_id
+            index += 1
+
+
+def _apply_trial(data: dict[str, str]) -> None:
+    """Add `subscription_data[trial_period_days]` when configured (> 0); shared by both
+    checkout builders (CONTRACT_onboarding_v1.md §9)."""
+    days = get_settings().STRIPE_TRIAL_PERIOD_DAYS
+    if days > 0:
+        data["subscription_data[trial_period_days]"] = str(days)
 
 
 async def create_checkout_session(
@@ -176,9 +288,8 @@ async def create_checkout_session(
         "metadata[tenant_id]": str(tenant_id),
         "subscription_data[metadata][tenant_id]": str(tenant_id),
     }
-    for i, cid in enumerate((selection.plan_id, *selection.addon_ids)):
-        data[f"line_items[{i}][price]"] = price_id_for(cid) or ""
-        data[f"line_items[{i}][quantity]"] = "1"
+    _append_checkout_line_items(data, selection)
+    _apply_trial(data)
     if ent is not None and ent.stripe_customer_id:
         data["customer"] = ent.stripe_customer_id
 
@@ -248,13 +359,37 @@ def _period_dt(ts: Any) -> datetime | None:
     return datetime.fromtimestamp(ts, tz=UTC) if ts else None
 
 
+def _plan_id_from_metered_companion(cid: str) -> str | None:
+    """If `cid` is a `{plan_id}_metered_patients` / `{plan_id}_metered_professionals`
+    STRIPE_PRICE_MAP key whose stripped plan id is a real catalog plan, return that plan
+    id; otherwise None. This is the "evidence of plan" a FULLY METERED subscription
+    needs (CONTRACT_onboarding_v1.md §9): with no anchor/flat price item at all, a
+    companion price is the ONLY signal `_state_from_subscription` has to resolve the
+    plan. Both companions independently resolve to the SAME plan id, so assigning it
+    from either (or both) is idempotent. The SUPERSEDED single `{plan_id}_metered` key
+    is deliberately NOT matched here — it keeps today's "ignored, no plan evidence"
+    behavior (harmless: it isn't a catalog id, so it lands in neither branch below).
+    """
+    for suffix in (METERED_PATIENTS_SUFFIX, METERED_PROFESSIONALS_SUFFIX):
+        if cid.endswith(suffix):
+            candidate = cid[: -len(suffix)]
+            if candidate in catalog.PLAN_IDS:
+                return candidate
+    return None
+
+
 def _state_from_subscription(sub: dict[str, Any]) -> dict[str, Any] | None:
     """Derive the full entitlement state a Stripe subscription implies.
 
     Maps each item's price id back to a catalog id: exactly one plan + N add-ons
     (quantities scale an add-on's additive limit grants — `multi_professional` ×3 buys
-    3 extra professionals). Returns None when no plan price is recognized (the caller
-    then updates status/period only and logs — never guesses a plan).
+    3 extra professionals). A FULLY METERED plan (CONTRACT_onboarding_v1.md §9 — no flat/
+    anchor price, e.g. secretaria_ferro) carries NO plan-price item at all: its
+    `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` companion items are
+    the ONLY evidence of the plan (`_plan_id_from_metered_companion`); either one
+    resolves it, and a companion item NEVER enters `addon_qty` (it is not an add-on).
+    Returns None when no plan is recognized by either route (the caller then updates
+    status/period only and logs — never guesses a plan).
     """
     plan_id: str | None = None
     addon_qty: dict[str, int] = {}
@@ -263,6 +398,10 @@ def _state_from_subscription(sub: dict[str, Any]) -> dict[str, Any] | None:
         cid = catalog_id_for_price(price_id) if price_id else None
         if cid is None:
             logger.warning("stripe_unknown_price_ignored", price_id=price_id)
+            continue
+        metered_plan_id = _plan_id_from_metered_companion(cid)
+        if metered_plan_id is not None:
+            plan_id = metered_plan_id
             continue
         if cid in catalog.PLAN_IDS:
             plan_id = cid
@@ -289,13 +428,21 @@ def _state_from_subscription(sub: dict[str, Any]) -> dict[str, Any] | None:
     return state
 
 
-async def _apply_signup_intent_checkout(session: AsyncSession, obj: dict[str, Any]) -> None:
+async def _apply_signup_intent_checkout(
+    session: AsyncSession, obj: dict[str, Any]
+) -> Tenant | None:
     """`checkout.session.completed` for a cold signup: provision the tenant it implies.
 
     Resolution: our own `metadata.signup_intent_id` (stamped at checkout,
     services/signup.create_checkout_session_for_intent), falling back to
     `client_reference_id`. An unresolvable/unknown id is logged and dropped — the event
     is still marked processed by the caller (a redelivery cannot do better).
+
+    Returns the freshly-provisioned `Tenant` row so the caller can fire the
+    secretaria-provisioning bridge post-commit (CONTRACT_onboarding_v1.md scope A) —
+    `None` when nothing was provisioned THIS call (unknown/unresolvable intent, a raced
+    email conflict that failed the intent, or an already-completed intent replayed by a
+    Stripe redelivery — the bridge must fire only once, not on every redelivery).
     """
     # Local import: services.signup imports services.billing (validate_selection,
     # price_id_for, _stripe_post), so a module-level import here would cycle.
@@ -304,24 +451,47 @@ async def _apply_signup_intent_checkout(session: AsyncSession, obj: dict[str, An
     raw = (obj.get("metadata") or {}).get("signup_intent_id") or obj.get("client_reference_id")
     if not raw:
         logger.warning("stripe_signup_event_missing_intent_id")
-        return
+        return None
     try:
         intent_id = UUID(str(raw))
     except ValueError:
         logger.warning("stripe_signup_event_bad_intent_id")
-        return
+        return None
 
     intent = await session.get(SignupIntent, intent_id)
     if intent is None:
         logger.warning("stripe_signup_event_unknown_intent", intent_id=str(intent_id))
-        return
+        return None
 
+    already_provisioned = intent.status == "completed" or intent.tenant_id is not None
     await signup_service.provision_tenant_from_intent(
         session,
         intent,
         stripe_customer_id=str(obj["customer"]) if obj.get("customer") else None,
         stripe_subscription_id=str(obj["subscription"]) if obj.get("subscription") else None,
     )
+    if already_provisioned or intent.tenant_id is None:
+        return None
+    return await session.get(Tenant, intent.tenant_id)
+
+
+def _reset_markers_if_subscription_changed(ent: Entitlement, new_subscription_id: str) -> None:
+    """Reset `charge_hardened_at`/`cancel_scheduled_at` to `None` when a NEW (non-null,
+    different) subscription id is about to replace an existing one on this entitlement.
+
+    Both markers describe the lifecycle of the SUBSCRIPTION they were applied to, not
+    the tenant — a resubscription (cancel -> resubscribe) starts an entirely new trial
+    lifecycle. Empirically confirmed bug this guards against: without this reset, a
+    tenant's SECOND subscription would inherit the first one's `charge_hardened_at`/
+    `cancel_scheduled_at`, permanently disabling both `harden_charge` (idempotency check
+    short-circuits on the stale marker) and `trial_will_end` scheduling (same) for that
+    tenant — the new trial would run out with NOTHING protecting it, and the tenant
+    would simply get charged whether or not they ever activated. A redelivery of the
+    SAME subscription id must NOT reset anything (checked via inequality, not presence).
+    """
+    if ent.stripe_subscription_id is not None and ent.stripe_subscription_id != new_subscription_id:
+        ent.charge_hardened_at = None
+        ent.cancel_scheduled_at = None
 
 
 async def apply_stripe_event(
@@ -337,6 +507,11 @@ async def apply_stripe_event(
     - customer.subscription.created/updated -> full recompute (plan/addons/limits/
       products/status/period) from the subscription items via the catalog
     - customer.subscription.deleted     -> status=canceled, products OFF
+    - customer.subscription.trial_will_end -> after a row-locked re-read + a LIVE Stripe
+      GET verify the subscription is still genuinely trialing, schedule a Stripe
+      `cancel_at` for a secretarIA-bearing plan that never activated (§13.6); no-op once
+      hardened/already scheduled/not still trialing (locally or live)/plan doesn't
+      enable secretarIA
     - invoice.payment_failed            -> status=past_due
     - invoice.paid                      -> past_due recovers to active
     """
@@ -348,9 +523,17 @@ async def apply_stripe_event(
         event_type == "checkout.session.completed"
         and (obj.get("metadata") or {}).get("kind") == "signup_intent"
     ):
-        await _apply_signup_intent_checkout(session, obj)
+        provisioned_tenant = await _apply_signup_intent_checkout(session, obj)
         await session.commit()
         logger.info("stripe_event_applied", event_type=event_type, kind="signup_intent")
+        if provisioned_tenant is not None:
+            # Best-effort, post-commit, fully self-contained try/except (never raises —
+            # see its own docstring): a secretaria outage must never break this webhook.
+            # Local import: services.onboarding_sync imports services.billing
+            # (harden_charge), so a module-level import here would cycle.
+            from brain_api.services import onboarding_sync
+
+            await onboarding_sync.ensure_secretaria_provisioned(session, provisioned_tenant)
         return True
 
     ent = await _entitlement_for_event(session, obj)
@@ -364,14 +547,18 @@ async def apply_stripe_event(
         if obj.get("customer"):
             ent.stripe_customer_id = str(obj["customer"])
         if obj.get("subscription"):
-            ent.stripe_subscription_id = str(obj["subscription"])
+            new_subscription_id = str(obj["subscription"])
+            _reset_markers_if_subscription_changed(ent, new_subscription_id)
+            ent.stripe_subscription_id = new_subscription_id
         # Plan/status recompute rides the subscription.* events Stripe sends alongside.
 
     elif event_type in ("customer.subscription.created", "customer.subscription.updated"):
         if obj.get("customer"):
             ent.stripe_customer_id = str(obj["customer"])
         if obj.get("id"):
-            ent.stripe_subscription_id = str(obj["id"])
+            new_subscription_id = str(obj["id"])
+            _reset_markers_if_subscription_changed(ent, new_subscription_id)
+            ent.stripe_subscription_id = new_subscription_id
         ent.status = _STATUS_MAP.get(obj.get("status", ""), "inactive")
         ent.period_start = _period_dt(obj.get("current_period_start"))
         ent.period_end = _period_dt(obj.get("current_period_end"))
@@ -393,6 +580,84 @@ async def apply_stripe_event(
         ent.precheck_enabled = False
         ent.secretaria_enabled = False
 
+    elif event_type == "customer.subscription.trial_will_end":
+        # Stripe fires this BOTH ~3 days before a subscription's scheduled trial end AND
+        # immediately when a trial is ended right now (trial_end="now") — which is
+        # exactly what harden_charge does on activation. Cheap short-circuit BEFORE any
+        # row lock / Stripe call: an immediate-end firing reports a non-"trialing" status
+        # right on the event's own subscription object, so most stale firings are
+        # skipped here for free. This is NOT the authoritative check by itself anymore
+        # (an unverified assumption about what Stripe embeds in the event payload) — the
+        # locked re-read + live refetch below are.
+        if obj.get("status") == "trialing":
+            # Row-lock + fresh read: harden_charge (below) ALSO locks this same row
+            # before writing its own markers. Locking here serializes the two critical
+            # sections, so a trial_will_end redelivery racing harden_charge's own
+            # trial_end="now" firing of THIS SAME event type can never be evaluated
+            # against a pre-harden snapshot — it blocks until harden's commit lands, and
+            # then sees charge_hardened_at already set. FOR UPDATE is a no-op on SQLite
+            # (tests unaffected) and a real row lock on Postgres. Kept as a SEPARATE
+            # name from `ent` (rather than reassigning it) so the outer `ent` used by
+            # the function's final logging line stays valid even in the
+            # near-impossible case this re-read finds no row.
+            locked_ent = await session.get(
+                Entitlement, ent.tenant_id, with_for_update=True, populate_existing=True
+            )
+            # Guard meanings (evaluated on the FRESH, locked state): `status` not
+            # "trialing" -> nothing to schedule; `charge_hardened_at` set -> tenant
+            # already activated/paying, never touch it; `cancel_scheduled_at` set -> a
+            # cancel_at is already scheduled (idempotency) — re-issuing the identical
+            # value would be harmless but the redundant Stripe call is skipped.
+            if (
+                locked_ent is not None
+                and locked_ent.status == "trialing"
+                and locked_ent.charge_hardened_at is None
+                and locked_ent.cancel_scheduled_at is None
+                and locked_ent.stripe_subscription_id
+            ):
+                # Coexistence-conditional billing (FIX 4) applies ONLY to plans that
+                # enable the secretarIA product. A PreCheck-only plan has no WhatsApp/
+                # Coexistence component and structurally can never reach 'ativo'
+                # (harden_charge fires only from secretarIA onboarding) — without this
+                # gate, a happily-paying PreCheck customer's trial would get auto-
+                # cancelled. An unresolved plan (None) is treated the same way: fail
+                # toward charging a possibly-legit subscription, never toward killing
+                # one.
+                plan = catalog.get_plan(locked_ent.plan)
+                if plan is not None and plan.secretaria:
+                    # Live-subscription verification: covers the residual hole where
+                    # harden_charge's Stripe call SUCCEEDED but its own DB commit then
+                    # FAILED (local markers stay None even though the trial already
+                    # ended on Stripe's side). The live object is the authority here —
+                    # not the locked-but-possibly-stale local row, and NOT anything the
+                    # event payload claims. Require the live trial_end to be more than an
+                    # hour out so a subscription that is trialing-but-about-to-end isn't
+                    # raced the other way either.
+                    live = await _stripe_get(
+                        f"/v1/subscriptions/{locked_ent.stripe_subscription_id}"
+                    )
+                    live_trial_end = live.get("trial_end")
+                    if (
+                        live.get("status") == "trialing"
+                        and live_trial_end
+                        and live_trial_end > datetime.now(UTC).timestamp() + 3600
+                    ):
+                        # Deliberately NO try/except anywhere in this branch (unlike
+                        # harden_charge's fail-soft): a failure here must PROPAGATE so
+                        # the webhook 500s and Stripe redelivers on its own ~3-day retry
+                        # schedule (matches this event's lead time before trial end).
+                        # harden_charge has another trigger to retry on (the next
+                        # config-status refresh); this handler has none — swallowing the
+                        # error here would silently lose the cancellation forever.
+                        await _stripe_post(
+                            f"/v1/subscriptions/{locked_ent.stripe_subscription_id}",
+                            {
+                                "cancel_at": str(int(live_trial_end)),
+                                "proration_behavior": "none",
+                            },
+                        )
+                        locked_ent.cancel_scheduled_at = datetime.now(UTC)
+
     elif event_type == "invoice.payment_failed":
         ent.status = "past_due"
 
@@ -402,4 +667,53 @@ async def apply_stripe_event(
 
     await session.commit()
     logger.info("stripe_event_applied", event_type=event_type, tenant_id=str(ent.tenant_id))
+    return True
+
+
+# --- Charge hardening (CONTRACT_onboarding_v1.md §8/§9; onboarding round) -----------------
+
+
+async def harden_charge(session: AsyncSession, tenant: Tenant) -> bool:
+    """End a still-trialing subscription's trial early once the tenant reaches 'ativo'.
+
+    Rationale: the Stripe trial exists to cover onboarding friction; a tenant that has
+    actually connected WhatsApp and finished configuration is no longer "still setting
+    up" and should start being billed on its normal cadence rather than keep accruing
+    the FULL trial window. Idempotent (`entitlements.charge_hardened_at` already set ->
+    no-op, `False`) and fully fail-soft: any Stripe failure is logged and simply retried
+    on the NEXT config-status refresh (`services/onboarding_sync.py::refresh_config_status`
+    is its only caller today), never raised into that caller.
+
+    The Stripe payload's `cancel_at: ""` unconditionally CLEARS any Stripe-side scheduled
+    cancellation (a no-op when none was scheduled) — the counterpart of the
+    `customer.subscription.trial_will_end` handler's `cancel_at` scheduling (§13.6): a
+    tenant reaching 'ativo' here is precisely the activation that handler's
+    `charge_hardened_at` guard exists to protect against a LATER trial_will_end
+    redelivery, but if a cancellation was already scheduled with Stripe BEFORE
+    activation landed, it must be cleared too. `ent.cancel_scheduled_at` is reset to
+    `None` in the SAME commit that stamps `charge_hardened_at`.
+
+    Row-locked read (`with_for_update`, a no-op on SQLite/real on Postgres): serializes
+    against a concurrently-applying `trial_will_end` webhook event locking the SAME row
+    (§13.6) — whichever of the two gets here first commits its marker before the
+    other's locked re-read proceeds, so neither can ever act on a stale pre-commit
+    snapshot of the other.
+    """
+    ent = await session.get(Entitlement, tenant.id, with_for_update=True, populate_existing=True)
+    if ent is None or ent.charge_hardened_at is not None:
+        return False
+    if ent.status != "trialing" or not ent.stripe_subscription_id:
+        return False
+    try:
+        await _stripe_post(
+            f"/v1/subscriptions/{ent.stripe_subscription_id}",
+            {"trial_end": "now", "proration_behavior": "none", "cancel_at": ""},
+        )
+    except HTTPException:
+        logger.warning("harden_charge_failed", tenant_id=str(tenant.id))
+        return False
+    ent.charge_hardened_at = datetime.now(UTC)
+    ent.cancel_scheduled_at = None
+    await session.commit()
+    logger.info("harden_charge_applied", tenant_id=str(tenant.id))
     return True

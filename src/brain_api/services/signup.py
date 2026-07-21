@@ -39,7 +39,7 @@ from brain_api.core.security import hash_password, hash_refresh_token
 from brain_api.models import Entitlement, SignupIntent, Tenant, User
 from brain_api.models.user import ROLE_TENANT_OWNER
 from brain_api.schemas.signup import OnboardingStatusOut, SignupIntentCreate
-from brain_api.services import billing, catalog
+from brain_api.services import billing, catalog, onboarding
 
 logger = get_logger(__name__)
 
@@ -75,6 +75,7 @@ async def create_signup_intent(session: AsyncSession, payload: SignupIntentCreat
         email=email,
         whatsapp_phone=payload.whatsapp_phone,
         catalog_ids=list(payload.catalog_ids),
+        intake=payload.intake.model_dump() if payload.intake is not None else None,
     )
     session.add(intent)
     await session.commit()
@@ -124,9 +125,8 @@ async def create_checkout_session_for_intent(session: AsyncSession, intent_id: U
         "customer_email": intent.email,
         "phone_number_collection[enabled]": "true",
     }
-    for i, cid in enumerate((selection.plan_id, *selection.addon_ids)):
-        data[f"line_items[{i}][price]"] = billing.price_id_for(cid) or ""
-        data[f"line_items[{i}][quantity]"] = "1"
+    billing._append_checkout_line_items(data, selection)
+    billing._apply_trial(data)
 
     payload = await billing._stripe_post("/v1/checkout/sessions", data)
     intent.stripe_session_id = payload["id"]
@@ -193,9 +193,12 @@ async def provision_tenant_from_intent(
     Idempotent: a no-op once `intent.status == "completed"` or `intent.tenant_id` is
     already set (a redelivered `checkout.session.completed` cannot double-provision).
     Mirrors `scripts/seed_dev.py`'s bootstrap order (Tenant -> flush -> User ->
-    Entitlement). The owner's password is a random, never-communicated value: the
-    onboarding token (`POST /auth/exchange-onboarding-token`) + `POST /auth/set-password`
-    are the only way in.
+    Entitlement), with `services.onboarding.provision_defaults` seeding the tenant's
+    onboarding state machine from `intent.intake` right after the tenant is born. The
+    owner's password is a random, never-communicated value: the onboarding token
+    (`POST /auth/exchange-onboarding-token`) + `POST /auth/set-password` are the only way
+    in. Does NOT call the secretaria provisioning bridge (`secretaria_provisioned_at`
+    stays null here) — that I/O is wired by a later build on top of this function.
     """
     if intent.status == "completed" or intent.tenant_id is not None:
         return
@@ -215,6 +218,7 @@ async def provision_tenant_from_intent(
     tenant = Tenant(clinic_name=intent.clinic_name)
     session.add(tenant)
     await session.flush()  # assign tenant.id
+    onboarding.provision_defaults(tenant, intent.intake, datetime.now(UTC))
 
     user = User(
         email=intent.email,

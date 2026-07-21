@@ -348,7 +348,10 @@ async def issue_impersonation_token(
 
     settings = get_settings()
     token = create_access_token(
-        sub=str(user.id), tenant_id=str(user.tenant_id), role=user.role
+        sub=str(user.id),
+        tenant_id=str(user.tenant_id),
+        role=user.role,
+        professional_id=str(user.professional_id) if user.professional_id else None,
     )
     out = ImpersonationTokenOut(
         access_token=token,

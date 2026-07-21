@@ -6,6 +6,7 @@ arrives in the request body, is validated in-memory, and only booleans/ids leave
 """
 
 import re
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -31,10 +32,13 @@ class HubTokenVerifyOut(BaseModel):
     secretaria enabled) — secretarIA never caches it beyond a short TTL and never
     decides it locally. `tenant_id` is present whenever the token itself was valid,
     so a refused-but-valid session can be logged tenant-scoped on the caller side.
+    `professional_id` rides the same way (present when the token carried one, parsed
+    safely — a malformed claim reads as absent, never a 500).
     """
 
     active: bool
     tenant_id: UUID | None = None
+    professional_id: UUID | None = None
 
 
 class InternalEntitlementOut(BaseModel):
@@ -108,3 +112,58 @@ class PrecheckHandoffOut(BaseModel):
     `already_active` when the patient already had one live."""
 
     status: Literal["seeded", "already_active"]
+
+
+# --- Onboarding crons (CONTRACT_onboarding_v1.md §5 items 7-8; secretaria pulls/posts) ---
+
+
+class InternalOnboardingTenantOut(BaseModel):
+    """One row of `GET /internal/onboarding/tenants` — everything secretaria's onboarding
+    crons (`run_onboarding_nudges`) need to decide who gets a retry nudge / config
+    reminder / D+30 flag / D+60 closing email, without a second round-trip."""
+
+    tenant_id: UUID
+    onboarding_state: str
+    blocker_reason: str | None
+    config_status: str
+    onboarding_anchor_at: datetime | None
+    next_retry_at: datetime | None
+    retry_paused: bool
+    config_reminder_paused: bool
+    config_reminder_anchor_at: datetime | None
+    last_config_reminder_at: datetime | None
+    closing_email_sent_at: datetime | None
+    manual_review_flagged_at: datetime | None
+    owner_email: str | None
+    owner_name: str | None
+    clinic_name: str
+    subscription_active: bool
+
+
+class InternalOnboardingListOut(BaseModel):
+    items: list[InternalOnboardingTenantOut]
+
+
+class InternalOnboardingEventIn(BaseModel):
+    """`POST /internal/onboarding/tenants/{tenant_id}/events` body — one cron
+    bookkeeping event. `retry_nudge_sent`/`config_reminder_sent` are RECURRING and
+    always applied; `closing_email_sent`/`manual_review_flagged` are ONE-SHOT (idempotent
+    no-op once already set) — see `services/onboarding_sync.py::apply_onboarding_event`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    event: Literal[
+        "retry_nudge_sent",
+        "config_reminder_sent",
+        "closing_email_sent",
+        "manual_review_flagged",
+    ]
+    at: datetime
+    next_retry_at: datetime | None = None
+
+
+class InternalOnboardingEventOut(BaseModel):
+    """`applied=False` means a one-shot marker was already set — not an error."""
+
+    applied: bool

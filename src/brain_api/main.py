@@ -19,6 +19,7 @@ from brain_api.api import (
     entitlements,
     health,
     internal,
+    onboarding,
     privacy,
     public_signup,
     sso,
@@ -64,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(admin.router, tags=["admin"])
     app.include_router(privacy.router, tags=["admin", "privacy"])
     app.include_router(doctor.router, tags=["doctor"])
+    app.include_router(onboarding.router, tags=["doctor", "onboarding"])
     app.include_router(billing.router, tags=["billing"])
     app.include_router(internal.router)
     return app

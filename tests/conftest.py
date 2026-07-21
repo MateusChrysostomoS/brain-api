@@ -7,6 +7,10 @@ test values — letting the test modules use ordinary top-level imports.
 
 import os
 
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite://")
 os.environ.setdefault("APP_ENV", "dev")
@@ -50,4 +54,25 @@ os.environ.setdefault(
 # Re-export the seeded in-memory app fixture so any test module can request `client` by
 # name (pytest injection) without importing it — avoids the F811 "redefinition" lint that
 # importing a fixture and shadowing it as a parameter would otherwise trigger.
+from brain_api.core.database import Base  # noqa: E402
 from tests.test_rbac import client  # noqa: E402, F401
+
+
+@pytest_asyncio.fixture
+async def db_session():
+    """A bare `AsyncSession` over a FRESH in-memory SQLite DB (all tables created).
+
+    For unit-testing a service function directly (e.g. services/onboarding.py,
+    services/signup.py) without the FastAPI/httpx `client` fixture's app wiring — just a
+    session + real ORM models. Independent of `client`'s own engine (a different DB per
+    test either way).
+    """
+    engine = create_async_engine(
+        "sqlite+aiosqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sessionmaker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessionmaker() as session:
+        yield session
+    await engine.dispose()

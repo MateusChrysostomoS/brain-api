@@ -3,15 +3,21 @@
 Non-sensitive identity only. Per the tenant-secrets-encryption skill, any tenant
 secret would live in a separate `tenant_credentials` table (NOT created in this scope,
 since brain-api stores no tenant secrets yet).
+
+The onboarding state machine (`onboarding_state` / `blocker_reason` / `config_status` +
+the timestamps and pause flags below) is OWNED by `services/onboarding.py` — the single
+writer for every transition (CONTRACT_onboarding_v1.md §8). Every default here is one of
+the enum-value constants declared there; nothing on this model is a magic string.
 """
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, func
+from sqlalchemy import Boolean, DateTime, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from brain_api.core.database import Base
+from brain_api.services import onboarding
 
 
 class Tenant(Base):
@@ -21,6 +27,47 @@ class Tenant(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     clinic_name: Mapped[str] = mapped_column(String(255))
+
+    # --- Onboarding state machine (services/onboarding.py is the sole writer) ---------
+    onboarding_state: Mapped[str] = mapped_column(
+        String(40),
+        server_default=onboarding.STATE_PENDING,
+        default=onboarding.STATE_PENDING,
+    )
+    blocker_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    config_status: Mapped[str] = mapped_column(
+        String(40),
+        server_default=onboarding.CONFIG_STATUS_INCOMPLETA,
+        default=onboarding.CONFIG_STATUS_INCOMPLETA,
+    )
+    onboarding_anchor_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    secretaria_provisioned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    config_reminder_anchor_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_config_reminder_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    closing_email_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    manual_review_flagged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Owner-only kill switches (POST /doctor/onboarding/pause, B2) for the secretarIA
+    # retry-nudge / config-reminder crons.
+    retry_paused: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), default=False)
+    config_reminder_paused: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("false"), default=False
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

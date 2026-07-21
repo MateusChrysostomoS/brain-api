@@ -41,9 +41,32 @@ LIMIT_UNITS = "units"  # clinic branches
 LIMIT_MESSAGES = "messages"  # inbound conversations handled / month
 LIMIT_REMINDERS = "reminders"  # 24h/1h HSM reminder sends / month
 LIMIT_HSM_PROACTIVE = "hsm_proactive"  # proactive/reactivation HSM sends / month
+#: Distinct (professional, patient) pairs billed this month (CONTRACT_onboarding_v1.md
+#: §9, billing Phase 1). No plan grants a base limit for it (stays 0 = unlimited-by-quota
+#: on every plan) — it exists purely so POST /internal/usage-events validates the
+#: feature id and the ledger/Stripe-meter-forward path (services/usage.py) has a home.
+LIMIT_BILLABLE_PATIENTS = "billable_patients"
+#: Monthly METERED headcount Stripe bills under the fully-metered secretaria_ferro model
+#: (R$80/active professional/month). Metering-only, same pattern as LIMIT_BILLABLE_PATIENTS
+#: above: no plan grants a base limit for it (stays 0 = unlimited-by-quota) — it exists
+#: purely so POST /internal/usage-events validates feature="active_professionals" (fed by
+#: secretarIA's own cron, a sibling change in that repo) and services/usage.py's Stripe
+#: meter-event forward has a validated key. NOT the same concern as LIMIT_PROFESSIONALS
+#: above: that one is the QUOTA ("professionals" = how many may be configured on the
+#: calendar, a plan/add-on grant); this one is the BILLED COUNT ("active_professionals" =
+#: how many were active this month, what Stripe actually charges for).
+LIMIT_ACTIVE_PROFESSIONALS = "active_professionals"
 
 LIMIT_KEYS: frozenset[str] = frozenset(
-    (LIMIT_PROFESSIONALS, LIMIT_UNITS, LIMIT_MESSAGES, LIMIT_REMINDERS, LIMIT_HSM_PROACTIVE)
+    (
+        LIMIT_PROFESSIONALS,
+        LIMIT_UNITS,
+        LIMIT_MESSAGES,
+        LIMIT_REMINDERS,
+        LIMIT_HSM_PROACTIVE,
+        LIMIT_BILLABLE_PATIENTS,
+        LIMIT_ACTIVE_PROFESSIONALS,
+    )
 )
 
 # --- plan ids --------------------------------------------------------------------------

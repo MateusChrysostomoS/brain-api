@@ -11,6 +11,7 @@ unset in tests, so the precheck proxy routes return an empty page (no network).
 
 import importlib.util
 import pathlib
+from uuid import uuid4
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -36,6 +37,10 @@ ADMIN_PASSWORD = "adminpass1"
 OWNER_A_EMAIL = "ownera@a.com"
 OWNER_A_PASSWORD = "ownerapass1"
 CLINIC_A = "Clínica A"
+# Owner A carries a professional_id (secretaria professional linkage, onboarding/
+# multi-professional round) so auth-claim/response tests can exercise the "present" case;
+# Owner B has none, exercising "absent" (test_auth_hardening.py).
+OWNER_A_PROFESSIONAL_ID = uuid4()
 OWNER_B_EMAIL = "ownerb@b.com"
 OWNER_B_PASSWORD = "ownerbpass1"
 CLINIC_B = "Clínica B"
@@ -97,6 +102,7 @@ async def client():
                 name="Owner A",
                 password_hash=hash_password(OWNER_A_PASSWORD),
                 role=ROLE_TENANT_OWNER,
+                professional_id=OWNER_A_PROFESSIONAL_ID,
             )
         )
         session.add(

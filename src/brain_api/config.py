@@ -170,6 +170,60 @@ class Settings(BaseSettings):
     # Stripe API base + client timeout (base overridable only for local stubs).
     STRIPE_API_BASE: str = "https://api.stripe.com"
     STRIPE_TIMEOUT_SECONDS: float = 15.0
+    # Trial length (days) applied to EVERY subscription-mode Checkout Session
+    # (subscription_data[trial_period_days]) when > 0 (services/billing.py,
+    # services/signup.py — both checkout builders). Default 0/off; deploy sets it high
+    # enough (e.g. ~75) to outlast the onboarding retry window before Stripe would
+    # otherwise charge a still-unconnected tenant (services.billing.harden_charge ends
+    # the trial early once the tenant reaches 'ativo', regardless of this value).
+    STRIPE_TRIAL_PERIOD_DAYS: int = 0
+    # Stripe Meter event_name for the billable_patients metered add-on price
+    # (services/usage.py forwards a meter event after a successful billable_patients
+    # usage record when this AND the tenant's stripe_customer_id are both set). Unset
+    # disables the forward entirely (metering-only, no billing impact either way).
+    STRIPE_METER_EVENT_BILLABLE_PATIENTS: str | None = None
+    # Stripe Meter event_name for the active_professionals metered PLAN price (the fully
+    # metered secretaria_ferro model, R$80/active professional/month). Same forwarding
+    # contract as STRIPE_METER_EVENT_BILLABLE_PATIENTS above: services/usage.py forwards a
+    # meter event after a successful active_professionals usage record when this AND the
+    # tenant's stripe_customer_id are both set; unset disables the forward entirely
+    # (metering-only, no billing impact either way).
+    STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS: str | None = None
+
+    # --- Onboarding / multi-professional (CONTRACT_onboarding_v1.md) ---
+    # Meta Graph API app credentials for the WhatsApp Embedded Signup authorization-code
+    # exchange (POST /doctor/onboarding/attempts -> services/meta_graph.py). Empty ->
+    # the exchange is skipped/fails soft: an attempt carrying a `code` with no configured
+    # app credentials just records as a normal 'fail' attempt
+    # (error_code="token_exchange_failed"), never a 500.
+    META_APP_ID: str = ""
+    META_APP_SECRET: str = ""
+    META_GRAPH_BASE_URL: str = "https://graph.facebook.com/v23.0"
+    # Meta Embedded Signup config id. The FRONTEND needs its own copy
+    # (NEXT_PUBLIC_META_APP_ID / NEXT_PUBLIC_META_ES_CONFIG_ID) to drive the JS SDK; this
+    # is the backend's copy, surfaced read-only via GET /doctor/onboarding's
+    # `embedded_signup` block so the portal can tell whether the flow is configured
+    # without hardcoding a second source of truth. Not a secret (Meta's JS SDK takes an
+    # equivalent config id client-side too) — unlike META_APP_SECRET, safe to echo back.
+    META_ES_CONFIG_ID: str = ""
+    # Base URL of the brain-frontend portal — used to build the professional-invite link
+    # (POST /doctor/professionals/invites -> "{FRONTEND_BASE_URL}/convite?token=...").
+    FRONTEND_BASE_URL: str = "http://localhost:3000"
+    # Fallback for the ativo transition when secretaria's Coexistence "mode resolved"
+    # signal (history/smb_app_state_sync webhook fields, secretaria-side) never arrives:
+    # a tenant whose WhatsApp `connected_at` is older than this many hours is treated as
+    # mode-resolved anyway, so a stalled/missing signal can never permanently block
+    # activation (services/onboarding_sync.py refresh_config_status).
+    MODE_RESOLVE_FALLBACK_HOURS: int = 24
+    # Throttle for the config-status pull from secretaria (services/onboarding_sync.py,
+    # in-process TTL cache — no Redis in this service): GET /doctor/onboarding /
+    # GET /doctor/professionals refresh at most once per this many seconds per tenant.
+    CONFIG_STATUS_PULL_TTL_SECONDS: int = 60
+    # Lifetime of a professional-invite token (POST /doctor/professionals/invites ->
+    # POST /auth/exchange-invite-token). Same hashed-at-rest / single-use scheme as the
+    # onboarding token (ONBOARDING_TOKEN_EXPIRE_MINUTES) but expressed in hours (a human
+    # is expected to check their invite email within days, not minutes).
+    INVITE_TOKEN_EXPIRE_HOURS: int = 72
 
     @property
     def cors_origins(self) -> list[str]:

@@ -45,8 +45,16 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(*, sub: str, tenant_id: str | None, role: str) -> str:
-    """Mint a short-lived access token. `sub` is the brain user id (UUID string)."""
+def create_access_token(
+    *, sub: str, tenant_id: str | None, role: str, professional_id: str | None = None
+) -> str:
+    """Mint a short-lived access token. `sub` is the brain user id (UUID string).
+
+    `professional_id` (the user's `users.professional_id`, a secretaria professional id
+    carried BY VALUE — CONTRACT_onboarding_v1.md §0) is included as a claim ONLY when the
+    user row actually has one; omitted otherwise, so an old/professional-less token shape
+    is unchanged.
+    """
     settings = get_settings()
     now = datetime.now(UTC)
     claims: dict[str, Any] = {
@@ -56,6 +64,8 @@ def create_access_token(*, sub: str, tenant_id: str | None, role: str) -> str:
         "iat": now,
         "exp": now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
     }
+    if professional_id:
+        claims["professional_id"] = professional_id
     return jwt.encode(claims, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -108,7 +118,9 @@ def decode_token(token: str) -> dict[str, Any] | None:
 # --- secretarIA hub token (purpose-scoped, tenant-bearing; NOT a user JWT) ------------
 
 
-def create_hub_token(*, tenant_id: str, actor_user_id: str) -> str:
+def create_hub_token(
+    *, tenant_id: str, actor_user_id: str, professional_id: str | None = None
+) -> str:
     """Mint the tenant-scoped token the doctor portal presents to secretarIA's hub.
 
     Claims carry the TENANT (`sub`) plus `scope=secretaria_hub` and the acting user for
@@ -117,6 +129,10 @@ def create_hub_token(*, tenant_id: str, actor_user_id: str) -> str:
     outright). secretarIA never validates it locally: it introspects via brain-api's
     /internal surface, which re-reads the LIVE entitlement (auth-jwt-multitenant: the
     mutable "is this paid?" state is never trusted from a token).
+
+    `professional_id`, when the acting user has one, rides along so secretarIA's hub can
+    scope a professional-specific view (config/calendar) without a second lookup — same
+    "included only when set" convention as `create_access_token`.
     """
     settings = get_settings()
     now = datetime.now(UTC)
@@ -127,6 +143,8 @@ def create_hub_token(*, tenant_id: str, actor_user_id: str) -> str:
         "iat": now,
         "exp": now + timedelta(minutes=settings.HUB_TOKEN_EXPIRE_MINUTES),
     }
+    if professional_id:
+        claims["professional_id"] = professional_id
     return jwt.encode(claims, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 

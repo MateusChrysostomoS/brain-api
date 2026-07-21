@@ -55,6 +55,20 @@ class Entitlement(Base):
     period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Set once services.onboarding's harden_charge (B2) ends a trial early
+    # (`trial_end=now`) after the tenant reaches `ativo`. Idempotency marker: a set value
+    # means "already hardened, skip" — never re-applied.
+    charge_hardened_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Set when the trial_will_end handler schedules a Stripe cancel_at because the
+    # tenant hadn't reached 'ativo' yet. Cleared by harden_charge if the tenant
+    # activates afterward (the race this column exists to prevent: an already-
+    # scheduled Stripe cancellation must not fire against a now-active, paying
+    # subscription).
+    cancel_scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

@@ -1,19 +1,35 @@
 """Usage-event recording (metering leg — stripe-billing-entitlements skill).
 
 METERING = our local ledger (`usage_events`) + the `entitlements.usage` counters it
-feeds. There is NO Stripe call anywhere in this module: meter-event forwarding to
-Stripe is a later billing round (see the TODO below). This mirrors the skill's
-`record_usage` shape but stays fully synchronous/in-request (no arq worker yet — the
-caller side, e.g. secretarIA's reminder job, is expected to fire-and-forget this call).
+feeds. This mirrors the skill's `record_usage` shape but stays fully synchronous/
+in-request (no arq worker yet — the caller side, e.g. secretarIA's reminder job, is
+expected to fire-and-forget this call). The Stripe touchpoint is a best-effort meter
+event forward for TWO metered features — `billable_patients` and (fully-metered
+secretaria_ferro model) `active_professionals` (CONTRACT_onboarding_v1.md §9) — never in
+the critical path: it fires AFTER the ledger/counter commit already succeeded and can
+never raise into the caller (our ledger is the source of truth; Stripe is a write-only
+sink). Both features share the exact same forward/fail-soft mechanics; only the
+configured Stripe Meter `event_name` differs (`_METER_EVENT_SETTINGS` below).
 """
 
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from brain_api.config import get_settings
 from brain_api.core.logging import get_logger
 from brain_api.models import Entitlement, UsageEvent
 from brain_api.schemas.internal import UsageEventIn
+from brain_api.services import billing, catalog
 
 logger = get_logger(__name__)
+
+#: feature id -> the `Settings` attribute name holding its Stripe Meter `event_name`.
+#: Both metered features share the identical fire/never-raise/fail-soft contract
+#: (`_forward_meter_event` below) — only the configured event_name differs per feature.
+_METER_EVENT_SETTINGS: dict[str, str] = {
+    catalog.LIMIT_BILLABLE_PATIENTS: "STRIPE_METER_EVENT_BILLABLE_PATIENTS",
+    catalog.LIMIT_ACTIVE_PROFESSIONALS: "STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS",
+}
 
 
 async def record_usage(session: AsyncSession, payload: UsageEventIn) -> bool:
@@ -56,8 +72,43 @@ async def record_usage(session: AsyncSession, payload: UsageEventIn) -> bool:
         amount=payload.amount,
     )
 
-    # TODO(billing round): forward a Stripe meter event for this (feature, amount) once
-    # metered add-on prices exist, and check the 80%/100% quota-alert thresholds against
+    meter_setting_name = _METER_EVENT_SETTINGS.get(payload.feature)
+    if meter_setting_name is not None:
+        event_name = getattr(get_settings(), meter_setting_name)
+        await _forward_meter_event(ent, payload.amount, event_name)
+
+    # TODO(billing round): check the 80%/100% quota-alert thresholds against
     # `ent.limits[feature]` here (see stripe-billing-entitlements: quota alerts / upsell
-    # trigger). Neither happens yet — this round is metering only, no Stripe call.
+    # trigger). Not implemented yet.
     return True
+
+
+async def _forward_meter_event(ent: Entitlement, amount: int, event_name: str | None) -> None:
+    """Best-effort Stripe meter-event forward for a metered feature (`billable_patients`
+    or, under the fully-metered secretaria_ferro model, `active_professionals` —
+    CONTRACT_onboarding_v1.md §9). Fires ONLY when `event_name` (the feature's configured
+    Stripe Meter `event_name` — `STRIPE_METER_EVENT_BILLABLE_PATIENTS` /
+    `STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS`, resolved by the caller via
+    `_METER_EVENT_SETTINGS`) is configured AND the tenant's entitlement has a
+    `stripe_customer_id`. NEVER raises and NEVER blocks the caller's `200` — a forwarding
+    failure only means this one usage event doesn't show up on the Stripe invoice; our
+    own ledger already won (stripe-billing-entitlements: Stripe meter events are
+    write-only and never the source of truth for usage).
+    """
+    if not event_name or not ent.stripe_customer_id:
+        return
+    try:
+        await billing._stripe_post(
+            "/v1/billing/meter_events",
+            {
+                "event_name": event_name,
+                "payload[stripe_customer_id]": ent.stripe_customer_id,
+                "payload[value]": str(amount),
+            },
+        )
+    except HTTPException:
+        # _stripe_post already logged the specific failure (unconfigured/unreachable/
+        # error); this is just the "never let it block the caller" boundary.
+        logger.warning("usage_meter_forward_failed", tenant_id=str(ent.tenant_id))
+    except Exception:  # noqa: BLE001 - best-effort by contract: never raise, never block.
+        logger.warning("usage_meter_forward_error", tenant_id=str(ent.tenant_id), exc_info=True)

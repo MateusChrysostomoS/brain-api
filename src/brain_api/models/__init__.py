@@ -10,6 +10,7 @@ from brain_api.models.precheck_link import PrecheckAccountLink
 from brain_api.models.privacy_request import PrivacyRequest
 from brain_api.models.processed_stripe_event import ProcessedStripeEvent
 from brain_api.models.refresh_token import RefreshToken
+from brain_api.models.signup_attempt import SignupAttempt
 from brain_api.models.signup_intent import SignupIntent
 from brain_api.models.tenant import Tenant
 from brain_api.models.usage_event import UsageEvent
@@ -22,6 +23,7 @@ __all__ = [
     "PrivacyRequest",
     "ProcessedStripeEvent",
     "RefreshToken",
+    "SignupAttempt",
     "SignupIntent",
     "Tenant",
     "UsageEvent",

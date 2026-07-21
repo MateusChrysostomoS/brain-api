@@ -22,21 +22,29 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Security, status
 from fastapi.security import APIKeyHeader
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.core.security import decode_hub_token
+from brain_api.models import Entitlement, Tenant, User
+from brain_api.models.user import ROLE_TENANT_OWNER
 from brain_api.schemas.internal import (
     HubTokenVerifyIn,
     HubTokenVerifyOut,
     InternalEntitlementOut,
+    InternalOnboardingEventIn,
+    InternalOnboardingEventOut,
+    InternalOnboardingListOut,
+    InternalOnboardingTenantOut,
     PrecheckHandoffIn,
     PrecheckHandoffOut,
     UsageEventIn,
     UsageEventOut,
 )
+from brain_api.services import onboarding_sync
 from brain_api.services.entitlements import ACTIVE_STATUSES, resolve_entitlement
 from brain_api.services.precheck_handoff import request_handoff
 from brain_api.services.usage import record_usage
@@ -112,11 +120,21 @@ async def verify_hub_token(
     except ValueError:
         return HubTokenVerifyOut(active=False)
 
+    # Parse-safe: a malformed/absent claim just reads as no professional scope, never a
+    # 500 (same convention as api/deps.py's Principal parsing).
+    professional_id: UUID | None = None
+    raw_professional_id = claims.get("professional_id")
+    if raw_professional_id:
+        try:
+            professional_id = UUID(str(raw_professional_id))
+        except ValueError:
+            professional_id = None
+
     ent = await resolve_entitlement(session, tenant_id)
     active = ent.status in ACTIVE_STATUSES and ent.products.secretaria
     if not active:
         logger.info("hub_token_refused", tenant_id=str(tenant_id), status=ent.status)
-    return HubTokenVerifyOut(active=active, tenant_id=tenant_id)
+    return HubTokenVerifyOut(active=active, tenant_id=tenant_id, professional_id=professional_id)
 
 
 @router.get(
@@ -208,3 +226,88 @@ async def precheck_handoff(
 
     result = await request_handoff(payload.tenant_id, payload.phone_number)
     return PrecheckHandoffOut(status=result["status"])
+
+
+# --- Onboarding crons (CONTRACT_onboarding_v1.md §5 items 7-8; secretaria pulls/posts) ---
+
+
+@router.get(
+    "/onboarding/tenants",
+    response_model=InternalOnboardingListOut,
+    summary="Tenants the onboarding crons must still act on (internal)",
+    responses=_INTERNAL_RESPONSES,
+)
+async def list_onboarding_tenants(
+    session: AsyncSession = Depends(get_session),
+) -> InternalOnboardingListOut:
+    """secretaria's `run_onboarding_nudges` cron pulls this hourly to decide who needs a
+    retry nudge / config reminder / D+30 manual-review flag / D+60 closing email.
+    Includes every tenant where `onboarding_state != 'ativo'` OR
+    `config_status != 'completa'`.
+    """
+    tenants = await onboarding_sync.list_onboarding_tenants(session)
+    if not tenants:
+        return InternalOnboardingListOut(items=[])
+
+    ids = [t.id for t in tenants]
+    owners = {
+        u.tenant_id: u
+        for u in (
+            await session.scalars(
+                select(User).where(User.tenant_id.in_(ids), User.role == ROLE_TENANT_OWNER)
+            )
+        ).all()
+    }
+    entitlements = {
+        e.tenant_id: e
+        for e in (
+            await session.scalars(select(Entitlement).where(Entitlement.tenant_id.in_(ids)))
+        ).all()
+    }
+
+    items = []
+    for t in tenants:
+        ent = entitlements.get(t.id)
+        owner = owners.get(t.id)
+        items.append(
+            InternalOnboardingTenantOut(
+                tenant_id=t.id,
+                onboarding_state=t.onboarding_state,
+                blocker_reason=t.blocker_reason,
+                config_status=t.config_status,
+                onboarding_anchor_at=t.onboarding_anchor_at,
+                next_retry_at=t.next_retry_at,
+                retry_paused=t.retry_paused,
+                config_reminder_paused=t.config_reminder_paused,
+                config_reminder_anchor_at=t.config_reminder_anchor_at,
+                last_config_reminder_at=t.last_config_reminder_at,
+                closing_email_sent_at=t.closing_email_sent_at,
+                manual_review_flagged_at=t.manual_review_flagged_at,
+                owner_email=owner.email if owner else None,
+                owner_name=owner.name if owner else None,
+                clinic_name=t.clinic_name,
+                subscription_active=ent is not None and ent.status in ACTIVE_STATUSES,
+            )
+        )
+    return InternalOnboardingListOut(items=items)
+
+
+@router.post(
+    "/onboarding/tenants/{tenant_id}/events",
+    response_model=InternalOnboardingEventOut,
+    summary="Record a cron bookkeeping event for a tenant (internal)",
+    responses={**_INTERNAL_RESPONSES, 404: {"description": "Unknown tenant."}},
+)
+async def post_onboarding_event(
+    tenant_id: Annotated[UUID, Path(description="Tenant UUID.")],
+    payload: InternalOnboardingEventIn,
+    session: AsyncSession = Depends(get_session),
+) -> InternalOnboardingEventOut:
+    """CONTRACT_onboarding_v1.md §5 item 8. `closing_email_sent`/`manual_review_flagged`
+    are one-shot (idempotent no-op once already set, `applied:false`);
+    `retry_nudge_sent`/`config_reminder_sent` are recurring and always apply."""
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "tenant_not_found")
+    applied = await onboarding_sync.apply_onboarding_event(session, tenant, payload)
+    return InternalOnboardingEventOut(applied=applied)

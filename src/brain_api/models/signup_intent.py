@@ -44,6 +44,11 @@ class SignupIntent(Base):
     # The validated catalog ids the buyer selected: exactly one plan + N add-ons
     # (schemas/signup.py enforces this at request time).
     catalog_ids: Mapped[list] = mapped_column(JSON, server_default=text("'[]'"), default=list)
+    # Optional pre-checkout intake answers (CONTRACT_onboarding_v1.md §7; schemas/signup.
+    # py IntakeIn — whatsapp_usage/prior_api/fb_page). None when omitted (back-compat).
+    # Consumed once, at provisioning, by services.onboarding.provision_defaults to derive
+    # the tenant's initial onboarding_state/blocker_reason/next_retry_at.
+    intake: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # pending_payment | completed | failed
     status: Mapped[str] = mapped_column(

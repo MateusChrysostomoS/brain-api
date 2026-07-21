@@ -10,7 +10,8 @@ fixture from tests/test_rbac.py (no separate DB setup needed).
 
 from types import SimpleNamespace
 
-from brain_api.services import signup as signup_service
+from brain_api.models import SignupIntent, Tenant
+from brain_api.services import onboarding, signup as signup_service
 from tests.test_billing import _event, _install_fake_stripe_httpx, _post_webhook
 from tests.test_rbac import ADMIN_EMAIL, ADMIN_PASSWORD, OWNER_A_EMAIL, _bearer, _token
 
@@ -513,6 +514,135 @@ async def test_set_password_rejects_weak_password(client, monkeypatch):
 # --- Rate limiting ----------------------------------------------------------------------
 
 
+# --- intake -> onboarding wiring (Part E/F, STATE-MACHINE + AUTH build) ---------------
+
+
+async def test_signup_intent_accepts_and_stores_intake(client, monkeypatch):
+    """`intake` round-trips through POST /public/signup-intents onto the intent row and
+    is what `provision_tenant_from_intent` later reads (verified at the service level
+    below — there is no HTTP surface yet that reads onboarding_state back)."""
+    resp = await client.post(
+        "/public/signup-intents",
+        json={
+            "name": "Dr. Intake",
+            "clinic_name": "Clinica Intake",
+            "email": "intake.stored@example.com",
+            "whatsapp_phone": "+5511999990000",
+            "catalog_ids": ["secretaria_ferro"],
+            "intake": {
+                "whatsapp_usage": "business_recent",
+                "prior_api": "no",
+                "fb_page": "yes_admin",
+            },
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+
+async def test_signup_intent_omitted_intake_is_back_compat(client):
+    """Omitting `intake` entirely must still 201 (back-compat, §7)."""
+    resp = await client.post(
+        "/public/signup-intents",
+        json={
+            "name": "Dr. NoIntake",
+            "clinic_name": "Clinica NoIntake",
+            "email": "no.intake@example.com",
+            "whatsapp_phone": "+5511999990000",
+            "catalog_ids": ["secretaria_ferro"],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+
+async def test_signup_intent_rejects_invalid_intake_literal(client):
+    resp = await client.post(
+        "/public/signup-intents",
+        json={
+            "name": "Dr. BadIntake",
+            "clinic_name": "Clinica BadIntake",
+            "email": "bad.intake@example.com",
+            "whatsapp_phone": "+5511999990000",
+            "catalog_ids": ["secretaria_ferro"],
+            "intake": {
+                "whatsapp_usage": "not_a_real_value",
+                "prior_api": "no",
+                "fb_page": "yes_admin",
+            },
+        },
+    )
+    assert resp.status_code == 422
+
+
+async def test_signup_intent_rejects_incomplete_intake(client):
+    """When `intake` is sent, all three answers are required together."""
+    resp = await client.post(
+        "/public/signup-intents",
+        json={
+            "name": "Dr. PartialIntake",
+            "clinic_name": "Clinica PartialIntake",
+            "email": "partial.intake@example.com",
+            "whatsapp_phone": "+5511999990000",
+            "catalog_ids": ["secretaria_ferro"],
+            "intake": {"whatsapp_usage": "business_recent"},
+        },
+    )
+    assert resp.status_code == 422
+
+
+async def test_provision_tenant_from_intent_seeds_onboarding_state_from_intake(db_session):
+    """services.signup.provision_tenant_from_intent calls
+    services.onboarding.provision_defaults(tenant, intent.intake, now) before its (the
+    caller's) commit — the actual Part E wiring, exercised without Stripe/HTTP."""
+    intent = SignupIntent(
+        name="Dr. Lead",
+        clinic_name="Wired Clinic",
+        email="wired.intake@example.com",
+        whatsapp_phone="+5511999990000",
+        catalog_ids=["secretaria_ferro"],
+        intake={"whatsapp_usage": "business_recent", "prior_api": "yes", "fb_page": "no"},
+    )
+    db_session.add(intent)
+    await db_session.flush()
+
+    await signup_service.provision_tenant_from_intent(
+        db_session, intent, stripe_customer_id="cus_wired", stripe_subscription_id="sub_wired"
+    )
+
+    assert intent.tenant_id is not None
+    tenant = await db_session.get(Tenant, intent.tenant_id)
+    assert tenant is not None
+    # prior_api == "yes" takes priority over fb_page == "no" (derive_initial_state order).
+    assert tenant.onboarding_state == onboarding.STATE_AGUARDANDO_ACAO_MANUAL
+    assert tenant.blocker_reason == onboarding.BLOCKER_NUMERO_EM_OUTRO_BSP
+    assert tenant.onboarding_anchor_at is not None
+    assert tenant.config_reminder_anchor_at is not None
+    # A manual-action blocker has no retry countdown yet.
+    assert tenant.next_retry_at is None
+
+
+async def test_provision_tenant_from_intent_none_intake_defaults_to_aquecimento(db_session):
+    intent = SignupIntent(
+        name="Dr. Lead2",
+        clinic_name="Wired Clinic 2",
+        email="wired.intake2@example.com",
+        whatsapp_phone="+5511999990000",
+        catalog_ids=["secretaria_ferro"],
+        intake=None,
+    )
+    db_session.add(intent)
+    await db_session.flush()
+
+    await signup_service.provision_tenant_from_intent(
+        db_session, intent, stripe_customer_id=None, stripe_subscription_id=None
+    )
+
+    tenant = await db_session.get(Tenant, intent.tenant_id)
+    assert tenant is not None
+    assert tenant.onboarding_state == onboarding.STATE_AQUECIMENTO
+    assert tenant.blocker_reason is None
+    assert tenant.next_retry_at is not None  # aquecimento is retry-eligible
+
+
 async def test_signup_intent_rate_limited(client, monkeypatch):
     from brain_api.api import public_signup
     from brain_api.core.ratelimit import SlidingWindowLimiter
@@ -533,3 +663,30 @@ async def test_signup_intent_rate_limited(client, monkeypatch):
         "/public/signup-intents", json={**payload, "email": "rate2@example.com"}
     )
     assert second.status_code == 429
+
+
+# --- Public checkout-funnel config -------------------------------------------------------
+
+
+async def test_checkout_config_returns_configured_trial_period(client, monkeypatch):
+    """GET /public/checkout-config echoes the REAL deployed STRIPE_TRIAL_PERIOD_DAYS —
+    the funnel's pre-checkout disclosure copy quotes this instead of a hardcoded value."""
+    from brain_api.api import public_signup
+
+    monkeypatch.setattr(
+        public_signup, "get_settings", lambda: SimpleNamespace(STRIPE_TRIAL_PERIOD_DAYS=75)
+    )
+    resp = await client.get("/public/checkout-config")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"trial_period_days": 75}
+
+
+async def test_checkout_config_is_not_rate_limited(client, monkeypatch):
+    """Unlike the three signup routes, this endpoint deliberately does NOT share the
+    signup `_limiter` bucket — exhausting it must not affect checkout-config reads."""
+    from brain_api.api import public_signup
+    from brain_api.core.ratelimit import SlidingWindowLimiter
+
+    monkeypatch.setattr(public_signup, "_limiter", SlidingWindowLimiter("t2", lambda: 0))
+    resp = await client.get("/public/checkout-config")
+    assert resp.status_code == 200, resp.text

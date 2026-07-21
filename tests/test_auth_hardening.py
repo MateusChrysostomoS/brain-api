@@ -15,9 +15,15 @@ from jose import jwt as jose_jwt
 import brain_api.api.auth as auth_api
 import brain_api.api.internal as internal_api
 import brain_api.core.security as security
+from brain_api.api.deps import get_current_principal
 from brain_api.config import get_settings
 from brain_api.core.ratelimit import SlidingWindowLimiter
-from brain_api.core.security import create_hub_token, decode_token
+from brain_api.core.security import (
+    create_access_token,
+    create_hub_token,
+    decode_hub_token,
+    decode_token,
+)
 from tests.test_rbac import (
     ADMIN_EMAIL,
     ADMIN_PASSWORD,
@@ -25,6 +31,9 @@ from tests.test_rbac import (
     CLINIC_B,
     OWNER_A_EMAIL,
     OWNER_A_PASSWORD,
+    OWNER_A_PROFESSIONAL_ID,
+    OWNER_B_EMAIL,
+    OWNER_B_PASSWORD,
     _bearer,
     _token,
 )
@@ -344,3 +353,219 @@ async def test_secret_key_previous_rotation(monkeypatch):
     )
     assert decode_token(token_old) is None
     assert decode_token(token_current) is not None
+
+
+# --- professional_id: token round-trips (STATE-MACHINE + AUTH build) -----------------
+#
+# Ground truth: core/security.py (create_access_token/create_hub_token), api/deps.py
+# (Principal), schemas/auth.py + api/auth.py (login/refresh/exchange), api/internal.py
+# (hub-token verify), api/doctor.py (hub-token mint). CONTRACT_onboarding_v1.md §6.
+
+
+def test_access_token_round_trips_professional_id():
+    pid = str(uuid4())
+    token = create_access_token(
+        sub=str(uuid4()), tenant_id=str(uuid4()), role="tenant_owner", professional_id=pid
+    )
+    claims = decode_token(token)
+    assert claims is not None
+    assert claims["professional_id"] == pid
+
+
+def test_access_token_omits_professional_id_when_none():
+    token = create_access_token(sub=str(uuid4()), tenant_id=str(uuid4()), role="tenant_owner")
+    claims = decode_token(token)
+    assert claims is not None
+    assert "professional_id" not in claims
+
+    # Explicit None behaves the same as simply omitting the keyword.
+    token_explicit_none = create_access_token(
+        sub=str(uuid4()), tenant_id=str(uuid4()), role="tenant_owner", professional_id=None
+    )
+    assert "professional_id" not in decode_token(token_explicit_none)
+
+
+def test_hub_token_round_trips_professional_id():
+    pid = str(uuid4())
+    token = create_hub_token(tenant_id=str(uuid4()), actor_user_id="u1", professional_id=pid)
+    claims = decode_hub_token(token)
+    assert claims is not None
+    assert claims["professional_id"] == pid
+
+
+def test_hub_token_omits_professional_id_when_none():
+    token = create_hub_token(tenant_id=str(uuid4()), actor_user_id="u1")
+    claims = decode_hub_token(token)
+    assert claims is not None
+    assert "professional_id" not in claims
+
+
+def test_principal_parses_valid_professional_id_claim():
+    pid = uuid4()
+    token = create_access_token(
+        sub=str(uuid4()), tenant_id=str(uuid4()), role="tenant_owner", professional_id=str(pid)
+    )
+    principal = get_current_principal(f"Bearer {token}")
+    assert principal.professional_id == pid
+
+
+def test_principal_professional_id_none_when_absent():
+    token = create_access_token(sub=str(uuid4()), tenant_id=str(uuid4()), role="tenant_owner")
+    principal = get_current_principal(f"Bearer {token}")
+    assert principal.professional_id is None
+
+
+def test_principal_treats_invalid_professional_id_claim_as_none():
+    """A malformed claim must never 401 the whole token — it just reads as absent."""
+    settings = get_settings()
+    claims = {
+        "sub": str(uuid4()),
+        "tenant_id": str(uuid4()),
+        "role": "tenant_owner",
+        "professional_id": "not-a-uuid",
+        "exp": datetime.now(UTC) + timedelta(minutes=5),
+    }
+    token = jose_jwt.encode(claims, settings.SECRET_KEY, algorithm="HS256")
+    principal = get_current_principal(f"Bearer {token}")
+    assert principal.professional_id is None
+    assert principal.role == "tenant_owner"  # the rest of the token is still valid
+
+
+# --- professional_id: /auth/me + login/refresh response exposure ---------------------
+
+
+async def test_auth_me_exposes_professional_id_when_present(client):
+    token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
+    resp = await client.get("/auth/me", headers=_bearer(token))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["user"]["professional_id"] == str(OWNER_A_PROFESSIONAL_ID)
+
+
+async def test_auth_me_professional_id_null_when_absent(client):
+    token = await _token(client, OWNER_B_EMAIL, OWNER_B_PASSWORD)
+    resp = await client.get("/auth/me", headers=_bearer(token))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["user"]["professional_id"] is None
+
+
+async def test_login_response_exposes_professional_id_and_name(client):
+    resp = await client.post(
+        "/auth/token", json={"email": OWNER_A_EMAIL, "password": OWNER_A_PASSWORD}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["professional_id"] == str(OWNER_A_PROFESSIONAL_ID)
+    assert body["name"] == "Owner A"
+
+    # The claim is ALSO embedded directly on the access token itself.
+    claims = decode_token(body["access_token"])
+    assert claims["professional_id"] == str(OWNER_A_PROFESSIONAL_ID)
+
+
+async def test_login_response_professional_id_null_when_absent(client):
+    resp = await client.post(
+        "/auth/token", json={"email": OWNER_B_EMAIL, "password": OWNER_B_PASSWORD}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["professional_id"] is None
+    assert "professional_id" not in decode_token(body["access_token"])
+
+
+async def test_refresh_response_exposes_professional_id(client):
+    login = await client.post(
+        "/auth/token", json={"email": OWNER_A_EMAIL, "password": OWNER_A_PASSWORD}
+    )
+    refresh_token = login.json()["refresh_token"]
+    resp = await client.post("/auth/refresh", json={"refresh_token": refresh_token})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["professional_id"] == str(OWNER_A_PROFESSIONAL_ID)
+
+
+# --- professional_id: hub-token mint + internal introspection passthrough ------------
+
+
+async def test_hub_token_mint_carries_professional_id(client):
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    tenant_a_id = (await _tenant_ids(client, admin_token))[CLINIC_A]
+    patch = await client.patch(
+        f"/admin/tenants/{tenant_a_id}/entitlements",
+        headers=_bearer(admin_token),
+        json={"plan": "complete_clinic_combo", "status": "active"},
+    )
+    assert patch.status_code == 200, patch.text
+
+    owner_token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
+    granted = await client.post("/doctor/secretaria/hub-token", headers=_bearer(owner_token))
+    assert granted.status_code == 200, granted.text
+
+    claims = decode_hub_token(granted.json()["hub_token"])
+    assert claims is not None
+    assert claims["professional_id"] == str(OWNER_A_PROFESSIONAL_ID)
+
+
+async def test_internal_hub_token_verify_passes_professional_id(client, monkeypatch):
+    fake_settings = SimpleNamespace(SECRETARIA_API_KEY="pair-key", SECRETARIA_API_KEY_PREVIOUS="")
+    monkeypatch.setattr(internal_api, "get_settings", lambda: fake_settings)
+
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    tenant_a_id = (await _tenant_ids(client, admin_token))[CLINIC_A]
+    patch = await client.patch(
+        f"/admin/tenants/{tenant_a_id}/entitlements",
+        headers=_bearer(admin_token),
+        json={"plan": "complete_clinic_combo", "status": "active"},
+    )
+    assert patch.status_code == 200, patch.text
+    hub_token = create_hub_token(
+        tenant_id=tenant_a_id,
+        actor_user_id="owner-a",
+        professional_id=str(OWNER_A_PROFESSIONAL_ID),
+    )
+
+    resp = await client.post(
+        "/internal/secretaria/hub-token/verify",
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={"token": hub_token},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["active"] is True
+    assert body["professional_id"] == str(OWNER_A_PROFESSIONAL_ID)
+
+
+async def test_internal_hub_token_verify_professional_id_null_when_absent(client, monkeypatch):
+    fake_settings = SimpleNamespace(SECRETARIA_API_KEY="pair-key", SECRETARIA_API_KEY_PREVIOUS="")
+    monkeypatch.setattr(internal_api, "get_settings", lambda: fake_settings)
+    hub_token = create_hub_token(tenant_id=str(uuid4()), actor_user_id="x")
+
+    resp = await client.post(
+        "/internal/secretaria/hub-token/verify",
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={"token": hub_token},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["professional_id"] is None
+
+
+async def test_internal_hub_token_verify_invalid_professional_id_claim_is_safe(client, monkeypatch):
+    """A malformed professional_id claim on the hub token must not 500 the endpoint."""
+    fake_settings = SimpleNamespace(SECRETARIA_API_KEY="pair-key", SECRETARIA_API_KEY_PREVIOUS="")
+    monkeypatch.setattr(internal_api, "get_settings", lambda: fake_settings)
+
+    settings = get_settings()
+    claims = {
+        "sub": str(uuid4()),
+        "scope": security.HUB_TOKEN_SCOPE,
+        "act": "x",
+        "professional_id": "not-a-uuid",
+        "exp": datetime.now(UTC) + timedelta(minutes=5),
+    }
+    token = jose_jwt.encode(claims, settings.SECRET_KEY, algorithm="HS256")
+
+    resp = await client.post(
+        "/internal/secretaria/hub-token/verify",
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={"token": token},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["professional_id"] is None

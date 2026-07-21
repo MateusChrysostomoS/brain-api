@@ -19,6 +19,10 @@ class Principal:
     user_id: str
     tenant_id: UUID | None
     role: str
+    # Secretaria professional id carried BY VALUE (no FK — cross-service reference,
+    # CONTRACT_onboarding_v1.md §0). None for a user with no professional linkage, or
+    # when the claim is malformed (never raises — see the parse below).
+    professional_id: UUID | None = None
 
 
 def get_current_principal(authorization: str | None = Header(default=None)) -> Principal:
@@ -33,10 +37,20 @@ def get_current_principal(authorization: str | None = Header(default=None)) -> P
         # sessions — they must never authenticate a browser-facing route.
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
     tid = claims.get("tenant_id")
+    raw_professional_id = claims.get("professional_id")
+    professional_id: UUID | None = None
+    if raw_professional_id:
+        try:
+            professional_id = UUID(str(raw_professional_id))
+        except ValueError:
+            # A malformed claim is treated as absent, never a 401 — the token's identity
+            # (sub/tenant_id/role) is otherwise valid.
+            professional_id = None
     return Principal(
         user_id=claims["sub"],
         tenant_id=UUID(tid) if tid else None,
         role=claims.get("role", ""),
+        professional_id=professional_id,
     )
 
 
@@ -72,4 +86,17 @@ def require_doctor(p: Principal = Depends(get_current_principal)) -> Principal:
     """
     if p.role not in (ROLE_TENANT_OWNER, ROLE_TENANT_STAFF) or p.tenant_id is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Doctor access required")
+    return p
+
+
+def require_tenant_owner(p: Principal = Depends(require_doctor)) -> Principal:
+    """Require the doctor-scoped principal to be the tenant OWNER (not staff).
+
+    Layers on top of `require_doctor` (still 403 for admin / tenant-less tokens); a
+    `tenant_staff` principal additionally gets 403 here. Used for owner-only actions
+    (onboarding pause switches, professional invites/self-bind, CONTRACT_onboarding_v1.md
+    §7) that a staff member should not be able to trigger.
+    """
+    if p.role != ROLE_TENANT_OWNER:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Owner access required")
     return p

@@ -1,16 +1,18 @@
-"""SignupIntent model — cold-signup lead through Stripe Checkout to auto-provisioning.
+"""SignupIntent model — cold-signup lead through Stripe Checkout to entitlement activation.
 
-The bridge state machine for "stranger fills a signup form -> pays on Stripe -> gets a
-tenant + user + entitlement without any human touching it" (services/signup.py). One row
-per attempt:
+The bridge state machine for "stranger fills a signup form -> pays on Stripe -> gets an
+active paid tenant without any human touching it" (services/signup.py). The tenant + owner
+user + inert entitlement are created up front by `register_signup` (this row is linked to
+that tenant via `tenant_id` from the moment it is created); the intent then tracks the
+PAYMENT lifecycle. One row per attempt:
 
-- pending_payment: created; a Checkout Session may or may not have been opened yet.
+- pending_payment: registered; a Checkout Session may or may not have been opened yet.
 - completed: `checkout.session.completed` (metadata.kind == "signup_intent") resolved
-  back to this row and `services.signup.provision_tenant_from_intent` materialized the
-  tenant/user/entitlement.
-- failed: provisioning could not proceed (e.g. the email raced to registration between
-  intent creation and webhook delivery) — `failure_reason` records why. The webhook
-  STILL acks and marks the Stripe event processed; nothing here ever blocks Stripe.
+  back to this row and `services.signup.provision_tenant_from_intent` ACTIVATED the
+  already-existing tenant's inert entitlement to the purchased plan.
+- failed: activation could not proceed (e.g. the linked tenant no longer exists) —
+  `failure_reason` records why. The webhook STILL acks and marks the Stripe event
+  processed; nothing here ever blocks Stripe.
 
 The onboarding token is minted by `GET /public/onboarding-status` (never the webhook)
 because only that synchronous poll can hand the PLAINTEXT back to the browser — only its

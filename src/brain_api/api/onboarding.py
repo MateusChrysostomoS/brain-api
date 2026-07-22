@@ -19,7 +19,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,7 +45,14 @@ from brain_api.schemas.onboarding import (
     ProfessionalSelfOut,
     ProfessionalsOut,
 )
-from brain_api.services import meta_graph, onboarding, onboarding_sync, secretaria_provisioning
+from brain_api.schemas.signup import IntakeIn
+from brain_api.services import (
+    meta_graph,
+    onboarding,
+    onboarding_sync,
+    secretaria_provisioning,
+    signup as signup_service,
+)
 
 logger = get_logger(__name__)
 
@@ -291,6 +298,33 @@ async def pause_onboarding(
         tenant.config_reminder_paused = payload.config_reminders
     await session.commit()
     return _action_out(tenant)
+
+
+# --- POST /doctor/onboarding/intake -------------------------------------------------------
+
+
+@router.post(
+    "/onboarding/intake",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Attach the pre-checkout eligibility intake to the signup intent",
+    description=(
+        "The authenticated mid-wizard counterpart of registration: the /cadastro wizard "
+        "collects the WhatsApp-usage / prior-API / Facebook-page answers AFTER the first "
+        "card (by which point the visitor is logged in), and attaches them to the pending "
+        "signup intent so the Stripe webhook can seed the tenant's initial onboarding "
+        "state (services.signup.provision_tenant_from_intent). Best-effort and idempotent: "
+        "always 204, even when there is no pending intent to attach to."
+    ),
+)
+async def attach_intake(
+    payload: IntakeIn,
+    principal: Principal = Depends(require_doctor),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Store the intake on the caller's own tenant's pending signup intent (scoped by the
+    token — `tenant_id` is never accepted from the client)."""
+    await signup_service.attach_intake(session, principal.tenant_id, payload)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- GET /doctor/professionals ---------------------------------------------------------------

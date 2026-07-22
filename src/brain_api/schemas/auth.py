@@ -109,11 +109,12 @@ class ExchangeInviteTokenIn(BaseModel):
 class SetPasswordIn(BaseModel):
     """`POST /auth/set-password` body — the caller replaces their OWN password.
 
-    Needed because a signup-provisioned tenant owner (services/signup.
-    provision_tenant_from_intent) starts on a random, never-communicated password; this
-    is the only way in. Same composition policy as admin-created users
-    (`schemas/admin.py` `AdminUserCreateIn`): 8-72 chars (bcrypt's ceiling), at least one
-    letter and one digit.
+    Used by the professional-invite accept flow (`/convite`): an invited `tenant_staff`
+    user starts on a random, never-communicated password and sets a real one here right
+    after redeeming the invite token. (Cold-signup OWNERS no longer need this — they choose
+    a real password at registration, `services/signup.register_signup`.) Same composition
+    policy as admin-created users (`schemas/admin.py` `AdminUserCreateIn`): 8-72 chars
+    (bcrypt's ceiling), at least one letter and one digit.
     """
 
     model_config = ConfigDict(extra="forbid")

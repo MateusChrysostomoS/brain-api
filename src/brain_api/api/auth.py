@@ -63,8 +63,14 @@ def _check_auth_rate_limit(request: Request) -> None:
         )
 
 
-def _session_pair(user: User, refresh_token: str) -> TokenResponse:
-    """Assemble the access+refresh response for a (re)authenticated user."""
+def build_session_response(user: User, refresh_token: str) -> TokenResponse:
+    """Assemble the access+refresh response for a (re)authenticated user.
+
+    The single place the session pair (access JWT + opaque refresh) is built, reused by
+    every path that mints a session: login, refresh, the two token exchanges here, AND the
+    cold-signup registration in `api/public_signup.py` (imported from there) so a freshly
+    registered lead gets a session byte-identical to a normal login.
+    """
     return TokenResponse(
         access_token=create_access_token(
             sub=str(user.id),
@@ -107,7 +113,7 @@ async def login(
     refresh = await issue_refresh_token(session, user.id)
     # Stable reference only — never log the email, password or either token.
     logger.info("login", user_id=str(user.id))
-    return _session_pair(user, refresh)
+    return build_session_response(user, refresh)
 
 
 @router.post(
@@ -135,7 +141,7 @@ async def refresh(
             detail="Invalid or expired refresh token",
         )
     logger.info("token_refreshed", user_id=str(result.user.id))
-    return _session_pair(result.user, result.new_refresh_token)
+    return build_session_response(result.user, result.new_refresh_token)
 
 
 @router.post(
@@ -214,7 +220,7 @@ async def exchange_onboarding_token(
         intent_id=str(result.intent_id),
         tenant_id=str(result.user.tenant_id),
     )
-    return _session_pair(result.user, refresh)
+    return build_session_response(result.user, refresh)
 
 
 @router.post(
@@ -250,7 +256,7 @@ async def exchange_invite_token(
         user_id=str(user.id),
         tenant_id=str(user.tenant_id) if user.tenant_id else None,
     )
-    return _session_pair(user, refresh)
+    return build_session_response(user, refresh)
 
 
 @router.post(

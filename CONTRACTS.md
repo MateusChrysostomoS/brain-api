@@ -511,15 +511,15 @@ the only thing that authorizes minting a PreCheck token for a brain login (§10)
 | `id` | UUID | PK |
 | `name` | String(255) | not null |
 | `clinic_name` | String(255) | not null |
-| `email` | String(320) | not null; stored lower-cased (mirrors `users.email`), reused as-is for the provisioned `User` row |
+| `email` | String(320) | not null; stored lower-cased (mirrors `users.email`), reused as-is for the registered `User` row |
 | `whatsapp_phone` | String(32) | not null |
 | `catalog_ids` | JSON | not null, server_default `'[]'`; the validated selection — exactly one plan id + N add-on ids (`schemas/signup.py` enforces this at request time) |
-| `intake` | JSON | nullable; optional pre-checkout eligibility answers (§15.1), consumed once at provisioning by `services.onboarding.provision_defaults` |
+| `intake` | JSON | nullable; optional eligibility answers (§15.1a), attached via `POST /doctor/onboarding/intake` (§16.2) or inline, consumed once at ACTIVATION by `services.onboarding.provision_defaults` |
 | `status` | String(32) | not null, server_default `'pending_payment'`; `pending_payment` \| `completed` \| `failed` |
-| `failure_reason` | String(255) | nullable; set on `failed` (e.g. `email_already_registered` — the buyer's email raced to registration between intent creation and webhook delivery) |
+| `failure_reason` | String(255) | nullable; set on `failed` (e.g. `tenant_missing` — the linked tenant no longer exists at activation time; a pre-split intent) |
 | `stripe_session_id` | String(255) | nullable, indexed; the latest Checkout Session for this intent (a retry overwrites it) |
 | `stripe_customer_id` / `stripe_subscription_id` | String(64) | nullable |
-| `tenant_id` | UUID FK → `tenants.id` `ON DELETE SET NULL` | nullable; set once provisioning materializes the tenant |
+| `tenant_id` | UUID FK → `tenants.id` `ON DELETE SET NULL` | nullable in schema, but set at REGISTRATION now (`register_signup` links the tenant immediately — no longer deferred to the webhook) |
 | `onboarding_token_hash` | String(64) | nullable, **unique**, indexed; sha256 of the one-time onboarding token (`hash_refresh_token` — same primitive `RefreshToken` uses). Rotated on every `GET /public/onboarding-status` poll until redeemed |
 | `onboarding_token_expires_at` / `onboarding_token_used_at` | DateTime(tz) | nullable |
 | `created_at` / `updated_at` | DateTime(tz) | server_default now() (`updated_at` also onupdate now()) |
@@ -1333,74 +1333,86 @@ identifier or (for export) the collected data itself. Each erasure additionally 
 
 ## 15. Cold signup — self-serve pay-and-provision (public, no human in the loop)
 
-> **Retroactively documented.** This vertical shipped in migration `0006` (2026-07-16),
-> before the onboarding round — it was fully built and tested but had never been written
-> up here. `docs/CHECKPOINT_onboarding_multiprofessional.md` has the full verification
-> note. The onboarding round's only change to it is `signup_intents.intake` (§6.6) and
-> `services.onboarding.provision_defaults` seeding the new tenant's state machine (§16.1)
-> right after provisioning.
+> **Register-at-first-card update (2026-07-21, `docs/CHECKPOINT_register_at_first_card.md`).**
+> The writer split below REPLACES the old "webhook is the sole writer" invariant. The
+> lead now becomes a full tenant + owner user (**real, self-chosen password**) + INERT
+> entitlement the instant the first card is submitted, so the owner can log back in from
+> any device afterwards regardless of whether they finish the wizard or pay. The Stripe
+> webhook only ACTIVATES that inert entitlement. This vertical originally shipped in
+> migration `0006` (2026-07-16); `docs/CHECKPOINT_onboarding_multiprofessional.md` covers
+> the earlier `signup_intents.intake` addition. **No migration** was needed for the split
+> (`signup_intents.tenant_id` was already nullable; the inert entitlement uses existing
+> `entitlements` defaults).
 
 The bridge from a public "stranger fills a form" lead to a paying, logged-in tenant, with
 **no admin/human step**. `services/signup.py` is authoritative; `api/public_signup.py`
 exposes three UNAUTHENTICATED, rate-limited routes (`SIGNUP_RATE_LIMIT_PER_MIN`, one
 shared `SlidingWindowLimiter` bucket across all three — same in-process/fail-open
-machinery as §5). Provisioning happens **only** in the Stripe webhook apply path — this
-module is pure request validation + intent bookkeeping + Checkout Session creation, same
-"webhook is the sole writer" invariant §13 documents for the existing tenant billing flow.
+machinery as §5). **Two writers, split by concern** (this replaces the old single-writer
+rule): `register_signup` is the SOLE writer of the Tenant + owner User + inert Entitlement
+(at the first card); `provision_tenant_from_intent` (the Stripe webhook apply path) is the
+SOLE writer that ACTIVATES that inert entitlement to the purchased plan. Entitlements are
+otherwise still only ever recomputed by webhooks (§13's invariant is intact — registration
+writes an *inert* row, never a paid one).
 
 ### 15.1 Endpoints
 
 | method | path | auth | notes |
 |---|---|---|---|
-| `POST` | `/public/signup-intents` | public | Body: `name`, `clinic_name`, `email`, `whatsapp_phone`, `catalog_ids` (exactly one assignable non-free plan id + any number of add-on ids, else `422`), optional `intake` (§15.1a), honeypot `website`. `201 {intent_id}`. `409 email_already_registered` (checked NOW so provisioning can never fail on a duplicate AFTER payment). A filled honeypot silently accepts-and-drops (`201` with a synthetic all-zero id, never persisted — mirrors `POST /demo-requests`, §5) |
-| `POST` | `/public/checkout-sessions` | public | Body `{intent_id}`. Creates a subscription-mode Checkout Session for a `pending_payment` intent; `404` unknown intent, `409` already left `pending_payment`. `client_reference_id`/`metadata[signup_intent_id]` carry the INTENT id (no tenant exists yet), tagged `metadata[kind]=signup_intent` so the webhook (§13.1/15.2) routes it here instead of the tenant-linking path. Reuses `billing.validate_selection` + `_append_checkout_line_items`/`_apply_trial` (§13.3) — an add-on already implied by the chosen plan is never double-billed. `200 {checkout_url}`; `503`/`502` as §13's checkout errors |
-| `GET` | `/public/onboarding-status?session_id=` | public | Resolves a Checkout Session id back to its intent: `{status: "pending"\|"ready"\|"failed", products, onboarding_token}`. While `ready` and unredeemed, MINTS (and rotates on every poll) the one-time onboarding token — only this synchronous poll can hand the plaintext to the browser; only its sha256 (§6.6) is ever persisted. `404` unknown session id |
+| `POST` | `/public/signup-intents` | public | REGISTERS the lead at the first card. Body: `name`, `clinic_name`, `email`, `whatsapp_phone`, **`password`** (8-72 chars, ≥1 letter + ≥1 digit — same policy as `set-password`, else `422`), `catalog_ids` (exactly one assignable non-free plan id + any number of add-on ids, else `422`), optional `intake` (§15.1a), honeypot `website`. Creates the Tenant + owner User (this password) + INERT Entitlement + linked intent in one transaction (`register_signup`). `201 {intent_id, session}` where `session` is the SAME `TokenResponse` (§2.1) login returns — the caller saves it immediately and is logged in from here on. `409 email_already_registered` (up-front check AND the `users.email` unique constraint). A filled honeypot silently accepts-and-drops (`201` with a synthetic all-zero id + empty session, never persisted — mirrors `POST /demo-requests`, §5) |
+| `POST` | `/public/checkout-sessions` | public | Body `{intent_id}`. Creates a subscription-mode Checkout Session for a `pending_payment` intent; `404` unknown intent, `409` already left `pending_payment`. `client_reference_id`/`metadata[signup_intent_id]` carry the INTENT id (never a tenant id — the routing invariant), tagged `metadata[kind]=signup_intent` so the webhook (§13.1/15.2) routes it here instead of the tenant-linking path. Reuses `billing.validate_selection` + `_append_checkout_line_items`/`_apply_trial` (§13.3) — an add-on already implied by the chosen plan is never double-billed. `200 {checkout_url}`; `503`/`502` as §13's checkout errors |
+| `GET` | `/public/onboarding-status?session_id=` | public | Resolves a Checkout Session id back to its intent: `{status: "pending"\|"ready"\|"failed", products, onboarding_token}`. `ready` = the webhook ACTIVATED the entitlement. While `ready` and unredeemed, MINTS (and rotates on every poll) the one-time onboarding token — now a FALLBACK for resuming in a browser that never got the registration session; only this synchronous poll can hand the plaintext to the browser, and only its sha256 (§6.6) is ever persisted. `404` unknown session id |
 | `POST` | `/auth/exchange-onboarding-token` | public | Body `{token}`. Redeems the token from the poll above; `401 invalid_onboarding_token` if unknown/expired/already-used/unprovisioned. Success mints the SAME session pair a password login would (§2.1 `TokenResponse` shape, access+refresh) for the tenant's owner user. Rate-limited on the shared `/auth` budget (§5, `AUTH_RATE_LIMIT_PER_MIN`) |
-| `POST` | `/auth/set-password` | Bearer | Body `{new_password}`. Lets the authenticated caller replace THEIR OWN password — needed because a signup-provisioned owner starts on a random, never-communicated one (`hash_password(secrets.token_urlsafe(32))`, never sent anywhere). `204`; `401` missing/invalid/expired token. Also the second step of the professional-invite flow (§16.3) |
+| `POST` | `/auth/set-password` | Bearer | Body `{new_password}`. Lets the authenticated caller replace THEIR OWN password. Cold-signup OWNERS no longer need it (they set a real password at registration above); it remains the **second step of the professional-invite flow** (§16.3), where an invited `tenant_staff` user starts on a random, never-communicated password. `204`; `401` missing/invalid/expired token |
 | `GET` | `/public/checkout-config` | public | `200 {trial_period_days: <STRIPE_TRIAL_PERIOD_DAYS>}` — static, non-secret checkout-funnel config so the pre-checkout disclosure copy can quote the REAL deployed trial length instead of a hardcoded second source of truth. Deliberately NOT part of the shared `_limiter` bucket above (no rate limit, no DB touch) — a pricing-page view must never eat the per-IP signup budget |
 
-#### 15.1a Pre-checkout intake (`SignupIntentCreate.intake`)
+#### 15.1a Pre-checkout intake (`IntakeIn`)
 
 Optional; when sent, all three answers are required together (`schemas/signup.py::IntakeIn`,
 `extra="forbid"`): `whatsapp_usage: business_7d_plus|business_recent|none`, `prior_api:
-yes|no|unknown`, `fb_page: yes_admin|yes_unknown_admin|no`. Stored verbatim on
-`signup_intents.intake` (§6.6) and consumed exactly once, at provisioning, by
-`services.onboarding.provision_defaults` → `derive_initial_state` /
-`initial_next_retry_at` (§16.1) to seed the new tenant's initial onboarding state.
-Omitted ⇒ `None`, treated identically to "no signal".
+yes|no|unknown`, `fb_page: yes_admin|yes_unknown_admin|no`. Collected by the wizard's LATER
+steps (after the first card), so it is normally attached via the **authenticated**
+`POST /doctor/onboarding/intake` (§16.2 — the visitor is logged in from registration
+onward) rather than a second public endpoint; it is also still accepted inline on
+`POST /public/signup-intents`. Stored verbatim on `signup_intents.intake` (§6.6) and
+consumed exactly once, at ACTIVATION, by `services.onboarding.provision_defaults` →
+`derive_initial_state` / `initial_next_retry_at` (§16.1) to seed the tenant's onboarding
+state. Omitted ⇒ `None`, treated identically to "no signal".
 
-### 15.2 Provisioning (webhook-driven; the only writer)
+### 15.2 Activation (webhook-driven; the sole entitlement-activation writer)
 
-`services.billing.apply_stripe_event` recognizes a cold-signup `checkout.session.completed`
-by `metadata.kind == "signup_intent"` (§13.1) and routes to
-`_apply_signup_intent_checkout` → `services.signup.provision_tenant_from_intent` INSTEAD
-of the tenant-linking logic — otherwise the intent id riding `client_reference_id` would
-be misread as a tenant id. Idempotent: a no-op once `intent.status == "completed"` or
-`intent.tenant_id` is set (a redelivered event cannot double-provision). Bootstrap order
-mirrors `scripts/seed_dev.py` (`Tenant` → flush → `User` → `Entitlement`):
+The tenant + owner user + inert entitlement already exist (registration, §15.1). The
+webhook only ACTIVATES the entitlement. `services.billing.apply_stripe_event` recognizes a
+cold-signup `checkout.session.completed` by `metadata.kind == "signup_intent"` (§13.1) and
+routes to `_apply_signup_intent_checkout` → `services.signup.provision_tenant_from_intent`
+INSTEAD of the tenant-linking logic — otherwise the intent id riding `client_reference_id`
+would be misread as a tenant id. Idempotent on `intent.status == "completed"` (a
+redelivered event is a no-op; NO LONGER keyed on `intent.tenant_id`, which registration
+always sets). Steps:
 
-1. `Tenant(clinic_name=intent.clinic_name)`, flushed for its id.
+1. Look the tenant up via `intent.tenant_id` (never creates one). Missing tenant (a
+   pre-split intent, or a deleted tenant) ⇒ `intent.status = "failed"`,
+   `failure_reason = "tenant_missing"`, no writes — the webhook still acks and marks the
+   Stripe event processed.
 2. `services.onboarding.provision_defaults(tenant, intent.intake, now)` (§16.1) — seeds
    `onboarding_state`/`blocker_reason`/`onboarding_anchor_at`/`config_reminder_anchor_at`/
-   `next_retry_at` before anything else touches the tenant.
-3. Owner `User` (role `tenant_owner`), random unlogged password — reachable only via the
-   onboarding-token exchange (§15.1) + `POST /auth/set-password`.
-4. `Entitlement` materialized directly from `intent.catalog_ids` via
-   `catalog.compute_entitlement_state` (not from the `customer.subscription.created` event,
-   which can arrive before the tenant exists and be unresolvable) — status `active`
-   immediately; later `subscription.*` events reconcile it via the existing
-   `stripe_customer_id` fallback resolution (§13.1).
-5. Raced email (something else registered it between intent creation and webhook
-   delivery): `intent.status = "failed"`, `failure_reason = "email_already_registered"`,
-   no rows inserted — the webhook still acks and marks the Stripe event processed.
+   `next_retry_at` from the (by-now-attached) intake, overwriting the model-default
+   `pending` the tenant sat in while unpaid.
+3. ACTIVATE the existing inert `Entitlement`: `status="active"`, plan/products/addons/limits
+   materialized directly from `intent.catalog_ids` via `catalog.compute_entitlement_state`
+   (not from the `customer.subscription.created` event, which can race the webhook) + the
+   Stripe customer/subscription ids; later `subscription.*` events reconcile it via the
+   existing `stripe_customer_id` fallback resolution (§13.1).
 
-Does **not** call the secretaria provisioning bridge inline — `secretaria_provisioned_at`
-(§6.1) stays null coming out of this function. That I/O is a later attachment on top
-(§16.5): `services.billing.apply_stripe_event` calls
-`onboarding_sync.ensure_secretaria_provisioned` in a best-effort, fully self-contained
-try/except right after a successful provision, and `GET /doctor/onboarding` (§16.2)
-lazily retries it on every load — so a secretaria outage at signup time self-heals the
-first time the owner opens the portal.
+The owner keeps the REAL password chosen at registration — the onboarding-token exchange
+(§15.1) is only a resume-in-another-browser fallback now, not the sole way in. Does **not**
+call the secretaria provisioning bridge inline — `secretaria_provisioned_at` (§6.1) stays
+null coming out of this function. That I/O is a later attachment on top (§16.5):
+`services.billing.apply_stripe_event` calls `onboarding_sync.ensure_secretaria_provisioned`
+in a best-effort, fully self-contained try/except right after a successful ACTIVATION (the
+`Tenant` is returned only when the intent's status transitioned to `completed` THIS call,
+so the bridge fires exactly once, never on a redelivery), and `GET /doctor/onboarding`
+(§16.2) lazily retries it on every load.
 
 ---
 
@@ -1416,9 +1428,12 @@ orchestration layer on top of it.
 ### 16.1 State machine
 
 **`tenants.onboarding_state`** (String(40)): `pending → aquecimento →
-{aguardando_elegibilidade | aguardando_acao_manual} → conectado → ativo`. `pending` only
-ever appears transiently (nothing persists a tenant in `pending` — `provision_defaults`
-immediately derives a real starting state, §15.2 step 2).
+{aguardando_elegibilidade | aguardando_acao_manual} → conectado → ativo`. A cold-signup
+tenant now sits in the model-default `pending` from registration until payment — the
+webhook's `provision_defaults` (§15.2 step 2) derives the real starting state at
+ACTIVATION. Such registered-but-unpaid tenants appear in the onboarding cron list (§16.5)
+with `subscription_active=false`, which the secretarIA cron uses to skip them (no nudges
+for a tenant that hasn't paid).
 
 **`tenants.blocker_reason`** (String(40), nullable): `atividade_insuficiente` |
 `numero_em_outro_bsp` | `sem_acesso_admin_waba` | `sem_pagina_facebook` | `outro`.
@@ -1429,7 +1444,7 @@ onboarding-state transitions above.
 
 | transition | trigger | effect |
 |---|---|---|
-| tenant creation | `services.onboarding.provision_defaults` (§15.2) | `derive_initial_state(intake)`: `prior_api=='yes'` → `aguardando_acao_manual`/`numero_em_outro_bsp`; `fb_page=='yes_unknown_admin'` → `aguardando_acao_manual`/`sem_acesso_admin_waba`; `fb_page=='no'` → `aquecimento`/`sem_pagina_facebook`; else (incl. no intake) → `aquecimento`/`None`. Anchors `onboarding_anchor_at`/`config_reminder_anchor_at` at `now`; when the derived state is `aquecimento`/`aguardando_elegibilidade`, calibrates `next_retry_at` via `initial_next_retry_at` (`whatsapp_usage=='business_7d_plus'` → `now`, else `now + 3d`) |
+| entitlement ACTIVATION | `services.onboarding.provision_defaults` (§15.2, at the Stripe webhook — NOT at tenant creation, which now leaves the tenant in the model-default `pending` until paid) | `derive_initial_state(intake)`: `prior_api=='yes'` → `aguardando_acao_manual`/`numero_em_outro_bsp`; `fb_page=='yes_unknown_admin'` → `aguardando_acao_manual`/`sem_acesso_admin_waba`; `fb_page=='no'` → `aquecimento`/`sem_pagina_facebook`; else (incl. no intake) → `aquecimento`/`None`. Anchors `onboarding_anchor_at`/`config_reminder_anchor_at` at `now`; when the derived state is `aquecimento`/`aguardando_elegibilidade`, calibrates `next_retry_at` via `initial_next_retry_at` (`whatsapp_usage=='business_7d_plus'` → `now`, else `now + 3d`) |
 | `POST /doctor/onboarding/attempts`, pass | `services.onboarding.record_attempt` (§16.2) | → `conectado`; `connected_at=now`; blocker cleared; `next_retry_at=None` |
 | `POST /doctor/onboarding/attempts`, fail | `services.onboarding.record_attempt` | resolves the blocker via `map_error_to_blocker` (below); → `aguardando_acao_manual` when that blocker requires manual action (`numero_em_outro_bsp`/`sem_acesso_admin_waba`/`sem_pagina_facebook`), else `aguardando_elegibilidade`. **Never regresses** a tenant already `ativo`/`conectado` — the attempt is still recorded (audit), the tenant's state/blocker are left untouched |
 | `POST /doctor/onboarding/resolve-blocker` | `services.onboarding.resolve_blocker` | from `aguardando_acao_manual`, or any state still carrying a `blocker_reason` (except `conectado`/`ativo`, untouched): → `aquecimento`, blocker cleared, `next_retry_at = now + 3d` |
@@ -1459,6 +1474,7 @@ requires `require_tenant_owner`.
 | `POST` | `/doctor/onboarding/attempts` | Body `{attempt_id, result: pass\|fail, code?, phone_number_id?, waba_id?, error_code?}` (`phone_number_id` required when `result=='pass'`, `422` otherwise). **Idempotent on `attempt_id`** — a replay short-circuits before any Meta/secretaria I/O and returns the tenant's current state unchanged. On `pass`: optional Meta Graph code→token exchange (`services/meta_graph.py`; a failure here folds into a `fail` attempt with `error_code="token_exchange_failed"`, never a hard error), then `secretaria_provisioning.connect_whatsapp`. Only a genuinely successful connection ever reaches `record_attempt(result="pass")` — a `409 phone_number_conflict` or any other failure instead records a `fail` attempt with the matching `error_code`, never a 5xx to the caller. A genuine pass fires a fire-and-forget `connection_success` email + a `refresh_config_status` pull. `200 {attempt_id, replayed, onboarding_state, blocker_reason}` |
 | `POST` | `/doctor/onboarding/resolve-blocker` | No body. `200 {onboarding_state, blocker_reason}` |
 | `POST` | `/doctor/onboarding/pause` | owner only. Body `{retries?, config_reminders?}` — each present field sets the matching kill-switch column directly; omitted/`null` leaves it untouched. `200 {onboarding_state, blocker_reason}` |
+| `POST` | `/doctor/onboarding/intake` | Body `IntakeIn` (§15.1a). Attaches the cold-signup wizard's eligibility answers to the caller's own pending signup intent (scoped by the token — `tenant_id` never accepted from the client), which the activation webhook (§15.2) then reads to seed onboarding state. Best-effort/idempotent: always `204`, even with no pending intent to attach to |
 
 ### 16.3 Professionals & invites (`api/onboarding.py`, prefix `/doctor`)
 

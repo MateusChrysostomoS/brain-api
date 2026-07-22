@@ -1,43 +1,48 @@
-"""Public cold-signup endpoints: lead capture -> Stripe Checkout -> onboarding poll.
+"""Public cold-signup endpoints: register-at-first-card -> Stripe Checkout -> poll.
 
 Three UNAUTHENTICATED endpoints, all rate-limited per-IP with ONE shared
 `SlidingWindowLimiter` bucket (same in-process/fail-open machinery as demo.py/auth.py —
 no Redis, CONTRACTS.md §5):
 
-- `POST /public/signup-intents`    create the pending-payment intent (honeypot guarded).
+- `POST /public/signup-intents`    REGISTER the lead (tenant + owner user + inert
+  entitlement + linked intent) with a real password, return a real session (honeypot
+  guarded).
 - `POST /public/checkout-sessions` open a Stripe Checkout Session for that intent.
-- `GET  /public/onboarding-status` poll for provisioning + mint the one-time onboarding
-  token the browser exchanges at `POST /auth/exchange-onboarding-token`.
+- `GET  /public/onboarding-status` poll for the webhook activation + mint the one-time
+  onboarding token (a resume-in-another-browser FALLBACK now that the registration session
+  already exists), exchanged at `POST /auth/exchange-onboarding-token`.
 
 A FOURTH unauthenticated endpoint, `GET /public/checkout-config`, is deliberately NOT
 part of that shared limiter — static, non-secret, no-DB-touch config (today just
 `STRIPE_TRIAL_PERIOD_DAYS`) that a pricing-page view must never be able to exhaust the
 signup budget over (see its own docstring below).
 
-Nothing here ever writes a tenant/user/entitlement — provisioning happens ONLY in the
-Stripe webhook apply path (`services.billing.apply_stripe_event` ->
-`services.signup.provision_tenant_from_intent`), the same "webhook is the sole writer"
-invariant `services/billing.py` documents for the existing tenant billing flow. This
-module is pure request validation + intent bookkeeping + Checkout Session creation
-(+ that one static config read).
+Registration IS the sole tenant/user/inert-entitlement writer (`services.signup.
+register_signup`); the Stripe webhook apply path (`services.billing.apply_stripe_event` ->
+`services.signup.provision_tenant_from_intent`) is the sole entitlement-ACTIVATION writer.
+This split replaces the old "webhook is the sole writer" invariant: the registration
+creates the inert tenant+login, the webhook only activates the paid entitlement.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from brain_api.api.auth import build_session_response
 from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.core.ratelimit import SlidingWindowLimiter, client_ip
+from brain_api.schemas.auth import TokenResponse
 from brain_api.schemas.signup import (
     CheckoutConfigOut,
     CheckoutSessionCreate,
     CheckoutSessionOut,
     OnboardingStatusOut,
     SignupIntentCreate,
-    SignupIntentOut,
+    SignupRegisterOut,
 )
 from brain_api.services import signup as signup_service
+from brain_api.services.auth import issue_refresh_token
 
 logger = get_logger(__name__)
 
@@ -64,33 +69,49 @@ def _check_rate_limit(request: Request) -> None:
 @router.post(
     "/public/signup-intents",
     status_code=status.HTTP_201_CREATED,
-    response_model=SignupIntentOut,
-    summary="Start a cold signup",
-    description="Public lead capture + catalog selection. Creates no tenant/user yet.",
+    response_model=SignupRegisterOut,
+    summary="Register a cold-signup lead (first card)",
+    description=(
+        "Public lead capture at the FIRST card: creates the tenant + owner user (REAL "
+        "password) + inert entitlement + linked intent, and returns a real session. The "
+        "owner can log in from any device afterwards, whether or not they finish the "
+        "wizard or pay."
+    ),
     responses={
-        201: {"description": "Intent created (or silently accepted for a honeypot hit)."},
+        201: {"description": "Registered (or silently accepted for a honeypot hit)."},
         409: {"description": "A user with this email already exists."},
-        422: {"description": "Bad catalog selection (unknown id, not exactly one plan, ...)."},
+        422: {"description": "Bad catalog selection / weak password / missing field."},
         429: {"description": "Rate limited (per-IP anti-spam)."},
     },
 )
-async def create_signup_intent(
+async def register_signup(
     request: Request,
     payload: SignupIntentCreate,
     session: AsyncSession = Depends(get_session),
-) -> SignupIntentOut:
-    """Capture the lead + catalog selection; provisioning happens only after payment."""
+) -> SignupRegisterOut:
+    """Register the lead and mint a real session (same shape login produces)."""
     _check_rate_limit(request)
 
     # HONEYPOT (demo.py pattern): a filled hidden field means a bot. Silently
-    # accept-and-drop with a synthetic id — never persist, never touch the real flow.
+    # accept-and-drop with a synthetic id + empty session — never persist, never touch the
+    # real flow. A real browser leaves `website` empty and never sees this branch.
     if payload.website and payload.website.strip():
         logger.info("signup_intent_honeypot_dropped")
-        return SignupIntentOut(intent_id=_HONEYPOT_INTENT_ID)
+        return SignupRegisterOut(
+            intent_id=_HONEYPOT_INTENT_ID, session=TokenResponse(access_token="")
+        )
 
-    intent = await signup_service.create_signup_intent(session, payload)
-    logger.info("signup_intent_created", intent_id=str(intent.id))
-    return SignupIntentOut(intent_id=intent.id)
+    registration = await signup_service.register_signup(session, payload)
+    refresh = await issue_refresh_token(session, registration.user.id)
+    logger.info(
+        "signup_intent_created",
+        intent_id=str(registration.intent.id),
+        tenant_id=str(registration.user.tenant_id),
+    )
+    return SignupRegisterOut(
+        intent_id=registration.intent.id,
+        session=build_session_response(registration.user, refresh),
+    )
 
 
 @router.post(

@@ -1,10 +1,17 @@
-"""Pydantic v2 schemas for the cold-signup vertical (public checkout -> auto-provisioning).
+"""Pydantic v2 schemas for the cold-signup vertical (register -> public checkout ->
+webhook activation).
 
 The client only ever names CATALOG ids (validated here against `services/catalog.py`) and
 a Stripe Checkout Session id it already holds — never a price, an amount, or anything
 that decides what it paid (the webhook recompute in `services/signup.
-provision_tenant_from_intent` is the sole entitlement writer on this path, mirroring the
-stripe-billing-entitlements invariant `services/billing.py` documents).
+provision_tenant_from_intent` is the sole *entitlement-activation* writer on this path,
+mirroring the stripe-billing-entitlements invariant `services/billing.py` documents).
+
+Registration (`POST /public/signup-intents` -> `services.signup.register_signup`) now
+also carries a real `password`: the lead becomes a full tenant + owner user + inert
+entitlement the moment the FIRST card is submitted, so the visitor can log in normally
+afterwards regardless of whether they ever finish the wizard or pay. The webhook only
+flips the already-existing inert entitlement to the purchased plan.
 """
 
 from typing import Literal
@@ -12,6 +19,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
+from brain_api.schemas.auth import TokenResponse
 from brain_api.services import catalog
 
 
@@ -34,12 +42,21 @@ class IntakeIn(BaseModel):
 
 
 class SignupIntentCreate(BaseModel):
-    """Body for `POST /public/signup-intents` — the pre-checkout lead + selection.
+    """Body for `POST /public/signup-intents` — the FIRST-card lead + selection + password.
+
+    Submitting this now REGISTERS the account (tenant + owner user + inert entitlement +
+    linked intent) and returns a real session — no longer a mere pre-payment placeholder.
+    `password` is the visitor's chosen password (same composition policy as
+    `schemas.auth.SetPasswordIn` / `schemas.admin.AdminUserCreateIn`: 8-72 chars, at least
+    one letter and one digit) so the owner can log back in from any device afterwards,
+    instead of the old random-never-communicated one.
 
     `catalog_ids` must contain EXACTLY one assignable, non-free plan id plus any number
     of known add-on ids (unknown ids, zero or multiple plan ids, or the reserved/free
     plan are all 422). `website` is a HONEYPOT (demo.py pattern): a bot fills it, a real
-    browser leaves it empty; it is NEVER persisted.
+    browser leaves it empty; it is NEVER persisted. `intake` stays OPTIONAL here — the
+    later wizard steps attach it via the authenticated `POST /doctor/onboarding/intake`
+    once the visitor is logged in.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -48,8 +65,11 @@ class SignupIntentCreate(BaseModel):
     clinic_name: str = Field(min_length=1, max_length=255)
     email: EmailStr = Field(max_length=320)
     whatsapp_phone: str = Field(min_length=1, max_length=32)
+    # bcrypt truncates at 72 bytes; reject longer (422) rather than silently truncate.
+    password: str = Field(min_length=8, max_length=72)
     catalog_ids: list[str] = Field(min_length=1, max_length=16)
-    # Optional eligibility-calibration answers (§7); omitted -> None (back-compat).
+    # Optional eligibility-calibration answers (§7); omitted -> None (back-compat). Usually
+    # attached LATER via POST /doctor/onboarding/intake, but accepted here too.
     intake: IntakeIn | None = None
     # HONEYPOT (anti-spam). Never persisted — the API layer accept-and-drops silently.
     website: str | None = None
@@ -60,6 +80,15 @@ class SignupIntentCreate(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("must not be blank")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def _password_policy(cls, v: str) -> str:
+        """Same rule as SetPasswordIn/AdminUserCreateIn: reject a purely-numeric or
+        purely-alphabetic password (422) so the owner's credential is never trivial."""
+        if not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
+            raise ValueError("password must contain at least one letter and one digit")
         return v
 
     @model_validator(mode="after")
@@ -78,10 +107,17 @@ class SignupIntentCreate(BaseModel):
         return self
 
 
-class SignupIntentOut(BaseModel):
-    """`POST /public/signup-intents` response — just the id to drive the next step."""
+class SignupRegisterOut(BaseModel):
+    """`POST /public/signup-intents` response — the created intent id PLUS a real session.
+
+    The visitor is registered and logged in the moment the first card is submitted: the
+    frontend calls `saveSession(session)` immediately and treats the flow exactly like a
+    normal login. `intent_id` drives the subsequent `POST /public/checkout-sessions` call.
+    `session` is the SAME `TokenResponse` shape `POST /auth/token` (login) returns.
+    """
 
     intent_id: UUID
+    session: TokenResponse
 
 
 class CheckoutSessionCreate(BaseModel):

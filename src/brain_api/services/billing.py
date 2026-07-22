@@ -22,11 +22,14 @@ it is a handful of local writes, not network work; the skill's "enqueue" guidanc
 targets recomputes that call out.
 
 Cold-signup checkouts (services/signup.py) ride the SAME `checkout.session.completed`
-event but carry NO tenant yet: `apply_stripe_event` recognizes them by
+event and carry the SIGNUP INTENT id (never a tenant id) in `metadata`/
+`client_reference_id`: `apply_stripe_event` recognizes them by
 `metadata.kind == "signup_intent"` and routes to `services.signup.
 provision_tenant_from_intent` INSTEAD of the tenant-linking logic below (which would
-otherwise misread the intent id riding `client_reference_id` as a tenant id). Every other
-event — including an "existing_tenant" checkout — is completely unaffected.
+otherwise misread the intent id riding `client_reference_id` as a tenant id). That path
+ACTIVATES the inert entitlement `services.signup.register_signup` already created at the
+buyer's first card — it no longer creates the tenant/user. Every other event — including
+an "existing_tenant" checkout — is completely unaffected.
 """
 
 import json
@@ -431,18 +434,23 @@ def _state_from_subscription(sub: dict[str, Any]) -> dict[str, Any] | None:
 async def _apply_signup_intent_checkout(
     session: AsyncSession, obj: dict[str, Any]
 ) -> Tenant | None:
-    """`checkout.session.completed` for a cold signup: provision the tenant it implies.
+    """`checkout.session.completed` for a cold signup: ACTIVATE the tenant it implies.
+
+    The tenant/user/inert-entitlement already exist (registration built them at the first
+    card); this only flips the entitlement to the purchased plan via
+    `services.signup.provision_tenant_from_intent`.
 
     Resolution: our own `metadata.signup_intent_id` (stamped at checkout,
     services/signup.create_checkout_session_for_intent), falling back to
     `client_reference_id`. An unresolvable/unknown id is logged and dropped — the event
     is still marked processed by the caller (a redelivery cannot do better).
 
-    Returns the freshly-provisioned `Tenant` row so the caller can fire the
-    secretaria-provisioning bridge post-commit (CONTRACT_onboarding_v1.md scope A) —
-    `None` when nothing was provisioned THIS call (unknown/unresolvable intent, a raced
-    email conflict that failed the intent, or an already-completed intent replayed by a
-    Stripe redelivery — the bridge must fire only once, not on every redelivery).
+    Returns the freshly-ACTIVATED `Tenant` row so the caller can fire the
+    secretaria-provisioning bridge post-commit — `None` when nothing was newly activated
+    THIS call (unknown/unresolvable intent, a failed activation, or an already-completed
+    intent replayed by a Stripe redelivery — the bridge must fire only once, not on every
+    redelivery). The "newly this call" signal is the intent's status transition to
+    "completed" (it is keyed on status, NOT `tenant_id`, which registration always sets).
     """
     # Local import: services.signup imports services.billing (validate_selection,
     # price_id_for, _stripe_post), so a module-level import here would cycle.
@@ -463,14 +471,16 @@ async def _apply_signup_intent_checkout(
         logger.warning("stripe_signup_event_unknown_intent", intent_id=str(intent_id))
         return None
 
-    already_provisioned = intent.status == "completed" or intent.tenant_id is not None
+    already_completed = intent.status == "completed"
     await signup_service.provision_tenant_from_intent(
         session,
         intent,
         stripe_customer_id=str(obj["customer"]) if obj.get("customer") else None,
         stripe_subscription_id=str(obj["subscription"]) if obj.get("subscription") else None,
     )
-    if already_provisioned or intent.tenant_id is None:
+    # Fire the bridge only when THIS call is the one that activated the intent (status went
+    # completed just now). Already-completed (redelivery) or failed (tenant_missing) -> None.
+    if already_completed or intent.status != "completed":
         return None
     return await session.get(Tenant, intent.tenant_id)
 
@@ -502,8 +512,8 @@ async def apply_stripe_event(
 
     Handled types (everything else is marked processed and ignored):
     - checkout.session.completed        -> link stripe_customer_id / subscription_id
-      (or, for a cold-signup checkout — `metadata.kind == "signup_intent"` — provision
-      the tenant/user/entitlement via `_apply_signup_intent_checkout` INSTEAD)
+      (or, for a cold-signup checkout — `metadata.kind == "signup_intent"` — ACTIVATE the
+      already-registered tenant's inert entitlement via `_apply_signup_intent_checkout`)
     - customer.subscription.created/updated -> full recompute (plan/addons/limits/
       products/status/period) from the subscription items via the catalog
     - customer.subscription.deleted     -> status=canceled, products OFF

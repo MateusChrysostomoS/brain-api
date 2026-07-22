@@ -30,7 +30,7 @@ ADDON_VERIFIED_IDENTITY = "verified_identity"
 ADDON_MULTI_PROFESSIONAL = "multi_professional"
 ADDON_MULTI_UNIT = "multi_unit"
 ADDON_EHR = "ehr"
-ADDON_PIX_WHATSAPP = "pix_whatsapp"
+ADDON_PIX_DEPOSIT = "pix_deposit"
 ADDON_ANALYTICS_BI = "analytics_bi"
 #: Advanced BI dashboard — a SEPARATE, fixed-price add-on layered on top of the basic
 #: `analytics_bi` summary. A DISTINCT entitlement key: owning one does not imply the other.
@@ -172,9 +172,18 @@ ADDONS: dict[str, AddonDef] = {
             ),
         ),
         AddonDef(
-            id=ADDON_PIX_WHATSAPP,
-            name="Pix on WhatsApp",
-            description="Deposit charge via Pix on WhatsApp before confirming the appointment.",
+            id=ADDON_PIX_DEPOSIT,
+            name="Pix deposit",
+            description=(
+                "Appointment deposit (sinal) via Pix on WhatsApp: dynamic QR charge at "
+                "booking, refund-window policy, retention on late cancel/no-show. Fixed "
+                "price per clinic."
+            ),
+            # Intentionally no limit_grants: a flat Stripe line item, not scaled per
+            # unit — the PSP fee (~R$1.99 at Asaas) is paid by the CLINIC on its OWN
+            # PSP account, so it is not our cost and is not metered.
+            # Renamed from `pix_whatsapp` to `pix_deposit` (2026-07-21, pre-launch,
+            # no live subscribers — no data migration needed).
         ),
         AddonDef(
             id=ADDON_ANALYTICS_BI,

@@ -12,12 +12,24 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete, func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
+from brain_api.core.logging import get_logger
 from brain_api.core.security import create_access_token, hash_password
-from brain_api.models import DemoRequest, Entitlement, Tenant, User
+from brain_api.models import (
+    DemoRequest,
+    Entitlement,
+    PrecheckAccountLink,
+    PrivacyRequest,
+    RefreshToken,
+    SignupAttempt,
+    SignupIntent,
+    Tenant,
+    UsageEvent,
+    User,
+)
 from brain_api.models.user import ROLE_TENANT_OWNER, ROLE_TENANT_STAFF
 from brain_api.schemas.admin import (
     AdminDemoRequestOut,
@@ -29,7 +41,9 @@ from brain_api.schemas.admin import (
     EntitlementPatchIn,
     ImpersonationTokenOut,
 )
-from brain_api.services import catalog
+from brain_api.services import catalog, secretaria_client
+
+logger = get_logger(__name__)
 
 
 def _entitlement_out(tenant_id: UUID, ent: Entitlement | None) -> EntitlementAdminOut:
@@ -124,6 +138,115 @@ async def get_tenant_detail(session: AsyncSession, tenant_id: UUID) -> AdminTena
         users_count=users_count,
         entitlements=_entitlement_out(tenant_id, ent),
     )
+
+
+# --- Tenant deletion (cascade) ---------------------------------------------
+
+
+@dataclass(frozen=True)
+class TenantDeletionResult:
+    """Outcome of a tenant deletion: brain rows removed + the secretaria leg status."""
+
+    tenant_id: UUID
+    counts: dict[str, int]  # brain-owned rows deleted, per table
+    secretaria: dict[str, str]  # {"status": deleted|absent|kept_has_data|skipped_unconfigured|failed}
+
+
+async def _bulk_delete(session: AsyncSession, model: type, whereclause: object) -> int:
+    """DELETE every row of `model` matching `whereclause`; return the row count."""
+    result = await session.execute(sa_delete(model).where(whereclause))
+    return result.rowcount or 0
+
+
+async def _delete_secretaria_tenant(tenant_id: UUID) -> dict[str, str]:
+    """Best-effort delete of the tenant's row in secretaria's own DB (never raises).
+
+    Mirrors the cross-DB erasure fan-out's fail-soft markers: a failing / unconfigured /
+    inapplicable secretaria leg NEVER undoes the brain deletion (which already committed).
+    The tenant shares one UUID across the mesh, so this targets the same clinic there.
+    """
+    try:
+        await secretaria_client.delete_tenant(tenant_id)
+        return {"status": "deleted"}
+    except HTTPException as exc:
+        # 404 -> the clinic never had a secretaria row (PreCheck-only); 409 -> secretaria
+        # kept it because conversation history exists; 503 -> secretaria not configured on
+        # brain-api; anything else (502, ...) -> a real failure worth retrying.
+        result = {
+            status.HTTP_404_NOT_FOUND: "absent",
+            status.HTTP_409_CONFLICT: "kept_has_data",
+            status.HTTP_503_SERVICE_UNAVAILABLE: "skipped_unconfigured",
+        }.get(exc.status_code, "failed")
+        logger.warning(
+            "admin_tenant_delete_secretaria_leg",
+            tenant_id=str(tenant_id),
+            upstream_status=exc.status_code,
+            result=result,
+        )
+        return {"status": result}
+    except Exception:  # defensive: the secretaria leg must never surface as a 500
+        logger.warning("admin_tenant_delete_secretaria_leg_error", tenant_id=str(tenant_id))
+        return {"status": "failed"}
+
+
+async def delete_tenant(session: AsyncSession, tenant_id: UUID) -> TenantDeletionResult:
+    """Delete a clinic and everything brain-api owns for it, then best-effort secretaria.
+
+    404 if the tenant does not exist. Child rows are deleted EXPLICITLY in FK-safe order
+    (not left to Postgres `ON DELETE CASCADE`) so the behavior is identical on SQLite
+    (tests, no FK enforcement) and Postgres (prod) — the same robustness rationale as
+    `list_tenants`. `privacy_requests` are LGPD audit rows that must OUTLIVE the account,
+    so their `requested_by` is nulled rather than the row deleted (matching the column's
+    own `ON DELETE SET NULL`). The secretaria leg runs AFTER the brain commit and is
+    best-effort: it can never resurrect or block the brain deletion.
+    """
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Tenant not found")
+
+    # Ids of this tenant's users — needed to reach user-scoped children (and to preserve
+    # the audit rows that reference them) before the users themselves are deleted.
+    user_ids = list(
+        (await session.scalars(select(User.id).where(User.tenant_id == tenant_id))).all()
+    )
+
+    counts: dict[str, int] = {}
+    if user_ids:
+        # Keep LGPD audit rows; just detach them from the users about to disappear.
+        await session.execute(
+            sa_update(PrivacyRequest)
+            .where(PrivacyRequest.requested_by.in_(user_ids))
+            .values(requested_by=None)
+        )
+        counts["refresh_tokens"] = await _bulk_delete(
+            session, RefreshToken, RefreshToken.user_id.in_(user_ids)
+        )
+    else:
+        counts["refresh_tokens"] = 0
+
+    # Children of users and/or the tenant, deleted before their parents.
+    counts["precheck_links"] = await _bulk_delete(
+        session, PrecheckAccountLink, PrecheckAccountLink.tenant_id == tenant_id
+    )
+    counts["users"] = await _bulk_delete(session, User, User.tenant_id == tenant_id)
+    counts["entitlements"] = await _bulk_delete(
+        session, Entitlement, Entitlement.tenant_id == tenant_id
+    )
+    counts["usage_events"] = await _bulk_delete(
+        session, UsageEvent, UsageEvent.tenant_id == tenant_id
+    )
+    counts["signup_attempts"] = await _bulk_delete(
+        session, SignupAttempt, SignupAttempt.tenant_id == tenant_id
+    )
+    counts["signup_intents"] = await _bulk_delete(
+        session, SignupIntent, SignupIntent.tenant_id == tenant_id
+    )
+
+    await session.delete(tenant)
+    await session.commit()
+
+    secretaria = await _delete_secretaria_tenant(tenant_id)
+    return TenantDeletionResult(tenant_id=tenant_id, counts=counts, secretaria=secretaria)
 
 
 # --- Entitlements ----------------------------------------------------------

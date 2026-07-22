@@ -15,6 +15,7 @@ network call — an unconfigured mesh must not silently appear to "work".
 """
 
 from typing import Any
+from uuid import UUID
 
 import httpx
 from fastapi import HTTPException, status
@@ -91,3 +92,16 @@ async def reset_data(*, include_tenants: bool) -> Any:
     return await _admin_request(
         "POST", "/admin/reset", json={"confirm": True, "include_tenants": include_tenants}
     )
+
+
+async def delete_tenant(tenant_id: UUID) -> Any:
+    """Delete ONE clinic in secretaria — `DELETE /admin/tenants/{tenant_id}`.
+
+    The tenant carries the SAME UUID across the mesh (contract v1 §0), so brain-api's id
+    is secretaria's primary key. secretaria refuses (409) if that tenant still has
+    conversation history and returns 404 when it never had a secretaria row (a
+    PreCheck-only clinic) — both surface here as an HTTPException the caller decides how
+    to treat (the brain "delete clinic" flow treats every non-2xx as best-effort). Same
+    503/502 fail-closed behavior as the other admin calls.
+    """
+    return await _admin_request("DELETE", f"/admin/tenants/{tenant_id}")

@@ -21,6 +21,7 @@ from brain_api.core.logging import get_logger
 from brain_api.schemas.admin import (
     AdminDemoRequestOut,
     AdminDemoRequestPatchIn,
+    AdminTenantDeleteOut,
     AdminTenantDetailOut,
     AdminTenantOut,
     AdminUserCreateIn,
@@ -79,6 +80,35 @@ async def get_tenant_entitlements(
 ) -> EntitlementAdminOut:
     """The entitlement record for one tenant (coherent defaults if no row yet)."""
     return await admin_service.get_entitlement(session, tenant_id)
+
+
+@router.delete(
+    "/tenants/{tenant_id}",
+    response_model=AdminTenantDeleteOut,
+    summary="Delete a tenant and everything it owns (cascade)",
+    responses={404: {"description": "Tenant not found."}},
+)
+async def delete_tenant(
+    tenant_id: UUID,
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_session),
+) -> AdminTenantDeleteOut:
+    """Permanently delete a clinic: its users, entitlements, usage, PreCheck links, signup
+    records and refresh tokens (LGPD audit rows survive), then best-effort its row in
+    secretaria's own DB. IRREVERSIBLE. Admin-only (router gate); the actor + per-table
+    counts + secretaria leg are logged at WARNING. 404 if the tenant does not exist.
+    """
+    result = await admin_service.delete_tenant(session, tenant_id)
+    logger.warning(
+        "admin_tenant_deleted",
+        actor_user_id=principal.user_id,
+        tenant_id=str(tenant_id),
+        counts=result.counts,
+        secretaria=result.secretaria,
+    )
+    return AdminTenantDeleteOut(
+        tenant_id=result.tenant_id, deleted=result.counts, secretaria=result.secretaria
+    )
 
 
 @router.patch(

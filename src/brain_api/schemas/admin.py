@@ -88,6 +88,22 @@ class AdminTenantDetailOut(BaseModel):
     entitlements: EntitlementAdminOut
 
 
+class AdminTenantDeleteOut(BaseModel):
+    """Result of deleting a clinic in cascade (DELETE /admin/tenants/{id}).
+
+    `deleted` counts the brain-owned rows removed, per table. `secretaria.status` reports
+    the cross-DB leg into secretaria's own database: `deleted` (its tenant row was
+    removed), `absent` (it never had one — a PreCheck-only clinic), `kept_has_data`
+    (secretaria refused because conversation history exists), `skipped_unconfigured`
+    (secretaria not wired on brain-api), or `failed` (retryable error). A non-`deleted`
+    secretaria status never means the brain deletion failed — that already committed.
+    """
+
+    tenant_id: UUID
+    deleted: dict[str, int]
+    secretaria: dict[str, str]
+
+
 class EntitlementPatchIn(BaseModel):
     """Partial update of a tenant's entitlement (admin manual activation, pre-Stripe).
 

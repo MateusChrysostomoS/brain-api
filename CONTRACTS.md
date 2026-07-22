@@ -188,7 +188,7 @@ the token's `tenant_id` (never from a client-supplied id).
   "clinic_name": "Consultório Dr. Aurélio Lima",
   "products": { "precheck": true, "secretaria": true },
   "plan": "complete_clinic_combo",
-  "secretaria_tier": "bronze_1",
+  "secretaria_tier": "basico",
   "status": "active",
   "addons": {
     "reactivation_pack": true, "verified_identity": true,
@@ -196,7 +196,7 @@ the token's `tenant_id` (never from a client-supplied id).
     "pix_deposit": false, "analytics_bi": false, "analytics_bi_advanced": false,
     "human_backup_24_7": false
   },
-  "limits": { "professionals": 1, "units": 1, "messages": 400, "reminders": 400, "hsm_proactive": 200 },
+  "limits": { "professionals": 1, "units": 1, "messages": 400, "reminders": 0, "hsm_proactive": 200 },
   "usage": {}
 }
 ```
@@ -207,7 +207,7 @@ the token's `tenant_id` (never from a client-supplied id).
 | `products.precheck` | bool | `entitlements.precheck_enabled` |
 | `products.secretaria` | bool | `entitlements.secretaria_enabled` |
 | `plan` | string | a **catalog plan id** (§3.2); legacy rows may still carry an alias (e.g. `"brain-completo"`) |
-| `secretaria_tier` | string \| null | derived from the plan via the catalog: `ferro` \| `bronze_1` \| `bronze_2` \| null |
+| `secretaria_tier` | string \| null | derived from the plan via the catalog: `basico` \| null |
 | `addons` | object | the **full formalized keyset** (§3.2): every add-on id → bool. Normalized through the catalog, so pre-catalog rows still read complete |
 | `limits` | object | the **full formalized keyset** (§3.2): every limit key → int ≥ 0 |
 | `status` | string | `active` \| `trialing` \| `past_due` \| `canceled` \| `inactive` |
@@ -241,24 +241,28 @@ Stripe price ids. Nothing else hardcodes a plan flag or price. Admin PATCH (§11
 materializes entitlement rows FROM the catalog today; the Stripe webhook recompute
 (billing round) will reuse the same `compute_entitlement_state` helper.
 
-**Plans** (`plan` column values; `available=false` = reserved, not assignable):
+**Plans** (`plan` column values; every plan is currently assignable — the reserved-slot
+concept, `available=false`, was retired 2026-07-22 along with the tier ladder below):
 
 | plan id | products | secretarIA tier | implied add-ons | notes |
 |---|---|---|---|---|
 | `free` | — | — | — | default / no subscription |
 | `precheck` | precheck | — | — | |
-| `secretaria_ferro` | secretaria | `ferro` | — | core loop: AI converses + books in Google Calendar; **no reminders** |
-| `secretaria_bronze_1` | secretaria | `bronze_1` | — | ferro + automatic 24h/1h HSM reminders |
-| `secretaria_bronze_2` | secretaria | `bronze_2` | — | **reserved slot** (`available=false`): no feature set defined yet; not assignable, no Stripe price |
-| `complete_clinic_combo` | precheck + secretaria | `bronze_1` | `reactivation_pack`, `verified_identity` | ~15% off the sum (`discount_pct=15` metadata; real price lives in Stripe, billing round) |
+| `secretaria_basico` | secretaria | `basico` | — | fully metered, **no flat/anchor price**: three companion Stripe Meters bill active professionals, billable patients, and reminders sent outside the WhatsApp 24h window (§13.3) — AI converses + books in Google Calendar + sends 24h/1h reminders, all billed by usage. Replaces the retired `secretaria_ferro`/`secretaria_bronze_1`/`secretaria_bronze_2` tier ladder (2026-07-22): one plan, one tier, for every secretarIA tenant |
+| `complete_clinic_combo` | precheck + secretaria | `basico` | `reactivation_pack`, `verified_identity` | ~15% off the sum (`discount_pct=15` metadata; real price lives in Stripe, billing round) |
 
-Legacy aliases: `"brain-completo"` → `complete_clinic_combo` (old seeded rows keep
-their semantics; a PATCH write normalizes to the canonical id). Unknown/stale plan
+Legacy aliases: `"brain-completo"` → `complete_clinic_combo`, `"secretaria_ferro"` →
+`secretaria_basico` (old seeded rows keep their semantics — ferro's fully-metered
+pricing model carries forward unchanged under the new id; a PATCH write normalizes to
+the canonical id). `"secretaria_bronze_1"` is **not** aliased — its flat-fee shape was
+retired outright (confirmed no live subscribers to preserve). Unknown/stale plan
 strings resolve to *no* catalog plan → tier/implied-add-on gates **fail closed**.
 
 **Add-on ids** (the formalized `entitlements.addons` keys — always all present, bool):
-`reactivation_pack` (HSM outside the 24h window: 24h/1h reminders + inactive-patient
-reactivation), `verified_identity` (Meta Verified for Business), `multi_professional`
+`reactivation_pack` (proactive reactivation of inactive patients via HSM templates
+outside the 24h window — 24h/1h appointment reminders are now a CORE capability on
+every plan, billed per-send via the `reminders` Stripe meter, §13.5, not part of this
+add-on), `verified_identity` (Meta Verified for Business), `multi_professional`
 (+1 professional per unit), `multi_unit` (+1 unit per unit), `ehr` (iClinic/Doctoralia/
 Memed/Conexa), `pix_deposit` (appointment deposit/sinal via Pix on WhatsApp — dynamic
 charge + refund-window/retention lifecycle; renamed from `pix_whatsapp` 2026-07-21
@@ -268,10 +272,14 @@ dashboard — a **distinct** key, NOT implied by `analytics_bi`; no limit grants
 as one flat line item), `human_backup_24_7`.
 
 **Limit keys** (the formalized `entitlements.limits` keys — always all present, int ≥ 0):
-`professionals`, `units`, `messages` (conversations/month), `reminders` (24h/1h HSM
-sends/month), `hsm_proactive` (reactivation HSM sends/month). Plan base limits + the
-**additive** grants of active add-ons (per unit; Stripe item quantities scale them in
-the billing round), computed by `compute_limits`.
+`professionals`, `units`, `messages` (conversations/month), `hsm_proactive`
+(reactivation HSM sends/month). Plan base limits + the **additive** grants of active
+add-ons (per unit; Stripe item quantities scale them in the billing round), computed by
+`compute_limits`. `reminders` (24h/1h HSM sends outside the WhatsApp 24h window) is
+**metering-only** now (2026-07-22), same pattern as `billable_patients`/
+`active_professionals` (§13.5): no plan or add-on grants it a base quota (stays `0`) —
+it exists purely so `POST /internal/usage-events` accepts `feature: "reminders"` and the
+Stripe meter-event forward has a validated key.
 
 **The single gate — `services.entitlements.is_entitled(ent, key)`**: the one helper
 every gate reuses (brain-api now; secretarIA's plugin registry consumes the same
@@ -279,8 +287,10 @@ semantics over `GET /entitlements`). Pure and in-process — no network, no Stri
 `key` is an add-on id or a tier. Rules: `status` must be `active`/`trialing` (else
 `false`, whatever was bought); an add-on passes if ON in `addons` **or** implied by the
 plan (a combo is a plan that implies add-ons); a tier passes if the plan's tier ranks
-`>=` the asked tier (tiers are **cumulative**: `ferro` < `bronze_1` < `bronze_2`); an
-unknown key raises `ValueError` (programmer error — loud, never silently deny/grant).
+`>=` the asked tier (only one tier, `basico`, exists since the 2026-07-22 ferro/
+bronze_1/bronze_2 ladder retirement — the rank check stays in place for if/when a future
+tier is ever added); an unknown key raises `ValueError` (programmer error — loud, never
+silently deny/grant).
 
 ---
 
@@ -568,7 +578,7 @@ Migration **`0001`** creates `tenants`/`users`/`entitlements`/`demo_requests`; m
 | `SECRETARIA_TIMEOUT_SECONDS` | `10` | timeout for the secretaria admin httpx client |
 | `STRIPE_SECRET_KEY` | `""` | Stripe secret API key (§13). Empty ⇒ billing endpoints `503`; entitlement reads never touch Stripe regardless |
 | `STRIPE_WEBHOOK_SECRET` | `""` | webhook signing secret (§13.3). Empty **fails CLOSED**: every delivery rejected `400` |
-| `STRIPE_PRICE_MAP` | `{}` | JSON: catalog id (§3.2) → Stripe price id, per environment. Unknown ids rejected at parse time. ALSO accepts, per plan, the two fully-metered companion keys `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` (§13.3) — not catalog ids of their own. The SUPERSEDED single `{plan_id}_metered` key is still tolerated (recognized-but-unused, graceful degradation) but no code path reads it anymore |
+| `STRIPE_PRICE_MAP` | `{}` | JSON: catalog id (§3.2) → Stripe price id, per environment. Unknown ids rejected at parse time (accepts the `"secretaria_ferro"` legacy alias, normalized to `secretaria_basico`). ALSO accepts, per plan, the three fully-metered companion keys `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` / `{plan_id}_metered_reminders` (§13.3) — not catalog ids of their own. The SUPERSEDED single `{plan_id}_metered` key is still tolerated (recognized-but-unused, graceful degradation) but no code path reads it anymore |
 | `STRIPE_CHECKOUT_SUCCESS_URL` / `STRIPE_CHECKOUT_CANCEL_URL` / `STRIPE_PORTAL_RETURN_URL` | localhost portal | browser return URLs for Checkout / Billing Portal |
 | `STRIPE_API_BASE` / `STRIPE_TIMEOUT_SECONDS` | `https://api.stripe.com` / `15` | Stripe HTTP client (async httpx; the SDK is used only for webhook signature verification) |
 | `SIGNUP_RATE_LIMIT_PER_MIN` | `10` | per-IP budget shared by all three `/public/*` cold-signup routes (§15.1; `core/ratelimit.py`, in-process, fail-open) |
@@ -576,7 +586,8 @@ Migration **`0001`** creates `tenants`/`users`/`entitlements`/`demo_requests`; m
 | `STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL` / `STRIPE_SIGNUP_CHECKOUT_CANCEL_URL` | `""` (falls back to `STRIPE_CHECKOUT_SUCCESS_URL`/`_CANCEL_URL`) | cold-signup Checkout Sessions land on a **public** onboarding page (the buyer has no session yet); the success URL should carry Stripe's `{CHECKOUT_SESSION_ID}` template so the page can poll `GET /public/onboarding-status` (§15.1) |
 | `STRIPE_TRIAL_PERIOD_DAYS` | `0` | trial length (days) applied to EVERY subscription-mode Checkout Session (`subscription_data[trial_period_days]`) when `> 0` — both checkout builders (§13.3). Deploy sets it high enough (recommend ~75) to outlast the 60-day onboarding retry window before Stripe would otherwise charge a still-unconnected tenant; `harden_charge` (§13.4) ends the trial early on activation regardless of this value |
 | `STRIPE_METER_EVENT_BILLABLE_PATIENTS` | `None` | Stripe Meter `event_name` for the `billable_patients` metered price; unset disables the forward entirely — metering-only, no billing impact either way (§13.3) |
-| `STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS` | `None` | Stripe Meter `event_name` for the `active_professionals` metered PLAN price (the fully-metered secretaria_ferro model, §13.3/§13.5); same forward/fail-soft contract as `STRIPE_METER_EVENT_BILLABLE_PATIENTS` — unset disables the forward entirely |
+| `STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS` | `None` | Stripe Meter `event_name` for the `active_professionals` metered PLAN price (the fully-metered secretaria_basico model, §13.3/§13.5); same forward/fail-soft contract as `STRIPE_METER_EVENT_BILLABLE_PATIENTS` — unset disables the forward entirely |
+| `STRIPE_METER_EVENT_REMINDERS` | `None` | Stripe Meter `event_name` for the `reminders` metered PLAN price (24h/1h appointment reminders sent outside the WhatsApp 24h window — the third leg of the fully-metered secretaria_basico model, §13.3/§13.5); same forward/fail-soft contract as `STRIPE_METER_EVENT_BILLABLE_PATIENTS` — unset disables the forward entirely |
 | `META_APP_ID` / `META_APP_SECRET` | `""` | Meta Graph API app credentials for the WhatsApp Embedded Signup code→token exchange (`POST /doctor/onboarding/attempts` → `services/meta_graph.py`, §16.2). Empty ⇒ the exchange is skipped/fails soft — never a 500 |
 | `META_GRAPH_BASE_URL` | `https://graph.facebook.com/v23.0` | Meta Graph API base for the token exchange |
 | `META_ES_CONFIG_ID` | `""` | Meta Embedded Signup config id; echoed read-only via `GET /doctor/onboarding`'s `embedded_signup` block (§16.2) so the portal knows whether the flow is wired without a second source of truth. Not a secret — unlike `META_APP_SECRET` |
@@ -1069,31 +1080,35 @@ shared by **both** checkout builders — `create_checkout_session` (§13, the au
 tenant upsell path) and `services.signup.create_checkout_session_for_intent` (§15.1, the
 cold-signup path) — so the two paths can never drift apart:
 
-- **Metered companion prices — TWO per plan, NO anchor.** `catalog.py` still sells only
-  flat-fee plans/add-ons; a plan's metered pricing is expressed purely as a
-  `STRIPE_PRICE_MAP` naming convention: `{plan_id}_metered_patients` and
-  `{plan_id}_metered_professionals` (e.g. `"secretaria_ferro_metered_patients":
-  "price_..."`, `"secretaria_ferro_metered_professionals": "price_..."`) — one companion
-  per Stripe Meter (billable patients, active professionals). `secretaria_ferro` is fully
-  metered under this round's business model: R$80/month per active professional +
-  R$2/month per billable patient, with **NO flat/anchor price on the plan at all**.
-  `_parse_price_map` accepts both keys without requiring them to be a known catalog id
-  (and ALSO still accepts the SUPERSEDED single `{plan_id}_metered` key —
-  recognized-but-unused, graceful degradation for a not-yet-migrated deployed map — but
-  no code path reads it anymore). `_append_checkout_line_items` appends each companion
-  the environment has configured as an EXTRA Checkout line item with **no `quantity`
-  field** (Stripe rejects a `quantity` on a metered price); the plan's own line item is
-  only added when it HAS a direct/flat price (a fully-metered plan gets none). Either,
-  both, or neither companion may be configured independently.
-- **`validate_selection`'s fully-metered waiver — BOTH companions required.** A plan's
-  own `price_id_for(plan.id)` requirement is WAIVED only when **both**
-  `{plan.id}_metered_patients` AND `{plan.id}_metered_professionals` are configured — a
-  half-configured pair (e.g. professionals only) does NOT waive it, because checking out
-  with only one companion would attach a subscription silently missing the other meter:
-  that usage dimension would accrue in the local ledger but never actually get invoiced
+- **Metered companion prices — THREE per plan, NO anchor.** `catalog.py` still sells
+  only flat-fee plans/add-ons; a plan's metered pricing is expressed purely as a
+  `STRIPE_PRICE_MAP` naming convention: `{plan_id}_metered_patients`,
+  `{plan_id}_metered_professionals`, and `{plan_id}_metered_reminders` (e.g.
+  `"secretaria_basico_metered_patients": "price_..."`,
+  `"secretaria_basico_metered_professionals": "price_..."`,
+  `"secretaria_basico_metered_reminders": "price_..."`) — one companion per Stripe Meter
+  (billable patients, active professionals, reminders sent outside the WhatsApp 24h
+  window). `secretaria_basico` is fully metered under this round's business model:
+  R$80/month per active professional + R$2/month per billable patient + a per-send
+  reminder price, with **NO flat/anchor price on the plan at all**. `_parse_price_map`
+  accepts all three keys without requiring them to be a known catalog id (and ALSO still
+  accepts the SUPERSEDED single `{plan_id}_metered` key — recognized-but-unused,
+  graceful degradation for a not-yet-migrated deployed map — but no code path reads it
+  anymore). `_append_checkout_line_items` appends each companion the environment has
+  configured as an EXTRA Checkout line item with **no `quantity` field** (Stripe rejects
+  a `quantity` on a metered price); the plan's own line item is only added when it HAS a
+  direct/flat price (a fully-metered plan gets none). Any subset (including none) of the
+  three companions may be configured independently.
+- **`validate_selection`'s fully-metered waiver — ALL THREE companions required.** A
+  plan's own `price_id_for(plan.id)` requirement is WAIVED only when **all three** of
+  `{plan.id}_metered_patients`, `{plan.id}_metered_professionals`, AND
+  `{plan.id}_metered_reminders` are configured — a partially configured set (e.g.
+  professionals + patients but not reminders) does NOT waive it, because checking out
+  with a companion missing would attach a subscription silently missing that meter: that
+  usage dimension would accrue in the local ledger but never actually get invoiced
   (silent under-billing). `price_not_configured:{plan.id}` (503) is raised whenever the
-  plan has NEITHER a direct price NOR both companions. Add-ons are unaffected — each
-  still requires its own price regardless of how the plan itself is billed.
+  plan has NEITHER a direct price NOR all three companions. Add-ons are unaffected —
+  each still requires its own price regardless of how the plan itself is billed.
 - **Subscription trial.** `_apply_trial` adds
   `subscription_data[trial_period_days]=<STRIPE_TRIAL_PERIOD_DAYS>` to the Checkout
   payload whenever that setting is `> 0` (default `0`/off, §7; the deployed value is 75).
@@ -1101,13 +1116,13 @@ cold-signup path) — so the two paths can never drift apart:
 
 These are pure request-building additions, but the webhook recompute (§13.1) DOES need to
 know about them: with no anchor price, a fully-metered subscription's `items` are ONLY the
-two companion prices, so `_state_from_subscription` resolves the plan from a companion
+three companion prices, so `_state_from_subscription` resolves the plan from a companion
 price id whose stripped plan id is a real catalog plan (`_plan_id_from_metered_companion`)
 — evidence of the plan, exactly like a normal plan-price item, but NEVER added to
-`addon_qty` (a companion item is not an add-on). Either companion (or both, idempotently)
-resolves the same plan. Without this, a fully-metered subscription's items would carry NO
-recognized plan price at all, `_state_from_subscription` would return `None`, and the
-entitlement would never get its `plan`/products/`limits` set — logging
+`addon_qty` (a companion item is not an add-on). Any one of the three (or more,
+idempotently) resolves the same plan. Without this, a fully-metered subscription's items
+would carry NO recognized plan price at all, `_state_from_subscription` would return
+`None`, and the entitlement would never get its `plan`/products/`limits` set — logging
 `stripe_subscription_no_known_plan` forever. A trialing subscription still reports
 `status: "trialing"` through the normal `customer.subscription.*` handling either way.
 
@@ -1136,26 +1151,35 @@ to `ativo`.
 
 ### 13.5 Catalog limit keys (metering only, no quota)
 
-`services/catalog.py::LIMIT_KEYS` carries TWO metering-only keys, same pattern each:
+`services/catalog.py::LIMIT_KEYS` carries THREE metering-only keys, same pattern each:
 
 - `LIMIT_BILLABLE_PATIENTS = "billable_patients"` — distinct (professional, patient)
   pairs billed this month; secretaria's `run_patient_usage_metering` cron (out of this
   repo) is the caller.
 - `LIMIT_ACTIVE_PROFESSIONALS = "active_professionals"` — monthly metered headcount
-  Stripe bills under the fully-metered secretaria_ferro model (§13.3); a sibling change
+  Stripe bills under the fully-metered secretaria_basico model (§13.3); a sibling change
   in secretarIA's own repo emits `feature="active_professionals"` from its cron. NOT the
   same concern as the pre-existing `LIMIT_PROFESSIONALS = "professionals"` key: that one
   is the QUOTA (how many may be configured on the calendar, a plan/add-on grant); this
   one is the BILLED COUNT (how many were active this month, what Stripe actually charges
   for).
+- `LIMIT_REMINDERS = "reminders"` — monthly metered count of 24h/1h appointment reminder
+  sends that fall OUTSIDE the WhatsApp 24h customer-service window (billable HSM
+  template sends), billed under the fully-metered secretaria_basico model (§13.3)
+  alongside `billable_patients`/`active_professionals`; secretarIA's reminders plugin (a
+  CORE capability on every plan, gated on subscription activity rather than this limit)
+  emits `feature="reminders"` from its send path. Retires the old `secretaria_bronze_1`
+  flat-fee 200/month reminders quota (2026-07-22), which was already unenforced anywhere
+  in code.
 
-Like every `LIMIT_KEYS` entry, plan base limits stay `0` (unlimited-by-quota) for both —
-they exist purely so `POST /internal/usage-events` (§12.2) accepts `feature:
-"billable_patients"` / `feature: "active_professionals"` (422 otherwise) and so
-`services/usage.py`'s best-effort Stripe meter-event forward (§13.3's metered companion
-prices are what actually bill it; see also `STRIPE_METER_EVENT_BILLABLE_PATIENTS` /
-`STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS`, §7) has a validated feature id to key off per
-feature (`services/usage.py::_METER_EVENT_SETTINGS` maps feature → the Settings attribute
+Like every `LIMIT_KEYS` entry, plan base limits stay `0` (unlimited-by-quota) for all
+three — they exist purely so `POST /internal/usage-events` (§12.2) accepts `feature:
+"billable_patients"` / `feature: "active_professionals"` / `feature: "reminders"` (422
+otherwise) and so `services/usage.py`'s best-effort Stripe meter-event forward (§13.3's
+metered companion prices are what actually bill it; see also
+`STRIPE_METER_EVENT_BILLABLE_PATIENTS` / `STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS` /
+`STRIPE_METER_EVENT_REMINDERS`, §7) has a validated feature id to key off per feature
+(`services/usage.py::_METER_EVENT_SETTINGS` maps feature → the Settings attribute
 holding its Stripe Meter `event_name`).
 
 ### 13.6 Trial-expiry cancellation (`trial_will_end` → `cancel_at`)

@@ -14,14 +14,19 @@ module's prices.
 
 from dataclasses import dataclass, field
 
-# --- secretarIA tiers (ordered, cumulative: a higher tier includes the lower ones) ----
+# --- secretarIA tier (single value since the 2026-07-22 tier-ladder retirement) -------
+#
+# ferro/bronze_1/bronze_2 used to be separate sellable plans; only ferro's fully-metered
+# pricing model survived (as PLAN_SECRETARIA_BASICO below) and there is now exactly ONE
+# secretarIA plan. `TIER_BASICO` / `SECRETARIA_TIERS` stay as a single-element sequence
+# (rather than deleting the concept outright) purely so `is_entitled`'s generic
+# "is this tenant on an active secretarIA subscription" tier check keeps working
+# unchanged — nothing gates on more than one tier value anymore.
 
-TIER_FERRO = "ferro"
-TIER_BRONZE_1 = "bronze_1"
-TIER_BRONZE_2 = "bronze_2"
+TIER_BASICO = "basico"
 
 #: Ascending order; `is_entitled(ent, tier)` passes when the plan's tier ranks >= asked.
-SECRETARIA_TIERS: tuple[str, ...] = (TIER_FERRO, TIER_BRONZE_1, TIER_BRONZE_2)
+SECRETARIA_TIERS: tuple[str, ...] = (TIER_BASICO,)
 
 # --- add-on ids (the formal `entitlements.addons` keys — always booleans) -------------
 
@@ -44,14 +49,25 @@ ADDON_HUMAN_BACKUP_24_7 = "human_backup_24_7"
 LIMIT_PROFESSIONALS = "professionals"  # professionals bookable on the calendar
 LIMIT_UNITS = "units"  # clinic branches
 LIMIT_MESSAGES = "messages"  # inbound conversations handled / month
-LIMIT_REMINDERS = "reminders"  # 24h/1h HSM reminder sends / month
+#: Monthly METERED count of 24h/1h reminder sends that fall OUTSIDE the WhatsApp 24h
+#: customer-service window (billable HSM template sends; free-form sends inside the
+#: window don't count). Metering-only, same pattern as LIMIT_BILLABLE_PATIENTS /
+#: LIMIT_ACTIVE_PROFESSIONALS below: no plan grants a base limit for it (stays 0 =
+#: unlimited-by-quota) — it exists purely so POST /internal/usage-events validates
+#: feature="reminders" (secretarIA's reminders plugin — a CORE capability, gated on
+#: subscription activity, not this limit — is the caller) and services/usage.py's
+#: Stripe meter-event forward (STRIPE_METER_EVENT_REMINDERS) has a validated key. The
+#: third leg of the fully-metered secretaria_basico model, alongside billable_patients
+#: and active_professionals (added 2026-07-22, retiring the old bronze_1 flat-fee
+#: 200/month reminders quota, which was already unenforced in code).
+LIMIT_REMINDERS = "reminders"
 LIMIT_HSM_PROACTIVE = "hsm_proactive"  # proactive/reactivation HSM sends / month
 #: Distinct (professional, patient) pairs billed this month (CONTRACT_onboarding_v1.md
 #: §9, billing Phase 1). No plan grants a base limit for it (stays 0 = unlimited-by-quota
 #: on every plan) — it exists purely so POST /internal/usage-events validates the
 #: feature id and the ledger/Stripe-meter-forward path (services/usage.py) has a home.
 LIMIT_BILLABLE_PATIENTS = "billable_patients"
-#: Monthly METERED headcount Stripe bills under the fully-metered secretaria_ferro model
+#: Monthly METERED headcount Stripe bills under the fully-metered secretaria_basico model
 #: (R$80/active professional/month). Metering-only, same pattern as LIMIT_BILLABLE_PATIENTS
 #: above: no plan grants a base limit for it (stays 0 = unlimited-by-quota) — it exists
 #: purely so POST /internal/usage-events validates feature="active_professionals" (fed by
@@ -78,19 +94,20 @@ LIMIT_KEYS: frozenset[str] = frozenset(
 
 PLAN_FREE = "free"
 PLAN_PRECHECK = "precheck"
-PLAN_SECRETARIA_FERRO = "secretaria_ferro"
-PLAN_SECRETARIA_BRONZE_1 = "secretaria_bronze_1"
-PLAN_SECRETARIA_BRONZE_2 = "secretaria_bronze_2"
+PLAN_SECRETARIA_BASICO = "secretaria_basico"
 PLAN_COMPLETE_CLINIC_COMBO = "complete_clinic_combo"
 
-#: Plan strings written before the catalog existed, resolved to their catalog plan so
-#: already-provisioned rows (e.g. the seeded demo clinic's "brain-completo") keep their
-#: tier/add-on semantics without a data migration. Also covers external config: the
-#: deployed STRIPE_PRICE_MAP keys the secretarIA price as "secretaria_bronze" —
-#: normalized at parse time (services/billing._parse_price_map) to the real plan id.
+#: Plan strings written before a catalog change, resolved to their current catalog plan
+#: so already-provisioned rows (e.g. the seeded demo clinic's "brain-completo") keep
+#: their add-on semantics without a data migration. "secretaria_ferro" covers the
+#: 2026-07-22 tier-ladder retirement (ferro/bronze_1/bronze_2 -> one fully-metered
+#: PLAN_SECRETARIA_BASICO) — ferro's pricing model (no flat/anchor price, metered
+#: companions) carries forward unchanged under the new id, so the alias is safe.
+#: bronze_1's flat-fee shape does NOT carry forward (retired outright — confirmed no
+#: live subscribers to preserve) and is deliberately NOT aliased.
 LEGACY_PLAN_ALIASES: dict[str, str] = {
     "brain-completo": PLAN_COMPLETE_CLINIC_COMBO,
-    "secretaria_bronze": PLAN_SECRETARIA_BRONZE_1,
+    "secretaria_ferro": PLAN_SECRETARIA_BASICO,
 }
 
 
@@ -139,10 +156,12 @@ ADDONS: dict[str, AddonDef] = {
             id=ADDON_REACTIVATION_PACK,
             name="Reactivation Pack",
             description=(
-                "HSM templates outside the 24h window: 24h/1h appointment reminders plus "
-                "proactive reactivation of inactive patients."
+                "Proactive reactivation of inactive patients via HSM templates outside "
+                "the 24h window. (24h/1h appointment reminders are a core capability on "
+                "every plan, billed per-send via the reminders Stripe meter — not part "
+                "of this add-on.)"
             ),
-            limit_grants={LIMIT_REMINDERS: 200, LIMIT_HSM_PROACTIVE: 200},
+            limit_grants={LIMIT_HSM_PROACTIVE: 200},
         ),
         AddonDef(
             id=ADDON_VERIFIED_IDENTITY,
@@ -231,52 +250,27 @@ PLANS: dict[str, PlanDef] = {
             secretaria_tier=None,
         ),
         PlanDef(
-            id=PLAN_SECRETARIA_FERRO,
-            name="secretarIA Ferro",
+            id=PLAN_SECRETARIA_BASICO,
+            name="secretarIA Básico",
             precheck=False,
             secretaria=True,
-            secretaria_tier=TIER_FERRO,
-            # Core loop only: converse + book in Google Calendar. No reminders.
+            secretaria_tier=TIER_BASICO,
+            # Fully metered, NO flat/anchor price: three companion Stripe Meters bill
+            # active professionals, billable patients, and reminders sent outside the
+            # 24h window (billing.py's METERED_*_SUFFIX / STRIPE_PRICE_MAP companions).
+            # Replaces the old ferro/bronze_1/bronze_2 tier ladder (2026-07-22) — every
+            # secretarIA tenant is on this ONE plan; analytics_bi_advanced and
+            # pix_deposit are optional flat add-ons layered on top, not separate tiers.
             base_limits={LIMIT_PROFESSIONALS: 1, LIMIT_UNITS: 1, LIMIT_MESSAGES: 400},
-        ),
-        PlanDef(
-            id=PLAN_SECRETARIA_BRONZE_1,
-            name="secretarIA Bronze 1",
-            precheck=False,
-            secretaria=True,
-            secretaria_tier=TIER_BRONZE_1,
-            # Ferro + automatic 24h/1h HSM reminders.
-            base_limits={
-                LIMIT_PROFESSIONALS: 1,
-                LIMIT_UNITS: 1,
-                LIMIT_MESSAGES: 400,
-                LIMIT_REMINDERS: 200,
-            },
-        ),
-        # TODO(catalog): "bronze_2" is a reserved commercial slot — no feature set has
-        # been defined for it yet. It is NOT assignable (`available=False`) until product
-        # decides what it contains; do not wire a Stripe price for it.
-        PlanDef(
-            id=PLAN_SECRETARIA_BRONZE_2,
-            name="secretarIA Bronze 2 (reserved)",
-            precheck=False,
-            secretaria=True,
-            secretaria_tier=TIER_BRONZE_2,
-            available=False,
         ),
         PlanDef(
             id=PLAN_COMPLETE_CLINIC_COMBO,
             name="Complete Clinic Combo",
             precheck=True,
             secretaria=True,
-            secretaria_tier=TIER_BRONZE_1,
+            secretaria_tier=TIER_BASICO,
             included_addons=(ADDON_REACTIVATION_PACK, ADDON_VERIFIED_IDENTITY),
-            base_limits={
-                LIMIT_PROFESSIONALS: 1,
-                LIMIT_UNITS: 1,
-                LIMIT_MESSAGES: 400,
-                LIMIT_REMINDERS: 200,
-            },
+            base_limits={LIMIT_PROFESSIONALS: 1, LIMIT_UNITS: 1, LIMIT_MESSAGES: 400},
             # ~15% off the sum of the parts; the actual discounted amount lives on the
             # Stripe price (billing round), this is display/derivation metadata only.
             discount_pct=15,

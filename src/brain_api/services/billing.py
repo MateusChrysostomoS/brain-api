@@ -65,16 +65,18 @@ _STATUS_MAP = {
 # --- Price map (catalog id <-> Stripe price id) -----------------------------
 
 
-#: Suffixes marking a plan's TWO metered companion prices (CONTRACT_onboarding_v1.md §9;
-#: fully-metered secretaria_ferro model — NO flat/anchor price on the plan at all):
+#: Suffixes marking a plan's THREE metered companion prices (CONTRACT_onboarding_v1.md
+#: §9; fully-metered secretaria_basico model — NO flat/anchor price on the plan at all):
 #: additional Checkout line items for the same plan, billed by usage rather than a flat
-#: fee, one per Stripe Meter (patients, professionals). Not catalog ids of their own —
-#: `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` are synthetic
+#: fee, one per Stripe Meter (patients, professionals, reminders sent outside the 24h
+#: window). Not catalog ids of their own — `{plan_id}_metered_patients` /
+#: `{plan_id}_metered_professionals` / `{plan_id}_metered_reminders` are synthetic
 #: STRIPE_PRICE_MAP keys recognized only by `_parse_price_map`'s validation,
 #: `price_id_for`'s callers, and `_state_from_subscription`'s reverse-lookup (plan-
 #: resolution evidence when a subscription carries no anchor-price item at all).
 METERED_PATIENTS_SUFFIX = "_metered_patients"
 METERED_PROFESSIONALS_SUFFIX = "_metered_professionals"
+METERED_REMINDERS_SUFFIX = "_metered_reminders"
 
 #: SUPERSEDED single-companion convention (pre-fully-metered model, one companion price
 #: per plan). Still ACCEPTED by `_parse_price_map` — recognized-but-unused — so a
@@ -87,14 +89,15 @@ METERED_SUFFIX = "_metered"
 def _parse_price_map(raw: str) -> dict[str, str]:
     """Parse STRIPE_PRICE_MAP (keyed by the raw string so a settings monkeypatch in
     tests gets its own cache slot). Keys are normalized through the catalog's
-    LEGACY_PLAN_ALIASES (the deployed map says "secretaria_bronze" for what the catalog
-    calls secretaria_bronze_1), then unknown catalog ids are rejected loudly at parse
-    time — a typo'd map must not silently unsell a product. `{plan_id}_metered_patients`
-    / `{plan_id}_metered_professionals` keys (e.g. "secretaria_ferro_metered_patients")
-    are ALSO accepted: the two metered companion prices for a plan's Checkout line items,
-    not catalog ids of their own (§9). The SUPERSEDED single-companion `{plan_id}_metered`
-    key is ALSO accepted, purely for graceful degradation (recognized-but-unused — see
-    METERED_SUFFIX) so a deployed map not yet cleaned up doesn't break every billing call.
+    LEGACY_PLAN_ALIASES (the deployed map may still say "secretaria_ferro" for what the
+    catalog now calls secretaria_basico), then unknown catalog ids are rejected loudly at
+    parse time — a typo'd map must not silently unsell a product. `{plan_id}_metered_patients`
+    / `{plan_id}_metered_professionals` / `{plan_id}_metered_reminders` keys (e.g.
+    "secretaria_basico_metered_patients") are ALSO accepted: the three metered companion
+    prices for a plan's Checkout line items, not catalog ids of their own (§9). The
+    SUPERSEDED single-companion `{plan_id}_metered` key is ALSO accepted, purely for
+    graceful degradation (recognized-but-unused — see METERED_SUFFIX) so a deployed map
+    not yet cleaned up doesn't break every billing call.
     """
     try:
         mapping = json.loads(raw or "{}")
@@ -107,7 +110,12 @@ def _parse_price_map(raw: str) -> dict[str, str]:
     metered_known = {
         f"{plan_id}{suffix}"
         for plan_id in catalog.PLAN_IDS
-        for suffix in (METERED_PATIENTS_SUFFIX, METERED_PROFESSIONALS_SUFFIX, METERED_SUFFIX)
+        for suffix in (
+            METERED_PATIENTS_SUFFIX,
+            METERED_PROFESSIONALS_SUFFIX,
+            METERED_REMINDERS_SUFFIX,
+            METERED_SUFFIX,
+        )
     }
     unknown = set(normalized) - known - metered_known
     if unknown:
@@ -195,16 +203,16 @@ def validate_selection(plan_id: str, addon_ids: list[str] | None) -> CheckoutSel
     has no Stripe price in this environment (sellable in the catalog but not wired).
     Add-ons the plan already implies are dropped (the combo already charges for them).
 
-    A FULLY METERED plan (CONTRACT_onboarding_v1.md §9 — e.g. secretaria_ferro: no flat/
-    anchor price, only the two `_metered_patients`/`_metered_professionals` companion
-    prices) WAIVES the plan's own `price_id_for(plan.id)` requirement, but ONLY when
-    BOTH companions are configured — a half-configured pair (e.g. professionals but not
-    patients) would check out a subscription missing one metered price entirely, so that
-    dimension of usage would accrue in our ledger but never actually get invoiced
-    (silent under-billing). `price_not_configured:{plan.id}` is raised whenever the plan
-    has NEITHER a direct price NOR both companions. Add-ons are unaffected by this
-    waiver — each still requires its own price regardless of how the plan itself is
-    billed.
+    A FULLY METERED plan (CONTRACT_onboarding_v1.md §9 — e.g. secretaria_basico: no flat/
+    anchor price, only the three `_metered_patients`/`_metered_professionals`/
+    `_metered_reminders` companion prices) WAIVES the plan's own `price_id_for(plan.id)`
+    requirement, but ONLY when ALL THREE companions are configured — a partially
+    configured set (e.g. professionals + patients but not reminders) would check out a
+    subscription missing one metered price entirely, so that dimension of usage would
+    accrue in our ledger but never actually get invoiced (silent under-billing).
+    `price_not_configured:{plan.id}` is raised whenever the plan has NEITHER a direct
+    price NOR all three companions. Add-ons are unaffected by this waiver — each still
+    requires its own price regardless of how the plan itself is billed.
     """
     plan = catalog.get_plan(plan_id)
     if plan is None or plan.id not in catalog.ASSIGNABLE_PLAN_IDS:
@@ -219,9 +227,13 @@ def validate_selection(plan_id: str, addon_ids: list[str] | None) -> CheckoutSel
             addons.append(addon_id)
 
     plan_has_direct_price = price_id_for(plan.id) is not None
-    plan_is_fully_metered = (
-        price_id_for(f"{plan.id}{METERED_PATIENTS_SUFFIX}") is not None
-        and price_id_for(f"{plan.id}{METERED_PROFESSIONALS_SUFFIX}") is not None
+    plan_is_fully_metered = all(
+        price_id_for(f"{plan.id}{suffix}") is not None
+        for suffix in (
+            METERED_PATIENTS_SUFFIX,
+            METERED_PROFESSIONALS_SUFFIX,
+            METERED_REMINDERS_SUFFIX,
+        )
     )
     if not plan_has_direct_price and not plan_is_fully_metered:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"price_not_configured:{plan.id}")
@@ -237,13 +249,14 @@ def _append_checkout_line_items(data: dict[str, str], selection: CheckoutSelecti
     """Populate `line_items[i][price]`/`[quantity]` for a validated selection, shared by
     BOTH checkout builders (this module's `create_checkout_session` and
     `services.signup.create_checkout_session_for_intent`). Fully-metered billing
-    (CONTRACT_onboarding_v1.md §9, secretaria_ferro model — NO flat/anchor price on the
+    (CONTRACT_onboarding_v1.md §9, secretaria_basico model — NO flat/anchor price on the
     plan): the plan itself only gets a line item when it HAS a direct price
     (`validate_selection` may have waived that requirement); either way, EACH configured
-    `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` companion is
-    appended as an ADDITIONAL line item with NO `quantity` field — Stripe rejects a
-    quantity on a metered price. Both companions are independent: either, both, or
-    neither may be configured (a purely flat-fee plan configures neither).
+    `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` /
+    `{plan_id}_metered_reminders` companion is appended as an ADDITIONAL line item with NO
+    `quantity` field — Stripe rejects a quantity on a metered price. The three companions
+    are independent: any subset (including none, for a purely flat-fee plan) may be
+    configured.
     """
     index = 0
     plan_price_id = price_id_for(selection.plan_id)
@@ -255,7 +268,7 @@ def _append_checkout_line_items(data: dict[str, str], selection: CheckoutSelecti
         data[f"line_items[{index}][price]"] = price_id_for(addon_id) or ""
         data[f"line_items[{index}][quantity]"] = "1"
         index += 1
-    for suffix in (METERED_PATIENTS_SUFFIX, METERED_PROFESSIONALS_SUFFIX):
+    for suffix in (METERED_PATIENTS_SUFFIX, METERED_PROFESSIONALS_SUFFIX, METERED_REMINDERS_SUFFIX):
         companion_price_id = price_id_for(f"{selection.plan_id}{suffix}")
         if companion_price_id:
             data[f"line_items[{index}][price]"] = companion_price_id
@@ -363,17 +376,18 @@ def _period_dt(ts: Any) -> datetime | None:
 
 
 def _plan_id_from_metered_companion(cid: str) -> str | None:
-    """If `cid` is a `{plan_id}_metered_patients` / `{plan_id}_metered_professionals`
-    STRIPE_PRICE_MAP key whose stripped plan id is a real catalog plan, return that plan
-    id; otherwise None. This is the "evidence of plan" a FULLY METERED subscription
-    needs (CONTRACT_onboarding_v1.md §9): with no anchor/flat price item at all, a
-    companion price is the ONLY signal `_state_from_subscription` has to resolve the
-    plan. Both companions independently resolve to the SAME plan id, so assigning it
-    from either (or both) is idempotent. The SUPERSEDED single `{plan_id}_metered` key
-    is deliberately NOT matched here — it keeps today's "ignored, no plan evidence"
-    behavior (harmless: it isn't a catalog id, so it lands in neither branch below).
+    """If `cid` is a `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` /
+    `{plan_id}_metered_reminders` STRIPE_PRICE_MAP key whose stripped plan id is a real
+    catalog plan, return that plan id; otherwise None. This is the "evidence of plan" a
+    FULLY METERED subscription needs (CONTRACT_onboarding_v1.md §9): with no anchor/flat
+    price item at all, a companion price is the ONLY signal `_state_from_subscription`
+    has to resolve the plan. All three companions independently resolve to the SAME plan
+    id, so assigning it from any one (or more) is idempotent. The SUPERSEDED single
+    `{plan_id}_metered` key is deliberately NOT matched here — it keeps today's
+    "ignored, no plan evidence" behavior (harmless: it isn't a catalog id, so it lands in
+    neither branch below).
     """
-    for suffix in (METERED_PATIENTS_SUFFIX, METERED_PROFESSIONALS_SUFFIX):
+    for suffix in (METERED_PATIENTS_SUFFIX, METERED_PROFESSIONALS_SUFFIX, METERED_REMINDERS_SUFFIX):
         if cid.endswith(suffix):
             candidate = cid[: -len(suffix)]
             if candidate in catalog.PLAN_IDS:
@@ -387,12 +401,13 @@ def _state_from_subscription(sub: dict[str, Any]) -> dict[str, Any] | None:
     Maps each item's price id back to a catalog id: exactly one plan + N add-ons
     (quantities scale an add-on's additive limit grants — `multi_professional` ×3 buys
     3 extra professionals). A FULLY METERED plan (CONTRACT_onboarding_v1.md §9 — no flat/
-    anchor price, e.g. secretaria_ferro) carries NO plan-price item at all: its
-    `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` companion items are
-    the ONLY evidence of the plan (`_plan_id_from_metered_companion`); either one
-    resolves it, and a companion item NEVER enters `addon_qty` (it is not an add-on).
-    Returns None when no plan is recognized by either route (the caller then updates
-    status/period only and logs — never guesses a plan).
+    anchor price, e.g. secretaria_basico) carries NO plan-price item at all: its
+    `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` /
+    `{plan_id}_metered_reminders` companion items are the ONLY evidence of the plan
+    (`_plan_id_from_metered_companion`); any one resolves it, and a companion item NEVER
+    enters `addon_qty` (it is not an add-on). Returns None when no plan is recognized by
+    either route (the caller then updates status/period only and logs — never guesses a
+    plan).
     """
     plan_id: str | None = None
     addon_qty: dict[str, int] = {}

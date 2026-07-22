@@ -154,7 +154,7 @@ class Settings(BaseSettings):
     # fails CLOSED: the webhook rejects every delivery (400).
     STRIPE_WEBHOOK_SECRET: str = ""
     # JSON object mapping catalog ids (plans AND add-ons, services/catalog.py) to
-    # Stripe price ids, e.g. {"secretaria_ferro": "price_123", "ehr": "price_456"}.
+    # Stripe price ids, e.g. {"secretaria_basico": "price_123", "ehr": "price_456"}.
     # Per-environment (test vs live prices); the catalog itself never hardcodes one.
     STRIPE_PRICE_MAP: str = "{}"
     # Where Stripe Checkout / the Billing Portal send the browser back to.
@@ -183,12 +183,21 @@ class Settings(BaseSettings):
     # disables the forward entirely (metering-only, no billing impact either way).
     STRIPE_METER_EVENT_BILLABLE_PATIENTS: str | None = None
     # Stripe Meter event_name for the active_professionals metered PLAN price (the fully
-    # metered secretaria_ferro model, R$80/active professional/month). Same forwarding
+    # metered secretaria_basico model, R$80/active professional/month). Same forwarding
     # contract as STRIPE_METER_EVENT_BILLABLE_PATIENTS above: services/usage.py forwards a
     # meter event after a successful active_professionals usage record when this AND the
     # tenant's stripe_customer_id are both set; unset disables the forward entirely
     # (metering-only, no billing impact either way).
     STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS: str | None = None
+    # Stripe Meter event_name for the reminders metered PLAN price (24h/1h appointment
+    # reminders sent OUTSIDE the WhatsApp 24h window — the third leg of the fully metered
+    # secretaria_basico model, alongside billable_patients/active_professionals above).
+    # Same forwarding contract: services/usage.py forwards a meter event after a
+    # successful "reminders" usage record (emitted by secretarIA's reminders plugin, one
+    # per billable HSM template send) when this AND the tenant's stripe_customer_id are
+    # both set; unset disables the forward entirely (metering-only, no billing impact
+    # either way).
+    STRIPE_METER_EVENT_REMINDERS: str | None = None
 
     # --- Onboarding / multi-professional (CONTRACT_onboarding_v1.md) ---
     # Meta Graph API app credentials for the WhatsApp Embedded Signup authorization-code

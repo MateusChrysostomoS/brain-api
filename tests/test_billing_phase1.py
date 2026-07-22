@@ -1,14 +1,14 @@
 """Billing Phase 1 / fully-metered vertical tests (CONTRACT_onboarding_v1.md §9): the
-two metered companion Checkout line items (no anchor price, BOTH required to waive the
-plan's own price) + trial period on BOTH checkout builders, `services.billing.
+three metered companion Checkout line items (no anchor price, ALL THREE required to
+waive the plan's own price) + trial period on BOTH checkout builders, `services.billing.
 harden_charge`, the `customer.subscription.trial_will_end` -> scheduled cancellation
 handler (row-locked re-read + a LIVE Stripe GET verify, scoped to secretarIA-bearing
 plans only), the resubscription marker-reset guard, and the `services.usage` Stripe
-meter-event forward for BOTH `billable_patients` and `active_professionals`.
+meter-event forward for `billable_patients`, `active_professionals`, and `reminders`.
 
 Ground truth: services/billing.py (`_append_checkout_line_items`, `_apply_trial`,
-`validate_selection`'s fully-metered waiver (both companions required),
-`_parse_price_map`'s two-companion (+ legacy `{plan}_metered`) acceptance,
+`validate_selection`'s fully-metered waiver (all three companions required),
+`_parse_price_map`'s three-companion (+ legacy `{plan}_metered`) acceptance,
 `_state_from_subscription`'s companion-as-plan-evidence resolution, `apply_stripe_event`'s
 `trial_will_end` branch and `_reset_markers_if_subscription_changed`, `harden_charge`),
 services/usage.py (`_forward_meter_event`). Reuses the Stripe test doubles from
@@ -52,16 +52,18 @@ from tests.test_usage_events import _set_pair_key, _tenant_ids
 
 
 _METERED_PRICE_MAP = (
-    '{"secretaria_ferro": "price_ferro", '
-    '"secretaria_ferro_metered_patients": "price_ferro_meter_patients", '
-    '"secretaria_ferro_metered_professionals": "price_ferro_meter_professionals"}'
+    '{"secretaria_basico": "price_ferro", '
+    '"secretaria_basico_metered_patients": "price_ferro_meter_patients", '
+    '"secretaria_basico_metered_professionals": "price_ferro_meter_professionals", '
+    '"secretaria_basico_metered_reminders": "price_ferro_meter_reminders"}'
 )
 
-#: A plan with ONLY the two metered companions configured -- NO direct/anchor price at
-#: all (the actual deployed secretaria_ferro shape per this round's business decision).
+#: A plan with ONLY the three metered companions configured -- NO direct/anchor price at
+#: all (the actual deployed secretaria_basico shape per this round's business decision).
 _FULLY_METERED_PRICE_MAP = (
-    '{"secretaria_ferro_metered_patients": "price_ferro_meter_patients", '
-    '"secretaria_ferro_metered_professionals": "price_ferro_meter_professionals"}'
+    '{"secretaria_basico_metered_patients": "price_ferro_meter_patients", '
+    '"secretaria_basico_metered_professionals": "price_ferro_meter_professionals", '
+    '"secretaria_basico_metered_reminders": "price_ferro_meter_reminders"}'
 )
 
 
@@ -80,7 +82,7 @@ def _extended_fake_settings(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-async def test_existing_tenant_checkout_appends_both_metered_companions_and_trial(
+async def test_existing_tenant_checkout_appends_all_three_metered_companions_and_trial(
     client, monkeypatch
 ):
     captured: dict = {}
@@ -95,7 +97,7 @@ async def test_existing_tenant_checkout_appends_both_metered_companions_and_tria
 
     token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
     resp = await client.post(
-        "/billing/checkout", headers=_bearer(token), json={"plan": "secretaria_ferro"}
+        "/billing/checkout", headers=_bearer(token), json={"plan": "secretaria_basico"}
     )
     assert resp.status_code == 200, resp.text
 
@@ -107,6 +109,8 @@ async def test_existing_tenant_checkout_appends_both_metered_companions_and_tria
     assert "line_items[1][quantity]" not in data
     assert data["line_items[2][price]"] == "price_ferro_meter_professionals"
     assert "line_items[2][quantity]" not in data
+    assert data["line_items[3][price]"] == "price_ferro_meter_reminders"
+    assert "line_items[3][quantity]" not in data
     assert data["subscription_data[trial_period_days]"] == "75"
 
 
@@ -122,7 +126,7 @@ async def test_existing_tenant_checkout_no_metered_price_no_extra_line_item(clie
 
     token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
     resp = await client.post(
-        "/billing/checkout", headers=_bearer(token), json={"plan": "secretaria_ferro"}
+        "/billing/checkout", headers=_bearer(token), json={"plan": "secretaria_basico"}
     )
     assert resp.status_code == 200, resp.text
     data = captured["data"]
@@ -130,12 +134,12 @@ async def test_existing_tenant_checkout_no_metered_price_no_extra_line_item(clie
     assert "subscription_data[trial_period_days]" not in data
 
 
-async def test_signup_checkout_appends_both_metered_companions_and_trial(client, monkeypatch):
+async def test_signup_checkout_appends_all_three_metered_companions_and_trial(client, monkeypatch):
     """The SAME fully-metered behavior on the cold-signup checkout builder
     (services.signup.create_checkout_session_for_intent), which reuses
     billing._append_checkout_line_items/_apply_trial."""
     intent_id = await _create_intent(
-        client, email="metered.signup@example.com", catalog_ids=["secretaria_ferro"]
+        client, email="metered.signup@example.com", catalog_ids=["secretaria_basico"]
     )
     captured: dict = {}
     _install_fake_stripe_httpx(
@@ -155,22 +159,27 @@ async def test_signup_checkout_appends_both_metered_companions_and_trial(client,
     assert "line_items[1][quantity]" not in data
     assert data["line_items[2][price]"] == "price_ferro_meter_professionals"
     assert "line_items[2][quantity]" not in data
+    assert data["line_items[3][price]"] == "price_ferro_meter_reminders"
+    assert "line_items[3][quantity]" not in data
     assert data["subscription_data[trial_period_days]"] == "30"
 
 
-def test_price_map_accepts_both_metered_companion_keys():
-    """`_parse_price_map` must accept `{plan_id}_metered_patients` AND
-    `{plan_id}_metered_professionals` without rejecting the whole map as 'unknown
-    catalog ids' -- neither is a catalog id, just two recognized suffixes."""
+def test_price_map_accepts_all_three_metered_companion_keys():
+    """`_parse_price_map` must accept `{plan_id}_metered_patients`,
+    `{plan_id}_metered_professionals`, AND `{plan_id}_metered_reminders` without
+    rejecting the whole map as 'unknown catalog ids' -- none of the three is a catalog
+    id, just three recognized suffixes."""
     parsed = billing_service._parse_price_map(
-        '{"secretaria_ferro": "price_a", '
-        '"secretaria_ferro_metered_patients": "price_b", '
-        '"secretaria_ferro_metered_professionals": "price_c"}'
+        '{"secretaria_basico": "price_a", '
+        '"secretaria_basico_metered_patients": "price_b", '
+        '"secretaria_basico_metered_professionals": "price_c", '
+        '"secretaria_basico_metered_reminders": "price_d"}'
     )
     assert parsed == {
-        "secretaria_ferro": "price_a",
-        "secretaria_ferro_metered_patients": "price_b",
-        "secretaria_ferro_metered_professionals": "price_c",
+        "secretaria_basico": "price_a",
+        "secretaria_basico_metered_patients": "price_b",
+        "secretaria_basico_metered_professionals": "price_c",
+        "secretaria_basico_metered_reminders": "price_d",
     }
 
 
@@ -180,11 +189,11 @@ def test_price_map_still_accepts_legacy_single_metered_key():
     yet cleaned up cannot blow up every billing call -- even though no code path (line
     items, plan resolution) reads it anymore."""
     parsed = billing_service._parse_price_map(
-        '{"secretaria_ferro": "price_a", "secretaria_ferro_metered": "price_legacy"}'
+        '{"secretaria_basico": "price_a", "secretaria_basico_metered": "price_legacy"}'
     )
     assert parsed == {
-        "secretaria_ferro": "price_a",
-        "secretaria_ferro_metered": "price_legacy",
+        "secretaria_basico": "price_a",
+        "secretaria_basico_metered": "price_legacy",
     }
 
 
@@ -197,33 +206,34 @@ def test_append_checkout_line_items_fully_metered_plan_omits_blank_plan_line_ite
     monkeypatch,
 ):
     """A plan with NO direct price (fully metered) must not get a blank-price line item
-    for itself -- only the configured companions appear, in patients-then-professionals
-    order, neither carrying a `quantity` key."""
+    for itself -- only the configured companions appear, in patients-then-professionals-
+    then-reminders order, none carrying a `quantity` key."""
     monkeypatch.setattr(
         billing_service,
         "get_settings",
         lambda: _extended_fake_settings(STRIPE_PRICE_MAP=_FULLY_METERED_PRICE_MAP),
     )
     data: dict[str, str] = {}
-    selection = billing_service.CheckoutSelection(plan_id="secretaria_ferro", addon_ids=())
+    selection = billing_service.CheckoutSelection(plan_id="secretaria_basico", addon_ids=())
     billing_service._append_checkout_line_items(data, selection)
     assert data == {
         "line_items[0][price]": "price_ferro_meter_patients",
         "line_items[1][price]": "price_ferro_meter_professionals",
+        "line_items[2][price]": "price_ferro_meter_reminders",
     }
 
 
 def test_validate_selection_fully_metered_plan_passes_without_direct_price(monkeypatch):
-    """secretaria_ferro with ONLY the two metered companions configured (no flat/anchor
-    price) must validate -- a configured `{plan.id}_metered_professionals` companion is
-    proof enough the plan is sellable (CONTRACT_onboarding_v1.md §9)."""
+    """secretaria_basico with ONLY the three metered companions configured (no flat/
+    anchor price) must validate -- a fully configured companion trio is proof enough the
+    plan is sellable (CONTRACT_onboarding_v1.md §9)."""
     monkeypatch.setattr(
         billing_service,
         "get_settings",
         lambda: _extended_fake_settings(STRIPE_PRICE_MAP=_FULLY_METERED_PRICE_MAP),
     )
-    selection = billing_service.validate_selection("secretaria_ferro", None)
-    assert selection.plan_id == "secretaria_ferro"
+    selection = billing_service.validate_selection("secretaria_basico", None)
+    assert selection.plan_id == "secretaria_basico"
     assert selection.addon_ids == ()
 
 
@@ -234,45 +244,67 @@ def test_validate_selection_neither_direct_nor_companion_raises_price_not_config
         billing_service, "get_settings", lambda: _extended_fake_settings(STRIPE_PRICE_MAP="{}")
     )
     with pytest.raises(HTTPException) as exc_info:
-        billing_service.validate_selection("secretaria_ferro", None)
+        billing_service.validate_selection("secretaria_basico", None)
     assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "price_not_configured:secretaria_ferro"
+    assert exc_info.value.detail == "price_not_configured:secretaria_basico"
 
 
 def test_validate_selection_professionals_only_no_anchor_raises(monkeypatch):
-    """FIX 3: a companion pair missing `_metered_patients` (and no anchor either) must
-    NOT waive the price requirement -- checking out here would create a subscription
-    silently missing the patients meter, so that usage dimension would accrue locally
-    but never actually get invoiced (silent under-billing)."""
+    """A companion set missing `_metered_patients` and `_metered_reminders` (and no
+    anchor either) must NOT waive the price requirement -- checking out here would
+    create a subscription silently missing two meters, so those usage dimensions would
+    accrue locally but never actually get invoiced (silent under-billing)."""
     monkeypatch.setattr(
         billing_service,
         "get_settings",
         lambda: _extended_fake_settings(
             STRIPE_PRICE_MAP=(
-                '{"secretaria_ferro_metered_professionals": "price_ferro_meter_professionals"}'
+                '{"secretaria_basico_metered_professionals": "price_ferro_meter_professionals"}'
             )
         ),
     )
     with pytest.raises(HTTPException) as exc_info:
-        billing_service.validate_selection("secretaria_ferro", None)
+        billing_service.validate_selection("secretaria_basico", None)
     assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "price_not_configured:secretaria_ferro"
+    assert exc_info.value.detail == "price_not_configured:secretaria_basico"
 
 
 def test_validate_selection_patients_only_no_anchor_raises(monkeypatch):
-    """Symmetric case: patients companion configured, professionals missing, no
-    anchor -- same 503, same reasoning (§13.3)."""
+    """Symmetric case: only the patients companion configured, professionals AND
+    reminders missing, no anchor -- same 503, same reasoning (§13.3)."""
     monkeypatch.setattr(
         billing_service,
         "get_settings",
         lambda: _extended_fake_settings(
-            STRIPE_PRICE_MAP=('{"secretaria_ferro_metered_patients": "price_ferro_meter_patients"}')
+            STRIPE_PRICE_MAP=('{"secretaria_basico_metered_patients": "price_ferro_meter_patients"}')
         ),
     )
     with pytest.raises(HTTPException) as exc_info:
-        billing_service.validate_selection("secretaria_ferro", None)
+        billing_service.validate_selection("secretaria_basico", None)
     assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "price_not_configured:secretaria_ferro"
+    assert exc_info.value.detail == "price_not_configured:secretaria_basico"
+
+
+def test_validate_selection_two_of_three_companions_missing_reminders_raises(monkeypatch):
+    """NEW boundary introduced by the third companion: patients + professionals BOTH
+    configured but reminders missing (and no anchor) must still 503 -- the waiver
+    requires ALL THREE, not 'most of them', or the reminders usage dimension would
+    accrue locally but never get invoiced (same silent-under-billing reasoning as the
+    single-companion cases above, now generalized to 'any 2 of 3')."""
+    monkeypatch.setattr(
+        billing_service,
+        "get_settings",
+        lambda: _extended_fake_settings(
+            STRIPE_PRICE_MAP=(
+                '{"secretaria_basico_metered_patients": "price_ferro_meter_patients", '
+                '"secretaria_basico_metered_professionals": "price_ferro_meter_professionals"}'
+            )
+        ),
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        billing_service.validate_selection("secretaria_basico", None)
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "price_not_configured:secretaria_basico"
 
 
 # ===========================================================================================
@@ -283,10 +315,10 @@ def test_validate_selection_patients_only_no_anchor_raises(monkeypatch):
 async def test_subscription_updated_fully_metered_companions_only_resolves_plan(
     client, monkeypatch
 ):
-    """A fully-metered secretaria_ferro subscription has NO anchor/flat price item at
-    all -- only the two companion prices. `_state_from_subscription` must still resolve
-    the plan from either companion (CONTRACT_onboarding_v1.md §9 integration fix) so the
-    entitlement's plan/products/limits get set instead of logging
+    """A fully-metered secretaria_basico subscription has NO anchor/flat price item at
+    all -- only the three companion prices. `_state_from_subscription` must still
+    resolve the plan from any companion (CONTRACT_onboarding_v1.md §9 integration fix)
+    so the entitlement's plan/products/limits get set instead of logging
     stripe_subscription_no_known_plan forever."""
     monkeypatch.setattr(billing_service, "get_settings", lambda: _extended_fake_settings())
     tenant_b = (await _billing_tenant_ids(client))[CLINIC_B]
@@ -301,6 +333,7 @@ async def test_subscription_updated_fully_metered_companions_only_resolves_plan(
             "data": [
                 {"price": {"id": "price_ferro_meter_patients"}, "quantity": 1},
                 {"price": {"id": "price_ferro_meter_professionals"}, "quantity": 1},
+                {"price": {"id": "price_ferro_meter_reminders"}, "quantity": 1},
             ]
         },
         "metadata": {"tenant_id": tenant_b},
@@ -311,7 +344,7 @@ async def test_subscription_updated_fully_metered_companions_only_resolves_plan(
     assert resp.status_code == 200, resp.text
 
     ent = await _admin_entitlements(client, tenant_b)
-    assert ent["plan"] == "secretaria_ferro"
+    assert ent["plan"] == "secretaria_basico"
     assert ent["secretaria_enabled"] is True
     assert ent["precheck_enabled"] is False
     assert ent["status"] == "active"
@@ -323,7 +356,7 @@ async def test_subscription_updated_fully_metered_companions_only_resolves_plan(
 async def test_subscription_with_anchor_and_companions_resolves_plan_no_bogus_addons(
     client, monkeypatch
 ):
-    """A plan that has BOTH a direct/anchor price item AND the two metered companion
+    """A plan that has BOTH a direct/anchor price item AND the three metered companion
     items (not the pure fully-metered case) must still resolve correctly from the
     anchor, and the companion items must NOT be misread as add-ons."""
     monkeypatch.setattr(billing_service, "get_settings", lambda: _extended_fake_settings())
@@ -341,6 +374,7 @@ async def test_subscription_with_anchor_and_companions_resolves_plan_no_bogus_ad
                 {"price": {"id": "price_ferro"}, "quantity": 1},
                 {"price": {"id": "price_ferro_meter_patients"}, "quantity": 1},
                 {"price": {"id": "price_ferro_meter_professionals"}, "quantity": 1},
+                {"price": {"id": "price_ferro_meter_reminders"}, "quantity": 1},
             ]
         },
         "metadata": {"tenant_id": tenant_b},
@@ -351,7 +385,7 @@ async def test_subscription_with_anchor_and_companions_resolves_plan_no_bogus_ad
     assert resp.status_code == 200, resp.text
 
     ent = await _admin_entitlements(client, tenant_b)
-    assert ent["plan"] == "secretaria_ferro"
+    assert ent["plan"] == "secretaria_basico"
     assert ent["limits"]["professionals"] == 1  # base grant only -- no bogus addon scaling
     assert ent["addons"]["multi_professional"] is False
 
@@ -871,7 +905,7 @@ async def test_resubscription_resets_both_markers_and_reprotects_the_new_trial(
     await db_session.refresh(ent)
     assert ent.stripe_subscription_id == "sub_new"
     assert ent.status == "trialing"
-    assert ent.plan == "secretaria_ferro"
+    assert ent.plan == "secretaria_basico"
     # BOTH markers reset -- the new subscription starts a fresh trial lifecycle.
     assert ent.charge_hardened_at is None
     assert ent.cancel_scheduled_at is None
@@ -1092,7 +1126,7 @@ async def test_meter_forward_not_fired_for_non_billable_patients_feature(client,
 
 
 # ===========================================================================================
-# Meter forward: active_professionals (fully-metered secretaria_ferro model)
+# Meter forward: active_professionals (fully-metered secretaria_basico model)
 # ===========================================================================================
 
 
@@ -1171,6 +1205,88 @@ async def test_meter_forward_not_fired_for_active_professionals_when_event_name_
             "feature": catalog.LIMIT_ACTIVE_PROFESSIONALS,
             "amount": 1,
             "event_id": "ap:evt-2",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"recorded": True}
+    assert called["n"] == 0
+
+
+# ===========================================================================================
+# Meter forward: reminders (fully-metered secretaria_basico model, third leg)
+# ===========================================================================================
+
+
+async def test_meter_forward_fires_for_reminders_with_configured_event_name(client, monkeypatch):
+    """Same forwarding mechanics as billable_patients/active_professionals, dispatched to
+    the DIFFERENT configured event_name for this feature
+    (services.usage._METER_EVENT_SETTINGS)."""
+    _set_pair_key(monkeypatch)
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    tenant_a_id = (await _tenant_ids(client, admin_token))[CLINIC_A]
+    await _link_stripe_customer(client, tenant_a_id, "cus_meter_rem_1")
+
+    captured: dict = {}
+
+    async def fake_stripe_post(path, data):
+        captured["path"] = path
+        captured["data"] = data
+        return {}
+
+    monkeypatch.setattr(usage_module.billing, "_stripe_post", fake_stripe_post)
+    monkeypatch.setattr(
+        usage_module,
+        "get_settings",
+        lambda: SimpleNamespace(STRIPE_METER_EVENT_REMINDERS="brainco_reminders"),
+    )
+
+    resp = await client.post(
+        "/internal/usage-events",
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={
+            "tenant_id": tenant_a_id,
+            "feature": catalog.LIMIT_REMINDERS,
+            "amount": 4,
+            "event_id": "rem:evt-1",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"recorded": True}
+    assert captured["path"] == "/v1/billing/meter_events"
+    assert captured["data"] == {
+        "event_name": "brainco_reminders",
+        "payload[stripe_customer_id]": "cus_meter_rem_1",
+        "payload[value]": "4",
+    }
+
+
+async def test_meter_forward_not_fired_for_reminders_when_event_name_unset(client, monkeypatch):
+    _set_pair_key(monkeypatch)
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    tenant_a_id = (await _tenant_ids(client, admin_token))[CLINIC_A]
+    await _link_stripe_customer(client, tenant_a_id, "cus_meter_rem_2")
+
+    called = {"n": 0}
+
+    async def fake_stripe_post(path, data):
+        called["n"] += 1
+        return {}
+
+    monkeypatch.setattr(usage_module.billing, "_stripe_post", fake_stripe_post)
+    monkeypatch.setattr(
+        usage_module,
+        "get_settings",
+        lambda: SimpleNamespace(STRIPE_METER_EVENT_REMINDERS=None),
+    )
+
+    resp = await client.post(
+        "/internal/usage-events",
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={
+            "tenant_id": tenant_a_id,
+            "feature": catalog.LIMIT_REMINDERS,
+            "amount": 1,
+            "event_id": "rem:evt-2",
         },
     )
     assert resp.status_code == 200, resp.text

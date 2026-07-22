@@ -42,8 +42,11 @@ def is_entitled(ent: EntitlementLike, key: str) -> bool:
     - status not active/trialing -> False, whatever was bought.
     - add-on -> ON in `ent.addons`, OR implied by the plan (a combo is a plan that
       implies add-ons — an unmaterialized row still answers correctly).
-    - tier   -> the plan's tier ranks >= the asked tier (tiers are cumulative:
-      bronze_1 includes everything ferro does). Unknown/legacy plans rank below all.
+    - tier   -> the plan's tier ranks >= the asked tier. Since the 2026-07-22
+      ferro/bronze_1/bronze_2 tier-ladder retirement there is a single tier
+      (`catalog.TIER_BASICO`); the rank comparison stays generic rather than special-
+      cased so a future second tier would need no changes here. Unknown/legacy plans
+      rank below all.
     - a `key` that is neither an add-on nor a tier is a programmer error -> ValueError
       (loud, so a typo'd gate id can't silently deny — or grant — forever).
     """

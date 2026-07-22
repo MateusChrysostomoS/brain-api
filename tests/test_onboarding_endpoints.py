@@ -360,7 +360,7 @@ async def test_webhook_provisioning_bridge_fires_and_stamps_secretaria_provision
     monkeypatch.setattr(secretaria_provisioning, "provision_tenant", fake_provision)
 
     intent_id = await _create_intent(
-        client, email="bridge.success@example.com", catalog_ids=["secretaria_ferro"]
+        client, email="bridge.success@example.com", catalog_ids=["secretaria_basico"]
     )
     captured: dict = {}
     _install_fake_stripe_httpx(
@@ -404,7 +404,7 @@ async def test_webhook_provisioning_bridge_failure_still_acks_webhook(client, mo
     monkeypatch.setattr(secretaria_provisioning, "provision_tenant", failing_provision)
 
     intent_id = await _create_intent(
-        client, email="bridge.failure@example.com", catalog_ids=["secretaria_ferro"]
+        client, email="bridge.failure@example.com", catalog_ids=["secretaria_basico"]
     )
     captured: dict = {}
     _install_fake_stripe_httpx(

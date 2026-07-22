@@ -2,14 +2,15 @@
 
 METERING = our local ledger (`usage_events`) + the `entitlements.usage` counters it
 feeds. This mirrors the skill's `record_usage` shape but stays fully synchronous/
-in-request (no arq worker yet — the caller side, e.g. secretarIA's reminder job, is
-expected to fire-and-forget this call). The Stripe touchpoint is a best-effort meter
-event forward for TWO metered features — `billable_patients` and (fully-metered
-secretaria_ferro model) `active_professionals` (CONTRACT_onboarding_v1.md §9) — never in
-the critical path: it fires AFTER the ledger/counter commit already succeeded and can
-never raise into the caller (our ledger is the source of truth; Stripe is a write-only
-sink). Both features share the exact same forward/fail-soft mechanics; only the
-configured Stripe Meter `event_name` differs (`_METER_EVENT_SETTINGS` below).
+in-request (no arq worker yet — the caller side, e.g. secretarIA's reminder/onboarding
+jobs, is expected to fire-and-forget this call). The Stripe touchpoint is a best-effort
+meter event forward for THREE metered features — `billable_patients`,
+`active_professionals`, and `reminders` (fully-metered secretaria_basico model,
+CONTRACT_onboarding_v1.md §9) — never in the critical path: it fires AFTER the
+ledger/counter commit already succeeded and can never raise into the caller (our ledger
+is the source of truth; Stripe is a write-only sink). All three features share the exact
+same forward/fail-soft mechanics; only the configured Stripe Meter `event_name` differs
+(`_METER_EVENT_SETTINGS` below).
 """
 
 from fastapi import HTTPException
@@ -24,11 +25,12 @@ from brain_api.services import billing, catalog
 logger = get_logger(__name__)
 
 #: feature id -> the `Settings` attribute name holding its Stripe Meter `event_name`.
-#: Both metered features share the identical fire/never-raise/fail-soft contract
+#: All three metered features share the identical fire/never-raise/fail-soft contract
 #: (`_forward_meter_event` below) — only the configured event_name differs per feature.
 _METER_EVENT_SETTINGS: dict[str, str] = {
     catalog.LIMIT_BILLABLE_PATIENTS: "STRIPE_METER_EVENT_BILLABLE_PATIENTS",
     catalog.LIMIT_ACTIVE_PROFESSIONALS: "STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS",
+    catalog.LIMIT_REMINDERS: "STRIPE_METER_EVENT_REMINDERS",
 }
 
 
@@ -84,16 +86,16 @@ async def record_usage(session: AsyncSession, payload: UsageEventIn) -> bool:
 
 
 async def _forward_meter_event(ent: Entitlement, amount: int, event_name: str | None) -> None:
-    """Best-effort Stripe meter-event forward for a metered feature (`billable_patients`
-    or, under the fully-metered secretaria_ferro model, `active_professionals` —
-    CONTRACT_onboarding_v1.md §9). Fires ONLY when `event_name` (the feature's configured
-    Stripe Meter `event_name` — `STRIPE_METER_EVENT_BILLABLE_PATIENTS` /
-    `STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS`, resolved by the caller via
-    `_METER_EVENT_SETTINGS`) is configured AND the tenant's entitlement has a
-    `stripe_customer_id`. NEVER raises and NEVER blocks the caller's `200` — a forwarding
-    failure only means this one usage event doesn't show up on the Stripe invoice; our
-    own ledger already won (stripe-billing-entitlements: Stripe meter events are
-    write-only and never the source of truth for usage).
+    """Best-effort Stripe meter-event forward for a metered feature (`billable_patients`,
+    `active_professionals`, or `reminders` — the three legs of the fully-metered
+    secretaria_basico model, CONTRACT_onboarding_v1.md §9). Fires ONLY when `event_name`
+    (the feature's configured Stripe Meter `event_name` — `STRIPE_METER_EVENT_BILLABLE_PATIENTS`
+    / `STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS` / `STRIPE_METER_EVENT_REMINDERS`, resolved
+    by the caller via `_METER_EVENT_SETTINGS`) is configured AND the tenant's entitlement
+    has a `stripe_customer_id`. NEVER raises and NEVER blocks the caller's `200` — a
+    forwarding failure only means this one usage event doesn't show up on the Stripe
+    invoice; our own ledger already won (stripe-billing-entitlements: Stripe meter events
+    are write-only and never the source of truth for usage).
     """
     if not event_name or not ent.stripe_customer_id:
         return

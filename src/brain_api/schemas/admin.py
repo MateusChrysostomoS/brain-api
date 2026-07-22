@@ -129,8 +129,9 @@ class EntitlementPatchIn(BaseModel):
     def _plan_in_catalog(cls, v: str | None) -> str | None:
         """Only assignable catalog plans may be written (legacy aliases normalize).
 
-        Reserved slots (e.g. `secretaria_bronze_2`, available=False) are rejected until
-        product defines them — no tenant may be put on a plan with no feature set.
+        A reserved slot (available=False, e.g. a future second tier) would be rejected
+        until product defines it — no tenant may be put on a plan with no feature set.
+        The catalog has no such slot today (single secretaria_basico plan).
         """
         if v is None:
             return v

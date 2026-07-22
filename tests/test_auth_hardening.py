@@ -298,7 +298,7 @@ async def test_internal_tenant_entitlements_summary(client, monkeypatch):
     patch = await client.patch(
         f"/admin/tenants/{tenant_a_id}/entitlements",
         headers=_bearer(admin_token),
-        json={"plan": "secretaria_bronze_1", "status": "active", "secretaria_enabled": True},
+        json={"plan": "secretaria_basico", "status": "active", "secretaria_enabled": True},
     )
     assert patch.status_code == 200, patch.text
 
@@ -309,8 +309,8 @@ async def test_internal_tenant_entitlements_summary(client, monkeypatch):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["active"] is True
-    assert body["plan"] == "secretaria_bronze_1"
-    assert body["secretaria_tier"] == "bronze_1"
+    assert body["plan"] == "secretaria_basico"
+    assert body["secretaria_tier"] == "basico"
     assert isinstance(body["addons"], dict)
 
     resp_b = await client.get(

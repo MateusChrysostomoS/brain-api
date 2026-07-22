@@ -207,7 +207,8 @@ async def test_subscription_created_full_recompute(client):
     assert ent["secretaria_enabled"] is True
     assert ent["addons"]["reactivation_pack"] is True
     assert ent["addons"]["verified_identity"] is True
-    assert ent["limits"]["reminders"] == 400
+    # reminders is metering-only now (2026-07-22) -- no plan/add-on grants a base quota.
+    assert ent["limits"]["reminders"] == 0
     assert ent["status"] == "active"
     assert ent["period_start"] is not None
     assert ent["period_end"] is not None
@@ -242,7 +243,7 @@ async def test_quantity_scaling_multi_professional(client):
     assert resp.status_code == 200
 
     ent = await _admin_entitlements(client, tenant_b)
-    assert ent["plan"] == "secretaria_ferro"
+    assert ent["plan"] == "secretaria_basico"
     assert ent["precheck_enabled"] is False
     # Base grant (1) + one addon-active grant (1) + (qty - 1) additional units (2) = 4.
     assert ent["limits"]["professionals"] == 4
@@ -384,7 +385,7 @@ async def test_unknown_price_ignored_no_plan_change(client):
     )
     assert setup.status_code == 200
     before = await _admin_entitlements(client, tenant_b)
-    assert before["plan"] == "secretaria_ferro"
+    assert before["plan"] == "secretaria_basico"
 
     later = now + 3600
     unknown_obj = {
@@ -402,7 +403,7 @@ async def test_unknown_price_ignored_no_plan_change(client):
     assert updated.status_code == 200
 
     after = await _admin_entitlements(client, tenant_b)
-    assert after["plan"] == "secretaria_ferro"  # unchanged: no recognized plan price
+    assert after["plan"] == "secretaria_basico"  # unchanged: no recognized plan price
     assert after["status"] == "active"
     assert after["period_start"] is not None
     assert after["period_end"] is not None
@@ -414,13 +415,16 @@ async def test_unknown_price_ignored_no_plan_change(client):
 async def test_checkout_without_stripe_key_returns_503(client):
     token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
     resp = await client.post(
-        "/billing/checkout", headers=_bearer(token), json={"plan": "secretaria_ferro"}
+        "/billing/checkout", headers=_bearer(token), json={"plan": "secretaria_basico"}
     )
     assert resp.status_code == 503
     assert resp.json()["detail"] == "billing_not_configured"
 
 
 async def test_checkout_validation_errors(client):
+    """The "known but unassignable (reserved slot)" 422 case (e.g. the old
+    secretaria_bronze_2 reserved slot) no longer applies -- the reserved-slot concept was
+    retired 2026-07-22 along with the tier ladder; every catalog plan is assignable now."""
     token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
     headers = _bearer(token)
 
@@ -429,15 +433,10 @@ async def test_checkout_validation_errors(client):
     )
     assert unknown_plan.status_code == 422
 
-    reserved_plan = await client.post(
-        "/billing/checkout", headers=headers, json={"plan": "secretaria_bronze_2"}
-    )
-    assert reserved_plan.status_code == 422
-
     unknown_addon = await client.post(
         "/billing/checkout",
         headers=headers,
-        json={"plan": "secretaria_ferro", "addons": ["not_a_real_addon"]},
+        json={"plan": "secretaria_basico", "addons": ["not_a_real_addon"]},
     )
     assert unknown_addon.status_code == 422
 
@@ -454,7 +453,7 @@ async def test_checkout_happy_path(client, monkeypatch):
 
     token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
     resp = await client.post(
-        "/billing/checkout", headers=_bearer(token), json={"plan": "secretaria_ferro"}
+        "/billing/checkout", headers=_bearer(token), json={"plan": "secretaria_basico"}
     )
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"url": "https://checkout.stripe.test/xyz"}
@@ -506,15 +505,16 @@ async def test_checkout_requires_tenant_scoped_token(client):
 # --- Price map: legacy alias keys ---------------------------------------------
 
 
-def test_price_map_accepts_secretaria_bronze_alias():
-    """The deployed STRIPE_PRICE_MAP keys the secretarIA price as "secretaria_bronze";
-    parsing must normalize it to secretaria_bronze_1 so both lookup directions
-    (price_id_for at checkout, catalog_id_for_price in the webhook recompute) resolve
-    to a real catalog plan."""
+def test_price_map_accepts_secretaria_ferro_alias():
+    """A not-yet-migrated deployed STRIPE_PRICE_MAP may still key the secretarIA price as
+    "secretaria_ferro" (its id before the 2026-07-22 tier-ladder retirement); parsing
+    must normalize it to secretaria_basico so both lookup directions (price_id_for at
+    checkout, catalog_id_for_price in the webhook recompute) resolve to the current
+    catalog plan."""
     parsed = billing_service._parse_price_map(
-        '{"secretaria_bronze": "price_alias_test", "precheck": "price_pc_test"}'
+        '{"secretaria_ferro": "price_alias_test", "precheck": "price_pc_test"}'
     )
     assert parsed == {
-        "secretaria_bronze_1": "price_alias_test",
+        "secretaria_basico": "price_alias_test",
         "precheck": "price_pc_test",
     }

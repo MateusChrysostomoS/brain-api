@@ -31,7 +31,7 @@ def _register_body(**overrides) -> dict:
         "email": "cold.lead@example.com",
         "whatsapp_phone": "+5511999990000",
         "password": SIGNUP_PASSWORD,
-        "catalog_ids": ["secretaria_ferro"],
+        "catalog_ids": ["secretaria_basico"],
     }
     body.update(overrides)
     return body
@@ -51,7 +51,7 @@ async def test_signup_intent_rejects_unknown_catalog_id(client):
 async def test_signup_intent_rejects_two_plans(client):
     resp = await client.post(
         "/public/signup-intents",
-        json=_register_body(email="lead2@example.com", catalog_ids=["secretaria_ferro", "precheck"]),
+        json=_register_body(email="lead2@example.com", catalog_ids=["secretaria_basico", "precheck"]),
     )
     assert resp.status_code == 422
 
@@ -190,7 +190,7 @@ async def test_checkout_session_unknown_intent_404(client):
 
 async def test_checkout_session_happy_path(client, monkeypatch):
     intent_id = await _register(
-        client, email="checkout.happy@example.com", catalog_ids=["secretaria_ferro"]
+        client, email="checkout.happy@example.com", catalog_ids=["secretaria_basico"]
     )
     captured: dict = {}
     _install_fake_stripe_httpx(
@@ -218,7 +218,7 @@ async def test_checkout_session_happy_path(client, monkeypatch):
 
 async def test_checkout_session_not_pending_conflict(client, monkeypatch):
     intent_id = await _register(
-        client, email="checkout.conflict@example.com", catalog_ids=["secretaria_ferro"]
+        client, email="checkout.conflict@example.com", catalog_ids=["secretaria_basico"]
     )
     captured: dict = {}
     _install_fake_stripe_httpx(
@@ -252,7 +252,7 @@ async def test_onboarding_status_unknown_session_404(client):
 
 async def test_onboarding_status_pending_then_ready_with_token_rotation(client, monkeypatch):
     intent_id = await _register(
-        client, email="status.flow@example.com", catalog_ids=["secretaria_bronze_1"]
+        client, email="status.flow@example.com", catalog_ids=["secretaria_basico"]
     )
     captured: dict = {}
     _install_fake_stripe_httpx(
@@ -325,7 +325,7 @@ async def test_onboarding_status_pending_then_ready_with_token_rotation(client, 
 
 async def test_onboarding_status_expired_token_rejected(client, monkeypatch):
     intent_id = await _register(
-        client, email="status.expired@example.com", catalog_ids=["secretaria_ferro"]
+        client, email="status.expired@example.com", catalog_ids=["secretaria_basico"]
     )
     captured: dict = {}
     _install_fake_stripe_httpx(
@@ -367,7 +367,7 @@ async def test_webhook_signup_intent_activates_entitlement_and_is_idempotent(cli
     intent_id = await _register(
         client,
         email="provision.full@example.com",
-        catalog_ids=["secretaria_bronze_1", "multi_professional"],
+        catalog_ids=["secretaria_basico", "multi_professional"],
     )
     captured: dict = {}
     _install_fake_stripe_httpx(
@@ -415,7 +415,7 @@ async def test_webhook_signup_intent_activates_entitlement_and_is_idempotent(cli
     ent = (
         await client.get(f"/admin/tenants/{tenant_id}/entitlements", headers=_bearer(admin_token))
     ).json()
-    assert ent["plan"] == "secretaria_bronze_1"
+    assert ent["plan"] == "secretaria_basico"
     assert ent["secretaria_enabled"] is True
     assert ent["precheck_enabled"] is False
     assert ent["status"] == "active"
@@ -425,7 +425,8 @@ async def test_webhook_signup_intent_activates_entitlement_and_is_idempotent(cli
     # base (1) + one addon-active grant (1) = 2 — no quantity scaling on this path
     # (that only happens on the subscription.* events, not the signup-intent branch).
     assert ent["limits"]["professionals"] == 2
-    assert ent["limits"]["reminders"] == 200
+    # reminders is metering-only now (2026-07-22) -- no plan/add-on grants a base quota.
+    assert ent["limits"]["reminders"] == 0
 
     # Idempotent: a redelivery of the SAME event is a no-op (still one tenant, still active).
     replay = await _post_webhook(
@@ -438,7 +439,7 @@ async def test_webhook_signup_intent_activates_entitlement_and_is_idempotent(cli
         await client.get(f"/admin/tenants/{tenant_id}/entitlements", headers=_bearer(admin_token))
     ).json()
     assert ent_after_replay["status"] == "active"
-    assert ent_after_replay["plan"] == "secretaria_bronze_1"
+    assert ent_after_replay["plan"] == "secretaria_basico"
 
 
 # --- Exchange endpoint: unknown/garbage token ------------------------------------------
@@ -525,7 +526,7 @@ async def test_register_signup_creates_tenant_user_and_inert_entitlement(db_sess
             email="wired.reg@example.com",
             whatsapp_phone="+5511999990000",
             password=SIGNUP_PASSWORD,
-            catalog_ids=["secretaria_ferro"],
+            catalog_ids=["secretaria_basico"],
         ),
     )
     assert reg.intent.tenant_id is not None
@@ -554,7 +555,7 @@ async def test_attach_intake_then_provision_seeds_onboarding_state(db_session):
             email="wired.intake@example.com",
             whatsapp_phone="+5511999990000",
             password=SIGNUP_PASSWORD,
-            catalog_ids=["secretaria_ferro"],
+            catalog_ids=["secretaria_basico"],
         ),
     )
     attached = await signup_service.attach_intake(
@@ -590,7 +591,7 @@ async def test_provision_none_intake_defaults_to_aquecimento(db_session):
             email="wired.intake2@example.com",
             whatsapp_phone="+5511999990000",
             password=SIGNUP_PASSWORD,
-            catalog_ids=["secretaria_ferro"],
+            catalog_ids=["secretaria_basico"],
         ),
     )
     await signup_service.provision_tenant_from_intent(

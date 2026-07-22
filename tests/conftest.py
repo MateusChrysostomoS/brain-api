@@ -44,8 +44,12 @@ os.environ.setdefault("STRIPE_WEBHOOK_SECRET", "whsec_test_secret")
 os.environ.setdefault(
     "STRIPE_PRICE_MAP",
     (
-        '{"complete_clinic_combo": "price_combo", "secretaria_ferro": "price_ferro", '
-        '"secretaria_bronze_1": "price_b1", "precheck": "price_precheck", '
+        # "secretaria_basico" is the single fully-metered plan that replaced the
+        # ferro/bronze_1/bronze_2 tier ladder (2026-07-22) — see catalog.py's
+        # LEGACY_PLAN_ALIASES. "secretaria_bronze_1" is retired outright (no alias) and
+        # deliberately absent here: it would now be rejected as an unknown catalog id.
+        '{"complete_clinic_combo": "price_combo", "secretaria_basico": "price_ferro", '
+        '"precheck": "price_precheck", '
         '"multi_professional": "price_multipro", "reactivation_pack": "price_react", '
         '"ehr": "price_ehr"}'
     ),

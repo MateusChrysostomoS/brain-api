@@ -192,8 +192,5 @@
   "190": "ProcessedStripeEvent",
   "191": "get_inbound",
   "192": "test_price_map_accepts_secretaria_bronze_alias",
-  "193": "_clear_config_status_cache",
-  "194": "AdminDemoRequestOut",
-  "195": "meta_graph.py",
-  "196": "test_derive_initial_state_priority_prior_api_wins_over_fb_page"
+  "193": "_clear_config_status_cache"
 }

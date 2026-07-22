@@ -55,9 +55,9 @@
     "semantic_hash": "9f240855a02f7fae8b6ecd1eca026cf9"
   },
   "src/brain_api/api/admin.py": {
-    "mtime": 1784729554.914176,
-    "ast_hash": "d8b595c26abb87d77410571426390e8a",
-    "semantic_hash": ""
+    "mtime": 1782484871.2444541,
+    "ast_hash": "8ccae09417b5ec70554d2cc2c1e08506",
+    "semantic_hash": "8ccae09417b5ec70554d2cc2c1e08506"
   },
   "src/brain_api/api/auth.py": {
     "mtime": 1784657452.8569949,
@@ -150,9 +150,9 @@
     "semantic_hash": ""
   },
   "src/brain_api/schemas/admin.py": {
-    "mtime": 1784729539.3468556,
-    "ast_hash": "7820212c04dcd336a7e856977aa395c4",
-    "semantic_hash": ""
+    "mtime": 1784235214.8275054,
+    "ast_hash": "ef66c0e3752d1f3cb93a42fe53f0ceac",
+    "semantic_hash": "ef66c0e3752d1f3cb93a42fe53f0ceac"
   },
   "src/brain_api/schemas/auth.py": {
     "mtime": 1784657839.1093037,
@@ -190,8 +190,8 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "src/brain_api/services/admin.py": {
-    "mtime": 1784729527.3271763,
-    "ast_hash": "e03e638cfcfc011b37b2d159f5728d8b",
+    "mtime": 1784352339.9259522,
+    "ast_hash": "e2629f315494712dd9988a24c09e9f00",
     "semantic_hash": ""
   },
   "src/brain_api/services/auth.py": {
@@ -200,8 +200,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/services/catalog.py": {
-    "mtime": 1784685414.6290393,
-    "ast_hash": "f602dc8aee2fb24ea7fb79fedca89ea8",
+    "mtime": 1784499474.6249044,
+    "ast_hash": "b016273cb0267fc55cb4751f8a3d741b",
     "semantic_hash": ""
   },
   "src/brain_api/services/demo.py": {
@@ -225,9 +225,9 @@
     "semantic_hash": "14a5bbc97316f48e88df25fead5338e6"
   },
   "src/brain_api/services/secretaria_client.py": {
-    "mtime": 1784729461.0661733,
-    "ast_hash": "67ec1bf61ceff521a606b3d6ffe5f499",
-    "semantic_hash": ""
+    "mtime": 1782228352.579369,
+    "ast_hash": "7a923c8c504c4c5bec6095a836e54c9b",
+    "semantic_hash": "7a923c8c504c4c5bec6095a836e54c9b"
   },
   "src/brain_api/services/secretaria_internal.py": {
     "mtime": 1782952578.1808958,
@@ -280,8 +280,8 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "CONTRACTS.md": {
-    "mtime": 1784685460.6035883,
-    "ast_hash": "8d72554fe971d73c95089d1842323b1c",
+    "mtime": 1784658665.1324656,
+    "ast_hash": "86b1bfc1143069e0a0ad9ef02665912c",
     "semantic_hash": ""
   },
   "docker-compose.yml": {
@@ -527,11 +527,6 @@
   "docs/CHECKPOINT_register_at_first_card.md": {
     "mtime": 1784658700.3808086,
     "ast_hash": "de6834ffd6d99097faeca7238a51ed44",
-    "semantic_hash": ""
-  },
-  "tests/test_admin_tenant_delete.py": {
-    "mtime": 1784729621.0150585,
-    "ast_hash": "4281a90da2aa03e138227c9841f5b0fe",
     "semantic_hash": ""
   }
 }

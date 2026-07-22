@@ -193,7 +193,8 @@ the token's `tenant_id` (never from a client-supplied id).
   "addons": {
     "reactivation_pack": true, "verified_identity": true,
     "multi_professional": false, "multi_unit": false, "ehr": false,
-    "pix_whatsapp": false, "analytics_bi": false, "human_backup_24_7": false
+    "pix_whatsapp": false, "analytics_bi": false, "analytics_bi_advanced": false,
+    "human_backup_24_7": false
   },
   "limits": { "professionals": 1, "units": 1, "messages": 400, "reminders": 400, "hsm_proactive": 200 },
   "usage": {}
@@ -259,7 +260,9 @@ strings resolve to *no* catalog plan → tier/implied-add-on gates **fail closed
 `reactivation_pack` (HSM outside the 24h window: 24h/1h reminders + inactive-patient
 reactivation), `verified_identity` (Meta Verified for Business), `multi_professional`
 (+1 professional per unit), `multi_unit` (+1 unit per unit), `ehr` (iClinic/Doctoralia/
-Memed/Conexa), `pix_whatsapp`, `analytics_bi`, `human_backup_24_7`.
+Memed/Conexa), `pix_whatsapp`, `analytics_bi` (BI summary), `analytics_bi_advanced`
+(fixed-price advanced BI dashboard — a **distinct** key, NOT implied by `analytics_bi`;
+no limit grants, bills as one flat line item), `human_backup_24_7`.
 
 **Limit keys** (the formalized `entitlements.limits` keys — always all present, int ≥ 0):
 `professionals`, `units`, `messages` (conversations/month), `reminders` (24h/1h HSM

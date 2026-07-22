@@ -32,6 +32,11 @@ ADDON_MULTI_UNIT = "multi_unit"
 ADDON_EHR = "ehr"
 ADDON_PIX_WHATSAPP = "pix_whatsapp"
 ADDON_ANALYTICS_BI = "analytics_bi"
+#: Advanced BI dashboard — a SEPARATE, fixed-price add-on layered on top of the basic
+#: `analytics_bi` summary. A DISTINCT entitlement key: owning one does not imply the other.
+#: No `limit_grants` — value and cost are fixed per clinic, so it bills as ONE flat Stripe
+#: line item (Camada 2) with no meter and no per-professional scaling.
+ADDON_ANALYTICS_BI_ADVANCED = "analytics_bi_advanced"
 ADDON_HUMAN_BACKUP_24_7 = "human_backup_24_7"
 
 # --- limit keys (the formal `entitlements.limits` keys — always non-negative ints) ----
@@ -175,6 +180,18 @@ ADDONS: dict[str, AddonDef] = {
             id=ADDON_ANALYTICS_BI,
             name="Analytics / BI",
             description="BI dashboard of the secretary's operation.",
+        ),
+        AddonDef(
+            id=ADDON_ANALYTICS_BI_ADVANCED,
+            name="Advanced Dashboard",
+            description=(
+                "Advanced BI dashboard: per-professional and per-source booking "
+                "breakdowns plus longer-range trends, layered on top of the basic "
+                "Analytics/BI summary. Fixed price per clinic (no per-professional "
+                "scaling)."
+            ),
+            # Intentionally NO limit_grants: a fixed-value, fixed-cost add-on that bills
+            # as one flat Stripe line item — nothing to scale per unit.
         ),
         AddonDef(
             id=ADDON_HUMAN_BACKUP_24_7,

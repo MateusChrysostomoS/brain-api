@@ -2,6 +2,13 @@
 
 Status: **BUILT + tested locally (2026-07-21)**, UNPUSHED, not deployed. No migration.
 
+> See `docs/CHECKPOINT_test_window.md` (2026-07-22, Task 2): `provision_tenant_from_intent`
+> (below) now also stamps `tenant.test_window_started_at` at the same payment-completion
+> moment it activates the entitlement. See also the **"Update 2026-07-22 — corrections
+> round"** section at the bottom of THIS file: a new `PATCH /public/signup-intents/{id}`
+> add-on-update route + `GET /public/checkout-config`'s new `addons` field, both additive
+> on top of the split below.
+
 ## Why
 
 The old cold-signup flow only created the `Tenant` + owner `User` + `Entitlement` inside
@@ -77,3 +84,52 @@ entitlement uses existing `entitlements` column defaults.
 
 - Push brain-api + brain-frontend; deploy; no migration to run.
 - Manual browser click-through of `/cadastro` (see the frontend checkpoint).
+
+## Update 2026-07-22 — corrections round: intent PATCH + checkout-config add-ons
+
+Validated 2026-07-22 (`uv run pytest` → whole-suite green, see
+`docs/CHECKPOINT_test_window.md` for the count this round started from). Two additive,
+backend-only changes on top of the split above — no migration, nothing here touches the
+writer invariants documented above (register/activate stay exactly as described).
+
+- **`PATCH /public/signup-intents/{intent_id}`** (new route, `api/public_signup.py::
+  update_signup_intent_catalog` → `services.signup.update_intent_catalog`) — the
+  frontend's pre-checkout add-on picker calls this right before
+  `POST /public/checkout-sessions` to replace `catalog_ids` on a still-`pending_payment`
+  intent. Shares the SAME `_limiter` bucket as the other three `/public/*` signup routes
+  (mirrors `_check_rate_limit(request)`). Request `schemas.signup.
+  SignupIntentCatalogPatchIn {catalog_ids: list[str]}` re-runs the EXACT registration
+  validation (`_validate_catalog_ids`, factored out of `SignupIntentCreate` into a shared
+  module-level function both schemas call): known ids only, exactly one assignable
+  non-free plan. Response `SignupIntentCatalogOut {intent_id, catalog_ids, status}`.
+  - `404 signup_intent_not_found` — unknown id.
+  - `409 intent_not_pending` — `intent.status != "pending_payment"` (already paid or
+    failed; nothing left to configure).
+  - `409 plan_change_not_allowed` — the new selection's derived plan differs from the
+    one already stored. **Add-ons are the only mutable part** — a plan swap is a
+    different commercial decision (would need re-validating eligibility/intake), so it
+    is rejected outright rather than silently applied.
+  - `409 addon_not_available` — a requested add-on has no Stripe price in
+    `billing.price_id_for` for THIS environment. Defense-in-depth: the frontend is only
+    supposed to ever offer add-ons `GET /public/checkout-config`'s new `addons` field
+    (below) reports as `available`.
+  - On success, `services.signup._normalize_catalog_ids` persists a stable order (plan
+    id first, add-ons deduped in the order given) regardless of what order/duplication
+    the client sent.
+- **`GET /public/checkout-config`** gains `addons: [{id, available}]` — one entry per
+  `catalog.ADDON_IDS` id, stable alphabetical order, `available` = that id has a
+  configured Stripe price (`billing.price_id_for`, same lookup the PATCH route's
+  `addon_not_available` guard uses). `trial_period_days` is unchanged. Still deliberately
+  outside the shared rate limiter and DB-free (catalog + settings only) — unchanged from
+  the 2026-07-19 addition (see the multi-professional checkpoint's own update).
+- **Files touched**: `schemas/signup.py` (shared `_validate_catalog_ids`; new
+  `SignupIntentCatalogPatchIn`/`SignupIntentCatalogOut`/`AddonAvailabilityOut`;
+  `CheckoutConfigOut.addons`), `services/signup.py` (new `update_intent_catalog` +
+  `_normalize_catalog_ids`), `api/public_signup.py` (new PATCH route; `checkout_config`
+  builds the `addons` list; module docstring/imports updated). `tests/test_signup.py`
+  gained the PATCH coverage (success add/remove, normalization, 404, both 409s, 422,
+  rate-limit sharing) plus a dedicated checkout-config addons-availability test.
+- **Deliberately not done**: no admin/authenticated equivalent of this PATCH (the
+  authenticated post-purchase upsell path already has its own mechanism — see
+  `services.billing.create_checkout_session` / the doctor billing routes — this endpoint
+  is pre-checkout only, scoped to a `pending_payment` intent).

@@ -175,6 +175,68 @@ async def attach_intake(session: AsyncSession, tenant_id: UUID, intake: IntakeIn
     return True
 
 
+# --- 1b. Catalog update (public, pre-checkout add-on picker) -------------------------
+
+
+def _normalize_catalog_ids(catalog_ids: list[str]) -> list[str]:
+    """Stable, deduped persisted order for a validated catalog selection: the plan id
+    first (the schema already guarantees exactly one), then add-on ids in the order
+    given, each kept once. A client that resent the plan out of position or repeated an
+    add-on id ends up with a clean stored list either way."""
+    plan_id = _plan_id_of(catalog_ids)
+    ordered: list[str] = [plan_id] if plan_id is not None else []
+    for cid in catalog_ids:
+        if cid != plan_id and cid not in ordered:
+            ordered.append(cid)
+    return ordered
+
+
+async def update_intent_catalog(
+    session: AsyncSession, intent_id: UUID, catalog_ids: list[str]
+) -> SignupIntent:
+    """Replace the catalog selection on a still-pending signup intent (the pre-checkout
+    add-on picker, called right before `POST /public/checkout-sessions`).
+
+    Add-ons are the only mutable part — the PLAN itself, once derived at registration,
+    cannot change here (swapping plans is a different commercial decision than
+    adding/removing an add-on, and would need re-validating eligibility/intake).
+    `catalog_ids` has already passed `schemas.signup.SignupIntentCatalogPatchIn`'s
+    validation (`_validate_catalog_ids` — same rule as registration: every id known,
+    exactly one assignable/non-free plan) by the time this runs; this function checks
+    the two rules a schema cannot: state (still pending?) and cross-referencing the
+    CURRENT row + the live Stripe price map.
+
+    404 `signup_intent_not_found` for an unknown id. 409 `intent_not_pending` once the
+    intent left `pending_payment` (paid or failed — there is nothing left to configure).
+    409 `plan_change_not_allowed` when the new selection's derived plan differs from the
+    one already stored. 409 `addon_not_available` for any requested add-on with no
+    Stripe price configured in `billing.price_id_for` THIS environment — defense in
+    depth, since the frontend is only supposed to ever offer add-ons `GET
+    /public/checkout-config` reported as `available` (§ the new `addons` field).
+
+    On success, persists `_normalize_catalog_ids(catalog_ids)` (plan first, deduped) and
+    returns the updated row.
+    """
+    intent = await session.get(SignupIntent, intent_id)
+    if intent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "signup_intent_not_found")
+    if intent.status != "pending_payment":
+        raise HTTPException(status.HTTP_409_CONFLICT, "intent_not_pending")
+
+    if _plan_id_of(catalog_ids) != _plan_id_of(intent.catalog_ids):
+        raise HTTPException(status.HTTP_409_CONFLICT, "plan_change_not_allowed")
+
+    for addon_id in catalog_ids:
+        if addon_id in catalog.ADDON_IDS and billing.price_id_for(addon_id) is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "addon_not_available")
+
+    intent.catalog_ids = _normalize_catalog_ids(catalog_ids)
+    await session.commit()
+    await session.refresh(intent)
+    logger.info("signup_intent_catalog_updated", intent_id=str(intent.id))
+    return intent
+
+
 # --- 2. Checkout Session -------------------------------------------------------------
 
 
@@ -314,11 +376,20 @@ async def provision_tenant_from_intent(
         logger.warning("signup_activation_tenant_missing", intent_id=str(intent.id))
         return
 
+    now = datetime.now(UTC)
+
+    # Task 2 (test-window reframe): payment completion starts the Meta/WABA acceptance
+    # test window. Only when unset — a redelivered event reaching this point (the
+    # `intent.status == "completed"` guard above already short-circuits the common replay
+    # case, but this stays defensive) must never push the deadline back out.
+    if tenant.test_window_started_at is None:
+        tenant.test_window_started_at = now
+
     # Seed the onboarding state from the (by-now-attached) intake, right before the
     # secretaria bridge fires. provision_defaults overwrites the model-default `pending`
     # baseline registration left; the tenant hasn't connected/paid before this, so this is
     # the first and only meaningful seed.
-    onboarding.provision_defaults(tenant, intent.intake, datetime.now(UTC))
+    onboarding.provision_defaults(tenant, intent.intake, now)
 
     plan_id = _plan_id_of(intent.catalog_ids)
     addon_ids = [cid for cid in intent.catalog_ids if cid in catalog.ADDON_IDS]

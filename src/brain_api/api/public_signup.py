@@ -1,28 +1,35 @@
 """Public cold-signup endpoints: register-at-first-card -> Stripe Checkout -> poll.
 
-Three UNAUTHENTICATED endpoints, all rate-limited per-IP with ONE shared
+Four UNAUTHENTICATED endpoints, all rate-limited per-IP with ONE shared
 `SlidingWindowLimiter` bucket (same in-process/fail-open machinery as demo.py/auth.py —
 no Redis, CONTRACTS.md §5):
 
-- `POST /public/signup-intents`    REGISTER the lead (tenant + owner user + inert
+- `POST  /public/signup-intents`      REGISTER the lead (tenant + owner user + inert
   entitlement + linked intent) with a real password, return a real session (honeypot
   guarded).
-- `POST /public/checkout-sessions` open a Stripe Checkout Session for that intent.
-- `GET  /public/onboarding-status` poll for the webhook activation + mint the one-time
+- `PATCH /public/signup-intents/{id}` replace the ADD-ON selection on a still-pending
+  intent (corrections round, 2026-07-22) — the pre-checkout add-on picker calls this
+  right before opening Checkout. The plan itself cannot change here.
+- `POST  /public/checkout-sessions`   open a Stripe Checkout Session for that intent.
+- `GET   /public/onboarding-status`   poll for the webhook activation + mint the one-time
   onboarding token (a resume-in-another-browser FALLBACK now that the registration session
   already exists), exchanged at `POST /auth/exchange-onboarding-token`.
 
-A FOURTH unauthenticated endpoint, `GET /public/checkout-config`, is deliberately NOT
-part of that shared limiter — static, non-secret, no-DB-touch config (today just
-`STRIPE_TRIAL_PERIOD_DAYS`) that a pricing-page view must never be able to exhaust the
-signup budget over (see its own docstring below).
+A FIFTH unauthenticated endpoint, `GET /public/checkout-config`, is deliberately NOT
+part of that shared limiter — static, non-secret, no-DB-touch config (trial length +,
+since the corrections round, per-add-on Stripe-price availability) that a pricing-page
+view must never be able to exhaust the signup budget over (see its own docstring below).
 
 Registration IS the sole tenant/user/inert-entitlement writer (`services.signup.
 register_signup`); the Stripe webhook apply path (`services.billing.apply_stripe_event` ->
 `services.signup.provision_tenant_from_intent`) is the sole entitlement-ACTIVATION writer.
 This split replaces the old "webhook is the sole writer" invariant: the registration
-creates the inert tenant+login, the webhook only activates the paid entitlement.
+creates the inert tenant+login, the webhook only activates the paid entitlement. The PATCH
+route only ever touches `catalog_ids` on a row already created by registration — it is
+never a third writer of the tenant/user/entitlement themselves.
 """
+
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,14 +41,17 @@ from brain_api.core.logging import get_logger
 from brain_api.core.ratelimit import SlidingWindowLimiter, client_ip
 from brain_api.schemas.auth import TokenResponse
 from brain_api.schemas.signup import (
+    AddonAvailabilityOut,
     CheckoutConfigOut,
     CheckoutSessionCreate,
     CheckoutSessionOut,
     OnboardingStatusOut,
+    SignupIntentCatalogOut,
+    SignupIntentCatalogPatchIn,
     SignupIntentCreate,
     SignupRegisterOut,
 )
-from brain_api.services import signup as signup_service
+from brain_api.services import billing, catalog, signup as signup_service
 from brain_api.services.auth import issue_refresh_token
 
 logger = get_logger(__name__)
@@ -50,7 +60,7 @@ logger = get_logger(__name__)
 # MUST be `router`; paths carry the full route (bare APIRouter, no prefix).
 router = APIRouter()
 
-# ONE shared bucket for all three signup routes (per-IP; in-process, fail-open).
+# ONE shared bucket for all four signup routes (per-IP; in-process, fail-open).
 _limiter = SlidingWindowLimiter("signup", lambda: get_settings().SIGNUP_RATE_LIMIT_PER_MIN)
 
 # Synthetic id returned for a honeypot hit — never a real row (demo.py pattern).
@@ -114,6 +124,41 @@ async def register_signup(
     )
 
 
+@router.patch(
+    "/public/signup-intents/{intent_id}",
+    response_model=SignupIntentCatalogOut,
+    summary="Update the add-on selection on a pending signup intent",
+    description=(
+        "Replace `catalog_ids` on a still-`pending_payment` intent — the pre-checkout "
+        "add-on picker calls this right before `POST /public/checkout-sessions`. "
+        "Add-ons are the only mutable part: the plan derived at registration cannot "
+        "change here."
+    ),
+    responses={
+        404: {"description": "Unknown signup intent."},
+        409: {
+            "description": (
+                "intent_not_pending | plan_change_not_allowed | addon_not_available"
+            )
+        },
+        422: {"description": "Bad catalog selection (unknown id / not exactly one plan)."},
+        429: {"description": "Rate limited (per-IP anti-spam)."},
+    },
+)
+async def update_signup_intent_catalog(
+    intent_id: UUID,
+    request: Request,
+    payload: SignupIntentCatalogPatchIn,
+    session: AsyncSession = Depends(get_session),
+) -> SignupIntentCatalogOut:
+    """Same shared `_limiter` bucket as the other public signup POSTs (`_check_rate_limit`)."""
+    _check_rate_limit(request)
+    intent = await signup_service.update_intent_catalog(session, intent_id, payload.catalog_ids)
+    return SignupIntentCatalogOut(
+        intent_id=intent.id, catalog_ids=intent.catalog_ids, status=intent.status
+    )
+
+
 @router.post(
     "/public/checkout-sessions",
     response_model=CheckoutSessionOut,
@@ -164,16 +209,26 @@ async def onboarding_status(
 @router.get(
     "/public/checkout-config",
     response_model=CheckoutConfigOut,
-    summary="Public checkout-funnel config (trial length)",
+    summary="Public checkout-funnel config (trial length + add-on availability)",
     description=(
-        "Static, non-secret config the pre-checkout funnel needs so its disclosure "
-        "copy can quote the REAL deployed trial length instead of hardcoding a second "
-        "source of truth."
+        "Static, non-secret config the pre-checkout funnel needs: the REAL deployed "
+        "trial length (instead of hardcoding a second source of truth), and — since "
+        "the 2026-07-22 corrections round — which add-ons have a Stripe price "
+        "configured in THIS environment, so the picker only ever offers ones that "
+        "would actually check out."
     ),
 )
 async def checkout_config() -> CheckoutConfigOut:
-    """No rate limit — deliberate. Unlike the three routes above, this touches no DB
-    and returns nothing secret; a pricing-page view must never be able to eat into the
+    """No rate limit — deliberate. Unlike the routes above, this touches no DB and
+    returns nothing secret; a pricing-page view must never be able to eat into the
     shared `_limiter` budget that the actual intent/checkout/status flow depends on.
+    `addons` reuses `billing.price_id_for` (settings-only lookup, no DB, no Stripe call)
+    over `catalog.ADDON_IDS` in stable alphabetical order.
     """
-    return CheckoutConfigOut(trial_period_days=get_settings().STRIPE_TRIAL_PERIOD_DAYS)
+    addons = [
+        AddonAvailabilityOut(id=addon_id, available=billing.price_id_for(addon_id) is not None)
+        for addon_id in sorted(catalog.ADDON_IDS)
+    ]
+    return CheckoutConfigOut(
+        trial_period_days=get_settings().STRIPE_TRIAL_PERIOD_DAYS, addons=addons
+    )

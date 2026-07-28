@@ -2,11 +2,14 @@
 
 EVERY route here is gated by `require_doctor` at the router level (same convention as
 `api/doctor.py`): the JWT must be valid, carry a `tenant_id`, and have role
-`tenant_owner`/`tenant_staff`; a platform `admin` token gets 403. A handful of routes are
-further restricted to the tenant OWNER (`require_tenant_owner`) — the kill-switch pause
-and the professional invite/self-bind actions. The acting tenant is ALWAYS
-`principal.tenant_id` from the validated token; `tenant_id` is never accepted as a
-query/body param.
+`tenant_owner`/`tenant_staff`; a platform `admin` token gets 403. ONE route is further
+restricted to the tenant OWNER (`require_tenant_owner`): the onboarding kill-switch pause
+— a deliberately owner-only lever, out of the day-to-day "configuracao" surface.
+(Corrections round, 2026-07-22: the professional invite/self-bind actions used to be
+owner-only too; they are now open to any doctor — owner OR staff — since day-to-day
+professional management belongs on that same configuracao surface. Pause stays owner-only
+on purpose.) The acting tenant is ALWAYS `principal.tenant_id` from the validated token;
+`tenant_id` is never accepted as a query/body param.
 
 State-machine WRITES route through `services/onboarding.py`'s pure functions (never
 mutate `tenant.onboarding_state`/`blocker_reason` directly here) and
@@ -28,7 +31,7 @@ from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.core.security import hash_password, hash_refresh_token
-from brain_api.models import SignupAttempt, Tenant, User
+from brain_api.models import Entitlement, SignupAttempt, Tenant, User
 from brain_api.models.user import ROLE_TENANT_STAFF
 from brain_api.schemas.onboarding import (
     AttemptIn,
@@ -44,9 +47,13 @@ from brain_api.schemas.onboarding import (
     ProfessionalSelfIn,
     ProfessionalSelfOut,
     ProfessionalsOut,
+    TestWindowOut,
+    TestWindowRestartOut,
 )
 from brain_api.schemas.signup import IntakeIn
 from brain_api.services import (
+    billing,
+    catalog,
     meta_graph,
     onboarding,
     onboarding_sync,
@@ -57,7 +64,9 @@ from brain_api.services import (
 logger = get_logger(__name__)
 
 # Router-level gate: every /doctor/onboarding* + /doctor/professionals* route requires a
-# tenant_owner/tenant_staff token (403 else). Owner-only routes add require_tenant_owner.
+# tenant_owner/tenant_staff token (403 else). The one remaining owner-only route (pause)
+# additionally depends on require_tenant_owner (corrections round, 2026-07-22: invites/
+# self used to be owner-only too — see the module docstring).
 router = APIRouter(prefix="/doctor", dependencies=[Depends(require_doctor)])
 
 
@@ -246,6 +255,15 @@ async def post_attempt(
     )
     await session.commit()
 
+    if tenant.onboarding_state == onboarding.STATE_CONECTADO:
+        # Task 2 (test-window reframe): the Stripe trial exists to cover the Meta/WABA
+        # acceptance test window, not general onboarding friction — a tenant reaching
+        # 'conectado' has cleared that bar, so the billing cycle anchors HERE rather than
+        # waiting for 'ativo'. Same call `onboarding_sync.refresh_config_status` makes
+        # later at its own 'ativo' transition; `harden_charge` is idempotent
+        # (`charge_hardened_at` guard), so the two can never double-charge.
+        await billing.harden_charge(session, tenant)
+
     owner = await onboarding_sync.get_owner(session, tenant.id)
     if owner is not None:
         # Fire-and-forget: send_notification_email never raises and its result is not
@@ -376,7 +394,7 @@ async def list_professionals(
     "/professionals/invites",
     response_model=ProfessionalInviteOut,
     status_code=status.HTTP_201_CREATED,
-    summary="Invite a professional (owner only)",
+    summary="Invite a professional",
     responses={
         409: {"description": "Email already registered."},
         502: {"description": "secretaria unavailable."},
@@ -384,13 +402,16 @@ async def list_professionals(
 )
 async def invite_professional(
     payload: ProfessionalInviteIn,
-    principal: Principal = Depends(require_tenant_owner),
+    principal: Principal = Depends(require_doctor),
     session: AsyncSession = Depends(get_session),
 ) -> ProfessionalInviteOut:
     """Create-or-attach the secretaria professional, then a local `tenant_staff` user
     bound to it, then mint a single-use invite token
     (`POST /auth/exchange-invite-token`). The `professional_invite` email is fail-soft —
-    the response ALWAYS carries `invite_link` so the owner can share it manually.
+    the response ALWAYS carries `invite_link` so the caller can share it manually.
+
+    Open to any doctor (owner OR staff) — corrections round, 2026-07-22; previously
+    owner-only (`require_tenant_owner`).
     """
     tenant = await _load_tenant(session, principal.tenant_id)
     email = payload.email.lower()
@@ -440,17 +461,20 @@ async def invite_professional(
 @router.post(
     "/professionals/self",
     response_model=ProfessionalSelfOut,
-    summary="Bind the owner to a professional (owner only)",
+    summary="Bind the caller to a professional",
     responses={
-        409: {"description": "The owner is already bound to a professional."},
+        409: {"description": "The caller is already bound to a professional."},
         502: {"description": "secretaria unavailable."},
     },
 )
 async def bind_self_professional(
     payload: ProfessionalSelfIn,
-    principal: Principal = Depends(require_tenant_owner),
+    principal: Principal = Depends(require_doctor),
     session: AsyncSession = Depends(get_session),
 ) -> ProfessionalSelfOut:
+    """Bind the CALLING user (owner or staff) to a professional — open to any doctor
+    since the corrections round, 2026-07-22; previously owner-only (`require_tenant_owner`).
+    """
     tenant = await _load_tenant(session, principal.tenant_id)
     user = await session.get(User, UUID(principal.user_id))
     if user is None:
@@ -470,4 +494,158 @@ async def bind_self_professional(
     logger.info("professional_self_bound", tenant_id=str(tenant.id), user_id=str(user.id))
     return ProfessionalSelfOut(
         professional_id=user.professional_id, created=bool(professional.get("created"))
+    )
+
+
+# --- GET/POST /doctor/onboarding/test-window (Task 2: Meta/WABA acceptance window) -------
+
+
+def _test_window_deadline(tenant: Tenant, days: int) -> datetime | None:
+    """`test_window_started_at + days`, tz-normalized (SQLite hands back naive datetimes;
+    Postgres aware — same idiom as `services/onboarding_sync.py`). `None` when the window
+    has not started yet."""
+    started_at = tenant.test_window_started_at
+    if started_at is None:
+        return None
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=UTC)
+    return started_at + timedelta(days=days)
+
+
+@router.get(
+    "/onboarding/test-window",
+    response_model=TestWindowOut,
+    summary="Meta/WABA acceptance test-window status",
+)
+async def get_test_window(
+    principal: Principal = Depends(require_doctor),
+    session: AsyncSession = Depends(get_session),
+) -> TestWindowOut:
+    """The doctor-facing live read behind Task 2's reframing: same plan/day/subscription
+    gates as the internal cron's `test_window_email_due` (services/onboarding_sync.py),
+    minus the deadline/notified requirements, so the portal can show progress before (and
+    after) the window ever expires.
+    """
+    tenant = await _load_tenant(session, principal.tenant_id)
+    ent = await session.get(Entitlement, tenant.id)
+    settings = get_settings()
+    days_total = settings.STRIPE_TRIAL_PERIOD_DAYS
+    plan = catalog.get_plan(ent.plan) if ent is not None else None
+
+    applicable = bool(
+        plan is not None
+        and plan.secretaria
+        and days_total > 0
+        and ent is not None
+        and (ent.stripe_subscription_id or ent.stripe_customer_id)
+    )
+    still_open = tenant.onboarding_state not in (onboarding.STATE_CONECTADO, onboarding.STATE_ATIVO)
+    deadline_at = _test_window_deadline(tenant, days_total)
+    expired = bool(deadline_at is not None and still_open and datetime.now(UTC) >= deadline_at)
+
+    return TestWindowOut(
+        applicable=applicable,
+        days_total=days_total,
+        started_at=tenant.test_window_started_at,
+        deadline_at=deadline_at,
+        onboarding_state=tenant.onboarding_state,
+        connected_at=tenant.connected_at,
+        expired=expired,
+        notified=tenant.test_window_notified_at is not None,
+        subscription_status=ent.status if ent is not None else None,
+        can_restart=applicable and still_open,
+    )
+
+
+@router.post(
+    "/onboarding/test-window/restart",
+    response_model=TestWindowRestartOut,
+    summary="Restart the Meta/WABA acceptance test window",
+    responses={
+        409: {"description": "test_window_not_applicable | already_connected | checkout_required"},
+    },
+)
+async def restart_test_window(
+    principal: Principal = Depends(require_doctor),
+    session: AsyncSession = Depends(get_session),
+) -> TestWindowRestartOut:
+    """Re-checkout without a NEW Checkout Session. When the tenant's Stripe subscription is
+    still live (not `canceled`/`incomplete_expired` — typically the common case: the
+    original trial hasn't been auto-cancelled yet), extend its `trial_end` in place. When
+    it is already gone (the usual post-deadline case: `trial_will_end` already scheduled
+    and fired a `cancel_at`), create a brand-new subscription against the same customer,
+    reusing a saved card as `default_payment_method` when one exists and re-deriving the
+    Checkout line items from the tenant's OWN entitlement (plan + active add-ons) via the
+    same `validate_selection` the checkout endpoints use. Either branch calls every Stripe
+    endpoint BEFORE touching any row, then restarts the window and commits once — a Stripe
+    failure never half-commits.
+    """
+    tenant = await _load_tenant(session, principal.tenant_id)
+    settings = get_settings()
+    ent = await session.get(Entitlement, tenant.id)
+    plan = catalog.get_plan(ent.plan) if ent is not None else None
+
+    if settings.STRIPE_TRIAL_PERIOD_DAYS <= 0 or plan is None or not plan.secretaria:
+        raise HTTPException(status.HTTP_409_CONFLICT, "test_window_not_applicable")
+    if tenant.onboarding_state in (onboarding.STATE_CONECTADO, onboarding.STATE_ATIVO):
+        raise HTTPException(status.HTTP_409_CONFLICT, "already_connected")
+    if not ent.stripe_customer_id:
+        raise HTTPException(status.HTTP_409_CONFLICT, "checkout_required")
+
+    days = settings.STRIPE_TRIAL_PERIOD_DAYS
+    now = datetime.now(UTC)
+
+    payment_methods_payload = await billing._stripe_get(
+        f"/v1/payment_methods?customer={ent.stripe_customer_id}&type=card"
+    )
+    payment_methods = payment_methods_payload.get("data") or []
+    payment_method_present = bool(payment_methods)
+
+    live_subscription: dict | None = None
+    if ent.stripe_subscription_id:
+        live_subscription = await billing._stripe_get(
+            f"/v1/subscriptions/{ent.stripe_subscription_id}"
+        )
+
+    if live_subscription is not None and live_subscription.get("status") not in (
+        "canceled",
+        "incomplete_expired",
+    ):
+        await billing._stripe_post(
+            f"/v1/subscriptions/{ent.stripe_subscription_id}",
+            {
+                "trial_end": str(int((now + timedelta(days=days)).timestamp())),
+                "proration_behavior": "none",
+                "cancel_at": "",
+            },
+        )
+        ent.cancel_scheduled_at = None
+    else:
+        addon_ids = [addon_id for addon_id, active in (ent.addons or {}).items() if active]
+        selection = billing.validate_selection(ent.plan, addon_ids)
+
+        data: dict[str, str] = {
+            "customer": ent.stripe_customer_id,
+            "trial_period_days": str(days),
+            "proration_behavior": "none",
+            "metadata[tenant_id]": str(tenant.id),
+        }
+        billing._append_subscription_items(data, selection)
+        if payment_methods:
+            data["default_payment_method"] = payment_methods[0]["id"]
+
+        subscription_payload = await billing._stripe_post("/v1/subscriptions", data)
+        new_subscription_id = str(subscription_payload["id"])
+        billing._reset_markers_if_subscription_changed(ent, new_subscription_id)
+        ent.stripe_subscription_id = new_subscription_id
+
+    tenant.test_window_started_at = now
+    tenant.test_window_notified_at = None
+    await session.commit()
+
+    logger.info("test_window_restarted", tenant_id=str(tenant.id))
+    return TestWindowRestartOut(
+        restarted=True,
+        deadline_at=now + timedelta(days=days),
+        payment_method_present=payment_method_present,
     )

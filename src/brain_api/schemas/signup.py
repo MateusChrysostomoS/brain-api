@@ -23,6 +23,25 @@ from brain_api.schemas.auth import TokenResponse
 from brain_api.services import catalog
 
 
+def _validate_catalog_ids(catalog_ids: list[str]) -> None:
+    """Shared catalog-selection rule for BOTH registration (`SignupIntentCreate`) and the
+    later add-on update (`SignupIntentCatalogPatchIn`): every id must be known (a catalog
+    plan or add-on) and the list must carry EXACTLY one assignable, non-free plan id.
+    Raises `ValueError` (surfaces as a 422 via pydantic) on any violation.
+    """
+    known = catalog.PLAN_IDS | catalog.ADDON_IDS
+    unknown = set(catalog_ids) - known
+    if unknown:
+        raise ValueError(f"unknown_catalog_ids:{sorted(unknown)}")
+
+    plan_ids = [cid for cid in catalog_ids if cid in catalog.PLAN_IDS]
+    if len(plan_ids) != 1:
+        raise ValueError("signup requires exactly one plan catalog id")
+    plan_id = plan_ids[0]
+    if plan_id == catalog.PLAN_FREE or plan_id not in catalog.ASSIGNABLE_PLAN_IDS:
+        raise ValueError(f"unknown_or_unassignable_plan:{plan_id}")
+
+
 class IntakeIn(BaseModel):
     """Pre-checkout intake answers (CONTRACT_onboarding_v1.md §7).
 
@@ -93,17 +112,7 @@ class SignupIntentCreate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_catalog_selection(self) -> "SignupIntentCreate":
-        known = catalog.PLAN_IDS | catalog.ADDON_IDS
-        unknown = set(self.catalog_ids) - known
-        if unknown:
-            raise ValueError(f"unknown_catalog_ids:{sorted(unknown)}")
-
-        plan_ids = [cid for cid in self.catalog_ids if cid in catalog.PLAN_IDS]
-        if len(plan_ids) != 1:
-            raise ValueError("signup requires exactly one plan catalog id")
-        plan_id = plan_ids[0]
-        if plan_id == catalog.PLAN_FREE or plan_id not in catalog.ASSIGNABLE_PLAN_IDS:
-            raise ValueError(f"unknown_or_unassignable_plan:{plan_id}")
+        _validate_catalog_ids(self.catalog_ids)
         return self
 
 
@@ -120,6 +129,39 @@ class SignupRegisterOut(BaseModel):
     session: TokenResponse
 
 
+class SignupIntentCatalogPatchIn(BaseModel):
+    """Body for `PATCH /public/signup-intents/{intent_id}` — replace the catalog
+    selection on a still-`pending_payment` intent (the pre-checkout add-on picker calls
+    this right before requesting the Checkout Session).
+
+    Same SHAPE rule as registration (`_validate_catalog_ids`): exactly one known,
+    assignable, non-free plan id plus any number of known add-on ids. Two further rules
+    that need the CURRENT intent row / the live price map — the plan itself may not
+    actually change, and every add-on must have a configured Stripe price — cannot be
+    checked here (a schema has no DB/settings access) and are enforced by
+    `services.signup.update_intent_catalog` instead.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    catalog_ids: list[str] = Field(min_length=1, max_length=16)
+
+    @model_validator(mode="after")
+    def _validate_catalog_selection(self) -> "SignupIntentCatalogPatchIn":
+        _validate_catalog_ids(self.catalog_ids)
+        return self
+
+
+class SignupIntentCatalogOut(BaseModel):
+    """`PATCH /public/signup-intents/{intent_id}` response — the persisted selection,
+    normalized by `services.signup.update_intent_catalog` (plan id first, add-ons
+    deduped in the order given)."""
+
+    intent_id: UUID
+    catalog_ids: list[str]
+    status: str
+
+
 class CheckoutSessionCreate(BaseModel):
     """Body for `POST /public/checkout-sessions` — open Checkout for a pending intent."""
 
@@ -134,14 +176,30 @@ class CheckoutSessionOut(BaseModel):
     checkout_url: str
 
 
+class AddonAvailabilityOut(BaseModel):
+    """One entry of `CheckoutConfigOut.addons` — whether THIS environment has a Stripe
+    price configured for the add-on. Every `catalog.ADDON_IDS` entry gets one of these
+    regardless of `available` (the picker needs to know about an unavailable add-on too,
+    to render it disabled rather than simply omit it)."""
+
+    id: str
+    available: bool
+
+
 class CheckoutConfigOut(BaseModel):
     """`GET /public/checkout-config` response — public, non-secret checkout-funnel
-    config. Today just the trial length: the funnel's pre-checkout disclosure copy must
-    quote the REAL deployed `STRIPE_TRIAL_PERIOD_DAYS` rather than hardcoding a second
-    source of truth that could silently drift from what Checkout actually applies.
+    config. `trial_period_days`: the funnel's pre-checkout disclosure copy must quote
+    the REAL deployed `STRIPE_TRIAL_PERIOD_DAYS` rather than hardcoding a second source
+    of truth that could silently drift from what Checkout actually applies. `addons`
+    (corrections round, 2026-07-22): one entry per `catalog.ADDON_IDS` id, stable
+    alphabetical order, so the pre-checkout add-on picker can hide/disable an add-on
+    that is sellable in the catalog but has no Stripe price wired in THIS environment
+    yet — the same `billing.price_id_for` lookup `PATCH /public/signup-intents/{id}`
+    uses for its own `addon_not_available` guard.
     """
 
     trial_period_days: int
+    addons: list[AddonAvailabilityOut]
 
 
 class OnboardingStatusOut(BaseModel):

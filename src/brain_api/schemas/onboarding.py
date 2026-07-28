@@ -126,7 +126,8 @@ class ProfessionalsOut(BaseModel):
 
 
 class ProfessionalInviteIn(BaseModel):
-    """`POST /doctor/professionals/invites` body (owner only)."""
+    """`POST /doctor/professionals/invites` body. Open to any doctor (owner or staff) —
+    corrections round, 2026-07-22; previously owner-only."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -146,8 +147,9 @@ class ProfessionalInviteOut(BaseModel):
 
 
 class ProfessionalSelfIn(BaseModel):
-    """`POST /doctor/professionals/self` body (owner only). `name` defaults to the
-    owner's own user name (then the clinic name) when omitted."""
+    """`POST /doctor/professionals/self` body. Open to any doctor (owner or staff) —
+    corrections round, 2026-07-22; previously owner-only. `name` defaults to the
+    caller's own user name (then the clinic name) when omitted."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -158,3 +160,31 @@ class ProfessionalSelfIn(BaseModel):
 class ProfessionalSelfOut(BaseModel):
     professional_id: UUID
     created: bool
+
+
+class TestWindowOut(BaseModel):
+    """`GET /doctor/onboarding/test-window` — Task 2 (Meta/WABA acceptance test-window
+    reframe). `applicable` mirrors the plan/day/subscription gates
+    `services.onboarding_sync.test_window_email_due` uses for the internal cron, minus the
+    deadline/notified checks — this is a live status read, not a one-shot flag.
+    `subscription_status` is the raw `Entitlement.status` (None with no entitlement row).
+    """
+
+    applicable: bool
+    days_total: int
+    started_at: datetime | None
+    deadline_at: datetime | None
+    onboarding_state: str
+    connected_at: datetime | None
+    expired: bool
+    notified: bool
+    subscription_status: str | None
+    can_restart: bool
+
+
+class TestWindowRestartOut(BaseModel):
+    """`POST /doctor/onboarding/test-window/restart` response."""
+
+    restarted: bool
+    deadline_at: datetime
+    payment_method_present: bool

@@ -138,6 +138,18 @@ class InternalOnboardingTenantOut(BaseModel):
     owner_name: str | None
     clinic_name: str
     subscription_active: bool
+    # --- Task 2: Meta/WABA acceptance test-window reframe -----------------------------
+    #: Whether this tenant's paid Stripe trial ran out before it ever reached
+    #: 'conectado'/'ativo' and nobody has been notified yet
+    #: (services.onboarding_sync.test_window_email_due). secretaria's cron POSTs
+    #: `test_window_email_sent` (below) once it has actually sent the email.
+    test_window_email_due: bool
+    #: `Settings.STRIPE_TRIAL_PERIOD_DAYS` — the test-window length in days, so the cron
+    #: never has to hardcode it.
+    test_window_days: int
+    #: `{FRONTEND_BASE_URL}/app/reativar` — where the email should send the tenant to
+    #: restart the window (POST /doctor/onboarding/test-window/restart).
+    test_window_restart_url: str
 
 
 class InternalOnboardingListOut(BaseModel):
@@ -147,8 +159,10 @@ class InternalOnboardingListOut(BaseModel):
 class InternalOnboardingEventIn(BaseModel):
     """`POST /internal/onboarding/tenants/{tenant_id}/events` body — one cron
     bookkeeping event. `retry_nudge_sent`/`config_reminder_sent` are RECURRING and
-    always applied; `closing_email_sent`/`manual_review_flagged` are ONE-SHOT (idempotent
-    no-op once already set) — see `services/onboarding_sync.py::apply_onboarding_event`.
+    always applied; `closing_email_sent`/`manual_review_flagged`/`test_window_email_sent`
+    are ONE-SHOT (idempotent no-op once already set) — see
+    `services/onboarding_sync.py::apply_onboarding_event`. `test_window_email_sent`
+    (Task 2) sets `tenants.test_window_notified_at = at`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -158,6 +172,7 @@ class InternalOnboardingEventIn(BaseModel):
         "config_reminder_sent",
         "closing_email_sent",
         "manual_review_flagged",
+        "test_window_email_sent",
     ]
     at: datetime
     next_retry_at: datetime | None = None

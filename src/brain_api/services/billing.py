@@ -245,34 +245,60 @@ def validate_selection(plan_id: str, addon_ids: list[str] | None) -> CheckoutSel
     return CheckoutSelection(plan_id=plan.id, addon_ids=tuple(addons))
 
 
-def _append_checkout_line_items(data: dict[str, str], selection: CheckoutSelection) -> None:
-    """Populate `line_items[i][price]`/`[quantity]` for a validated selection, shared by
-    BOTH checkout builders (this module's `create_checkout_session` and
-    `services.signup.create_checkout_session_for_intent`). Fully-metered billing
-    (CONTRACT_onboarding_v1.md §9, secretaria_basico model — NO flat/anchor price on the
-    plan): the plan itself only gets a line item when it HAS a direct price
-    (`validate_selection` may have waived that requirement); either way, EACH configured
-    `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` /
-    `{plan_id}_metered_reminders` companion is appended as an ADDITIONAL line item with NO
-    `quantity` field — Stripe rejects a quantity on a metered price. The three companions
-    are independent: any subset (including none, for a purely flat-fee plan) may be
-    configured.
+def _selection_price_items(selection: CheckoutSelection) -> list[tuple[str, str | None]]:
+    """The ordered `(price_id, quantity)` list a validated selection implies — the ONE
+    price-list builder shared by Checkout Session line items (`_append_checkout_line_items`)
+    AND subscription-create items (`_append_subscription_items`, Task 2's test-window
+    restart): same price/quantity shape, just a different Stripe form-key prefix
+    (`line_items[i]` vs `items[i]`). `quantity` is `None` for a metered price — Stripe
+    rejects a quantity field on those.
+
+    Fully-metered billing (CONTRACT_onboarding_v1.md §9, secretaria_basico model — NO
+    flat/anchor price on the plan): the plan itself only gets an item when it HAS a direct
+    price (`validate_selection` may have waived that requirement); either way, EACH
+    configured `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` /
+    `{plan_id}_metered_reminders` companion is appended as an ADDITIONAL item with no
+    quantity. The three companions are independent: any subset (including none, for a
+    purely flat-fee plan) may be configured.
     """
-    index = 0
+    items: list[tuple[str, str | None]] = []
     plan_price_id = price_id_for(selection.plan_id)
     if plan_price_id:
-        data[f"line_items[{index}][price]"] = plan_price_id
-        data[f"line_items[{index}][quantity]"] = "1"
-        index += 1
+        items.append((plan_price_id, "1"))
     for addon_id in selection.addon_ids:
-        data[f"line_items[{index}][price]"] = price_id_for(addon_id) or ""
-        data[f"line_items[{index}][quantity]"] = "1"
-        index += 1
+        items.append((price_id_for(addon_id) or "", "1"))
     for suffix in (METERED_PATIENTS_SUFFIX, METERED_PROFESSIONALS_SUFFIX, METERED_REMINDERS_SUFFIX):
         companion_price_id = price_id_for(f"{selection.plan_id}{suffix}")
         if companion_price_id:
-            data[f"line_items[{index}][price]"] = companion_price_id
-            index += 1
+            items.append((companion_price_id, None))
+    return items
+
+
+def _append_checkout_line_items(data: dict[str, str], selection: CheckoutSelection) -> None:
+    """Populate `line_items[i][price]`/`[quantity]` for a validated selection, shared by
+    BOTH checkout builders (this module's `create_checkout_session` and
+    `services.signup.create_checkout_session_for_intent`). See `_selection_price_items`
+    for the shape/ordering this projects into Checkout's form-key convention.
+    """
+    for index, (price_id, quantity) in enumerate(_selection_price_items(selection)):
+        data[f"line_items[{index}][price]"] = price_id
+        if quantity is not None:
+            data[f"line_items[{index}][quantity]"] = quantity
+
+
+def _append_subscription_items(data: dict[str, str], selection: CheckoutSelection) -> None:
+    """Populate `items[i][price]`/`[quantity]` for a validated selection — the subscription-
+    create counterpart of `_append_checkout_line_items` (Stripe's `POST /v1/subscriptions`
+    uses `items[i]`, not `line_items[i]`). Used by Task 2's
+    `POST /doctor/onboarding/test-window/restart` when the tenant's old subscription is
+    already canceled and a brand-new one has to be created directly (no Checkout Session,
+    since the tenant already has a saved card). Same price/quantity shape as
+    `_selection_price_items` — see its docstring.
+    """
+    for index, (price_id, quantity) in enumerate(_selection_price_items(selection)):
+        data[f"items[{index}][price]"] = price_id
+        if quantity is not None:
+            data[f"items[{index}][quantity]"] = quantity
 
 
 def _apply_trial(data: dict[str, str]) -> None:
@@ -500,9 +526,13 @@ async def _apply_signup_intent_checkout(
     return await session.get(Tenant, intent.tenant_id)
 
 
-def _reset_markers_if_subscription_changed(ent: Entitlement, new_subscription_id: str) -> None:
+def _reset_markers_if_subscription_changed(ent: Entitlement, new_subscription_id: str) -> bool:
     """Reset `charge_hardened_at`/`cancel_scheduled_at` to `None` when a NEW (non-null,
     different) subscription id is about to replace an existing one on this entitlement.
+    Returns whether it actually reset (a genuine subscription CHANGE, not a redelivery of
+    the same id) — Task 2's callers use this to know whether to ALSO restart the tenant's
+    Meta/WABA acceptance test window (`_restart_test_window` below): a brand-new
+    subscription is a fresh test window, same rationale as the marker reset itself.
 
     Both markers describe the lifecycle of the SUBSCRIPTION they were applied to, not
     the tenant — a resubscription (cancel -> resubscribe) starts an entirely new trial
@@ -517,6 +547,23 @@ def _reset_markers_if_subscription_changed(ent: Entitlement, new_subscription_id
     if ent.stripe_subscription_id is not None and ent.stripe_subscription_id != new_subscription_id:
         ent.charge_hardened_at = None
         ent.cancel_scheduled_at = None
+        return True
+    return False
+
+
+async def _restart_test_window(session: AsyncSession, tenant_id: UUID) -> None:
+    """Restart a tenant's Meta/WABA acceptance test window (Task 2) alongside a genuine
+    subscription-id change (`_reset_markers_if_subscription_changed` returning `True`): a
+    brand-new subscription starts a fresh window, the same effect
+    `POST /doctor/onboarding/test-window/restart` produces for a manual re-checkout.
+    Defensive no-op if the tenant row is somehow missing — must never block the webhook.
+    """
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None:  # pragma: no cover - defensive; an entitlement always has a tenant row.
+        logger.warning("test_window_restart_tenant_missing", tenant_id=str(tenant_id))
+        return
+    tenant.test_window_started_at = datetime.now(UTC)
+    tenant.test_window_notified_at = None
 
 
 async def apply_stripe_event(
@@ -573,7 +620,9 @@ async def apply_stripe_event(
             ent.stripe_customer_id = str(obj["customer"])
         if obj.get("subscription"):
             new_subscription_id = str(obj["subscription"])
-            _reset_markers_if_subscription_changed(ent, new_subscription_id)
+            if _reset_markers_if_subscription_changed(ent, new_subscription_id):
+                # Task 2: a genuine subscription-id change restarts the test window too.
+                await _restart_test_window(session, ent.tenant_id)
             ent.stripe_subscription_id = new_subscription_id
         # Plan/status recompute rides the subscription.* events Stripe sends alongside.
 
@@ -582,7 +631,9 @@ async def apply_stripe_event(
             ent.stripe_customer_id = str(obj["customer"])
         if obj.get("id"):
             new_subscription_id = str(obj["id"])
-            _reset_markers_if_subscription_changed(ent, new_subscription_id)
+            if _reset_markers_if_subscription_changed(ent, new_subscription_id):
+                # Task 2: a genuine subscription-id change restarts the test window too.
+                await _restart_test_window(session, ent.tenant_id)
             ent.stripe_subscription_id = new_subscription_id
         ent.status = _STATUS_MAP.get(obj.get("status", ""), "inactive")
         ent.period_start = _period_dt(obj.get("current_period_start"))

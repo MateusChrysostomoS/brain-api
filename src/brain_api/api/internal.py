@@ -241,7 +241,9 @@ async def list_onboarding_tenants(
     session: AsyncSession = Depends(get_session),
 ) -> InternalOnboardingListOut:
     """secretaria's `run_onboarding_nudges` cron pulls this hourly to decide who needs a
-    retry nudge / config reminder / D+30 manual-review flag / D+60 closing email.
+    retry nudge / config reminder / D+30 manual-review flag / D+60 closing email / (Task 2)
+    a past-deadline Meta/WABA test-window email (`test_window_email_due`, computed
+    server-side per row — see `services.onboarding_sync.test_window_email_due`).
     Includes every tenant where `onboarding_state != 'ativo'` OR
     `config_status != 'completa'`.
     """
@@ -249,6 +251,7 @@ async def list_onboarding_tenants(
     if not tenants:
         return InternalOnboardingListOut(items=[])
 
+    settings = get_settings()
     ids = [t.id for t in tenants]
     owners = {
         u.tenant_id: u
@@ -287,6 +290,10 @@ async def list_onboarding_tenants(
                 owner_name=owner.name if owner else None,
                 clinic_name=t.clinic_name,
                 subscription_active=ent is not None and ent.status in ACTIVE_STATUSES,
+                # Task 2: Meta/WABA acceptance test-window reframe.
+                test_window_email_due=onboarding_sync.test_window_email_due(t, ent, settings),
+                test_window_days=settings.STRIPE_TRIAL_PERIOD_DAYS,
+                test_window_restart_url=f"{settings.FRONTEND_BASE_URL}/app/reativar",
             )
         )
     return InternalOnboardingListOut(items=items)

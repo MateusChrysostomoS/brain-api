@@ -945,7 +945,17 @@ async def test_invite_professional_secretaria_failure_returns_502(client, monkey
     assert resp.status_code == 502
 
 
-async def test_invite_professional_requires_owner_role(client):
+async def test_invite_professional_allows_staff(client, monkeypatch):
+    """Corrections round (2026-07-22): invites are no longer owner-only — any doctor
+    (owner or staff) may invite a professional now that the endpoint depends on
+    `require_doctor` instead of `require_tenant_owner`."""
+    monkeypatch.setattr(
+        secretaria_provisioning,
+        "create_professional",
+        _noop_async({"professional_id": str(uuid4()), "created": True}),
+    )
+    monkeypatch.setattr(secretaria_provisioning, "send_notification_email", _noop_async(True))
+
     admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
     tenant_a_id = (await _tenant_ids(client, admin_token))[CLINIC_A]
     staff_email = "invite.staff@a.com"
@@ -955,9 +965,10 @@ async def test_invite_professional_requires_owner_role(client):
     resp = await client.post(
         "/doctor/professionals/invites",
         headers=_bearer(staff_token),
-        json={"name": "X", "email": "wontwork@example.com"},
+        json={"name": "Staff Invited Doc", "email": "staff.invited@example.com"},
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["invite_link"]
 
 
 # ===========================================================================================
@@ -992,7 +1003,15 @@ async def test_self_bind_conflict_when_already_bound(client):
     assert resp.json()["detail"] == "already_bound"
 
 
-async def test_self_bind_requires_owner_role(client):
+async def test_self_bind_allows_staff(client, monkeypatch):
+    """Corrections round (2026-07-22): self-bind is no longer owner-only — any doctor
+    (owner or staff) may bind themselves to a professional now."""
+    new_id = str(uuid4())
+    monkeypatch.setattr(
+        secretaria_provisioning,
+        "create_professional",
+        _noop_async({"professional_id": new_id, "created": True}),
+    )
     admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
     tenant_a_id = (await _tenant_ids(client, admin_token))[CLINIC_A]
     staff_email = "self.staff@a.com"
@@ -1000,7 +1019,8 @@ async def test_self_bind_requires_owner_role(client):
     staff_token = await _token(client, staff_email, "staffpass1")
 
     resp = await client.post("/doctor/professionals/self", headers=_bearer(staff_token), json={})
-    assert resp.status_code == 403
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"professional_id": new_id, "created": True}
 
 
 # ===========================================================================================
@@ -1011,7 +1031,16 @@ async def test_self_bind_requires_owner_role(client):
 def _set_pair_key(monkeypatch, key: str = "pair-key") -> None:
     import brain_api.api.internal as internal_api
 
-    fake_settings = SimpleNamespace(SECRETARIA_API_KEY=key, SECRETARIA_API_KEY_PREVIOUS="")
+    # STRIPE_TRIAL_PERIOD_DAYS/FRONTEND_BASE_URL default to the same values as the real
+    # Settings class (Task 2's test-window fields on GET /internal/onboarding/tenants,
+    # services.onboarding_sync.test_window_email_due) -- present here so ANY test using
+    # this helper can reach the listing endpoint too, not just the pair-key gate itself.
+    fake_settings = SimpleNamespace(
+        SECRETARIA_API_KEY=key,
+        SECRETARIA_API_KEY_PREVIOUS="",
+        STRIPE_TRIAL_PERIOD_DAYS=0,
+        FRONTEND_BASE_URL="http://localhost:3000",
+    )
     monkeypatch.setattr(internal_api, "get_settings", lambda: fake_settings)
 
 

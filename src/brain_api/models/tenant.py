@@ -68,6 +68,22 @@ class Tenant(Base):
         Boolean, server_default=text("false"), default=False
     )
 
+    # --- Meta/WABA acceptance test-window (Task 2; migration 0009_test_window) ----------
+    # The Stripe trial is reframed as a test window to accept WhatsApp Coexistence, not a
+    # generic "try before you buy" period. `test_window_started_at` anchors it — set at
+    # payment completion (services/signup.py::provision_tenant_from_intent), reset on any
+    # genuine subscription-id change (services/billing.py's
+    # `_reset_markers_if_subscription_changed`), and on a manual restart
+    # (POST /doctor/onboarding/test-window/restart). `test_window_notified_at` is the
+    # one-shot "the D+N past-deadline email was sent" marker
+    # (services/onboarding_sync.py::apply_onboarding_event, event="test_window_email_sent").
+    test_window_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    test_window_notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

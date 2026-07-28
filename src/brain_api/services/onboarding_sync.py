@@ -29,9 +29,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import Settings, get_settings
 from brain_api.core.logging import get_logger
-from brain_api.models import SignupAttempt, Tenant, User
+from brain_api.models import Entitlement, SignupAttempt, Tenant, User
 from brain_api.models.user import ROLE_TENANT_OWNER
-from brain_api.services import onboarding, secretaria_provisioning
+from brain_api.services import catalog, onboarding, secretaria_provisioning
 
 if TYPE_CHECKING:
     from brain_api.schemas.internal import InternalOnboardingEventIn
@@ -218,11 +218,52 @@ async def list_onboarding_tenants(session: AsyncSession) -> list[Tenant]:
     return list(rows.all())
 
 
+def test_window_email_due(
+    tenant: Tenant, ent: Entitlement | None, settings: Settings, *, now: datetime | None = None
+) -> bool:
+    """Task 2 (Meta/WABA acceptance test-window reframe): whether
+    `GET /internal/onboarding/tenants` should flag `test_window_email_due` for this
+    tenant — the paid Stripe trial (`STRIPE_TRIAL_PERIOD_DAYS`) ran out before the tenant
+    ever reached 'conectado'/'ativo', and nobody has been notified yet.
+
+    Deliberately does NOT require `ent.status` to be active/trialing: by the deadline the
+    `customer.subscription.trial_will_end` handler (`services/billing.py::apply_stripe_event`)
+    has typically already scheduled — and Stripe already fired — the auto-cancellation, so
+    an auto-cancelled, never-connected, paid secretarIA subscriber is EXACTLY the
+    population this email targets, not an edge case to exclude.
+    """
+    if settings.STRIPE_TRIAL_PERIOD_DAYS <= 0:
+        return False
+    if tenant.test_window_started_at is None or tenant.test_window_notified_at is not None:
+        return False
+    if tenant.onboarding_state in (onboarding.STATE_CONECTADO, onboarding.STATE_ATIVO):
+        return False
+    if ent is None or ent.stripe_subscription_id is None:
+        return False
+    plan = catalog.get_plan(ent.plan)
+    if plan is None or not plan.secretaria:
+        return False
+
+    started_at = tenant.test_window_started_at
+    if started_at.tzinfo is None:  # SQLite returns naive; Postgres aware.
+        started_at = started_at.replace(tzinfo=UTC)
+    deadline = started_at + timedelta(days=settings.STRIPE_TRIAL_PERIOD_DAYS)
+    return (now or datetime.now(UTC)) >= deadline
+
+
 #: Event names that fire exactly ONCE per tenant (CONTRACT_onboarding_v1.md §11: D+30
-#: manual-review flag, D+60 closing email) — applying one that is already set is a no-op.
-#: `retry_nudge_sent` / `config_reminder_sent` are RECURRING (the crons re-fire them on
-#: every cadence tick) and are deliberately NOT in this set: they always apply.
-_ONE_SHOT_EVENTS = ("closing_email_sent", "manual_review_flagged")
+#: manual-review flag, D+60 closing email; Task 2: past-deadline test-window email) —
+#: applying one that is already set is a no-op. `retry_nudge_sent` / `config_reminder_sent`
+#: are RECURRING (the crons re-fire them on every cadence tick) and are deliberately NOT in
+#: this set: they always apply.
+_ONE_SHOT_EVENTS = ("closing_email_sent", "manual_review_flagged", "test_window_email_sent")
+
+#: The one-shot events above assume their Tenant marker column is named `f"{event}_at"` —
+#: true for the first two, but "test_window_email_sent"'s marker is `test_window_notified_at`
+#: (Task 2 fixes that name to match `GET /doctor/onboarding/test-window`'s `notified` field
+#: and `test_window_email_due`'s own gate above). Maps the exception; every other one-shot
+#: event still resolves via the `f"{event}_at"` convention.
+_ONE_SHOT_MARKER_COLUMN = {"test_window_email_sent": "test_window_notified_at"}
 
 
 async def apply_onboarding_event(
@@ -234,8 +275,10 @@ async def apply_onboarding_event(
     HTTP error either way.
     """
     event = payload.event
-    if event in _ONE_SHOT_EVENTS and getattr(tenant, f"{event}_at") is not None:
-        return False
+    if event in _ONE_SHOT_EVENTS:
+        marker_column = _ONE_SHOT_MARKER_COLUMN.get(event, f"{event}_at")
+        if getattr(tenant, marker_column) is not None:
+            return False
 
     if event == "retry_nudge_sent":
         tenant.next_retry_at = payload.next_retry_at
@@ -245,8 +288,10 @@ async def apply_onboarding_event(
         tenant.closing_email_sent_at = payload.at
     elif event == "manual_review_flagged":
         tenant.manual_review_flagged_at = payload.at
+    elif event == "test_window_email_sent":
+        tenant.test_window_notified_at = payload.at
     else:  # pragma: no cover - schemas.internal.InternalOnboardingEventIn already
-        # constrains `event` to a Literal of the four branches above.
+        # constrains `event` to a Literal of the branches above.
         return False
 
     await session.commit()

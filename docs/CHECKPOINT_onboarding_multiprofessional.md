@@ -3,7 +3,13 @@
 > See also `docs/cross-db-erasure.md` and `docs/key-rotation.md` for the LGPD/key-rotation
 > rounds this one builds on top of. Full API/data contract detail now lives in
 > `CONTRACTS.md` §6.6/6.3e, §13.3/§13.4, §15, §16 — this file is the "what landed where and
-> what's still pending" record.
+> what's still pending" record. See `docs/CHECKPOINT_test_window.md` (2026-07-22, Task 2)
+> for the later round that moves `harden_charge`'s trigger earlier (to `conectado`,
+> alongside the pre-existing `ativo` trigger) and adds the tenant-visible test-window
+> concept on top of `tenants.onboarding_state`/`entitlements` as tracked here. See the
+> **"Update 2026-07-22 — corrections round"** section further down THIS file for the
+> same-day relaxation of `/doctor/professionals/invites`+`/self` from owner-only to any
+> doctor (pause stays owner-only).
 
 Validated 2026-07-18 (`uv run python -m pytest -q` → **289 passed**, 3 pre-existing
 deprecation warnings unrelated to this round, ~3m18s). This is the record of the
@@ -88,11 +94,14 @@ onboarding state right after `services.signup.provision_tenant_from_intent` crea
   logged.
 - **`api/onboarding.py`** — `GET /doctor/onboarding`, `POST /doctor/onboarding/attempts`,
   `POST /doctor/onboarding/resolve-blocker`, `POST /doctor/onboarding/pause` (owner-only),
-  `GET /doctor/professionals`, `POST /doctor/professionals/invites` (owner-only), `POST
-  /doctor/professionals/self` (owner-only). All under router-level `require_doctor`; pause
-  + the two professional-creation routes additionally require `require_tenant_owner`. Every
-  route matches the contract's request/response shapes exactly (verified against
-  `schemas/onboarding.py`).
+  `GET /doctor/professionals`, `POST /doctor/professionals/invites`, `POST
+  /doctor/professionals/self`. All under router-level `require_doctor`; pause additionally
+  requires `require_tenant_owner`. **As of the 2026-07-22 corrections round (see the
+  update section below), the two professional-creation routes NO LONGER require
+  `require_tenant_owner`** — they were owner-only at the time this bullet was first
+  written (2026-07-18) but are now open to any doctor (owner or staff); only pause stays
+  owner-only. Every route matches the contract's request/response shapes exactly
+  (verified against `schemas/onboarding.py`).
 - **`api/internal.py`** additions — `GET /internal/onboarding/tenants` (batched
   owner+entitlement lookups, avoids N+1, mirrors `services/admin.py::list_tenants`'s
   style) and `POST /internal/onboarding/tenants/{tenant_id}/events`, both on the existing
@@ -239,7 +248,37 @@ the plan at all). Full detail in `CONTRACTS.md` §13.3/§13.5/§13.6.
   `{trial_period_days: <STRIPE_TRIAL_PERIOD_DAYS>}` — non-secret, no DB touch,
   deliberately NOT part of the shared `/public/*` signup rate limiter (a
   pricing-page view must never eat the per-IP signup budget). Consumed by a sibling
-  brain-frontend change for pre-checkout disclosure copy.
+  brain-frontend change for pre-checkout disclosure copy. (2026-07-22 corrections round,
+  below: this response gains an `addons` field — still non-secret, no DB touch.)
+
+## Update 2026-07-22 — corrections round: staff-level invites/self, public add-on picker
+
+Backend pieces of a corrections round; full detail (request/response shapes, error
+codes) for the public-signup half lives in `docs/CHECKPOINT_register_at_first_card.md`'s
+own "Update 2026-07-22" section — this bullet covers only the RBAC relaxation that
+belongs to this checkpoint's `api/onboarding.py` surface.
+
+- **`POST /doctor/professionals/invites` and `POST /doctor/professionals/self` are no
+  longer owner-only.** Both routes moved from `Depends(require_tenant_owner)` to
+  `Depends(require_doctor)` — a `tenant_staff` token now gets a normal 2xx/4xx domain
+  response instead of `403`. Rationale: day-to-day professional management (inviting a
+  colleague, binding yourself to the calendar) belongs on the same "configuracao"
+  surface a staff member already operates, unlike the onboarding kill-switches.
+  `POST /doctor/onboarding/pause` is UNCHANGED and deliberately stays owner-only
+  (`require_tenant_owner`) — it is not part of that day-to-day surface.
+- Docstrings/comments that said "(owner only)" for these two routes were corrected in
+  `api/onboarding.py` (module docstring, router-level comment, route summaries) and
+  `schemas/onboarding.py` (`ProfessionalInviteIn`/`ProfessionalSelfIn`); `PauseIn`'s
+  "(owner only)" is accurate and was left as-is.
+- **Tests** (`tests/test_onboarding_endpoints.py`): `test_invite_professional_requires_
+  owner_role` / `test_self_bind_requires_owner_role` (previously asserting `403` for a
+  staff token) were replaced with `test_invite_professional_allows_staff` /
+  `test_self_bind_allows_staff` (asserting the staff token now reaches the normal
+  success path, `201`/`200`). `test_pause_requires_owner_role` is UNCHANGED — pause must
+  still `403` for staff, and does.
+- No migration; no other RBAC surface touched (verified by re-running the full
+  `tests/test_rbac.py` + `tests/test_onboarding_endpoints.py` green — see
+  `docs/CHECKPOINT_test_window.md` for the suite count this round started from).
 
 ## Deviations from `CONTRACT_onboarding_v1.md` found while verifying
 

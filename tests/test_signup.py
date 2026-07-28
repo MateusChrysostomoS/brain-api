@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 from brain_api.models import Tenant
 from brain_api.schemas.signup import IntakeIn, SignupIntentCreate
-from brain_api.services import onboarding, signup as signup_service
+from brain_api.services import catalog, onboarding, signup as signup_service
 from tests.test_billing import _event, _install_fake_stripe_httpx, _post_webhook
 from tests.test_rbac import ADMIN_EMAIL, ADMIN_PASSWORD, OWNER_A_EMAIL, _bearer, _token
 
@@ -240,6 +240,153 @@ async def test_checkout_session_not_pending_conflict(client, monkeypatch):
 
     second = await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
     assert second.status_code == 409
+
+
+# --- PATCH /public/signup-intents/{id} — add-on selection update (corrections round) --
+#
+# The test STRIPE_PRICE_MAP (conftest.py) configures prices for: complete_clinic_combo,
+# secretaria_basico, precheck (plans) + multi_professional, reactivation_pack, ehr
+# (add-ons). verified_identity/multi_unit/pix_deposit/analytics_bi/
+# analytics_bi_advanced/human_backup_24_7 are deliberately UNPRICED there, for the
+# addon_not_available case below.
+
+
+async def test_patch_intent_adds_addon(client):
+    intent_id = await _register(
+        client, email="patch.add@example.com", catalog_ids=["secretaria_basico"]
+    )
+    resp = await client.patch(
+        f"/public/signup-intents/{intent_id}",
+        json={"catalog_ids": ["secretaria_basico", "ehr"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "intent_id": intent_id,
+        "catalog_ids": ["secretaria_basico", "ehr"],
+        "status": "pending_payment",
+    }
+
+
+async def test_patch_intent_removes_addon(client):
+    intent_id = await _register(
+        client,
+        email="patch.remove@example.com",
+        catalog_ids=["secretaria_basico", "multi_professional"],
+    )
+    resp = await client.patch(
+        f"/public/signup-intents/{intent_id}", json={"catalog_ids": ["secretaria_basico"]}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["catalog_ids"] == ["secretaria_basico"]
+
+
+async def test_patch_intent_normalizes_plan_first_and_dedupes(client):
+    """Persisted order is normalized (plan first, add-ons deduped) regardless of what
+    order/duplication the client sent — documented `update_intent_catalog` behavior."""
+    intent_id = await _register(
+        client, email="patch.normalize@example.com", catalog_ids=["secretaria_basico"]
+    )
+    resp = await client.patch(
+        f"/public/signup-intents/{intent_id}",
+        json={"catalog_ids": ["multi_professional", "secretaria_basico", "multi_professional"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["catalog_ids"] == ["secretaria_basico", "multi_professional"]
+
+
+async def test_patch_intent_unknown_id_404(client):
+    resp = await client.patch(
+        "/public/signup-intents/00000000-0000-0000-0000-000000000000",
+        json={"catalog_ids": ["secretaria_basico"]},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "signup_intent_not_found"
+
+
+async def test_patch_intent_not_pending_conflict(client, monkeypatch):
+    intent_id = await _register(
+        client, email="patch.notpending@example.com", catalog_ids=["secretaria_basico"]
+    )
+    captured: dict = {}
+    _install_fake_stripe_httpx(
+        monkeypatch, captured, {"id": "cs_patch_np", "url": "https://checkout.stripe.test/np"}
+    )
+    assert (
+        await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
+    ).status_code == 200
+    obj = {
+        "customer": "cus_patch_np",
+        "subscription": "sub_patch_np",
+        "metadata": {"kind": "signup_intent", "signup_intent_id": intent_id},
+    }
+    assert (
+        await _post_webhook(client, _event("evt_patch_np", "checkout.session.completed", obj))
+    ).status_code == 200
+
+    resp = await client.patch(
+        f"/public/signup-intents/{intent_id}", json={"catalog_ids": ["secretaria_basico", "ehr"]}
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "intent_not_pending"
+
+
+async def test_patch_intent_plan_change_not_allowed(client):
+    intent_id = await _register(
+        client, email="patch.planchange@example.com", catalog_ids=["secretaria_basico"]
+    )
+    resp = await client.patch(
+        f"/public/signup-intents/{intent_id}", json={"catalog_ids": ["precheck"]}
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "plan_change_not_allowed"
+
+
+async def test_patch_intent_unknown_catalog_id_422(client):
+    intent_id = await _register(
+        client, email="patch.unknownid@example.com", catalog_ids=["secretaria_basico"]
+    )
+    resp = await client.patch(
+        f"/public/signup-intents/{intent_id}",
+        json={"catalog_ids": ["secretaria_basico", "not_a_real_catalog_id"]},
+    )
+    assert resp.status_code == 422
+
+
+async def test_patch_intent_addon_not_available_409(client):
+    """Defense-in-depth: an add-on with no configured Stripe price is rejected even
+    though the frontend is only supposed to ever offer add-ons `GET
+    /public/checkout-config` reports as available."""
+    intent_id = await _register(
+        client, email="patch.unavailable@example.com", catalog_ids=["secretaria_basico"]
+    )
+    resp = await client.patch(
+        f"/public/signup-intents/{intent_id}",
+        json={"catalog_ids": ["secretaria_basico", "verified_identity"]},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "addon_not_available"
+
+
+async def test_patch_intent_shares_signup_rate_limit_bucket(client, monkeypatch):
+    """The PATCH route participates in the SAME shared `_limiter` bucket as the other
+    public signup routes (not a separate budget): exhausting the (fresh, 1-per-window)
+    bucket via a DIFFERENT route still 429s the PATCH call right after."""
+    from brain_api.api import public_signup
+    from brain_api.core.ratelimit import SlidingWindowLimiter
+
+    intent_id = await _register(
+        client, email="patch.ratelimit@example.com", catalog_ids=["secretaria_basico"]
+    )
+    monkeypatch.setattr(public_signup, "_limiter", SlidingWindowLimiter("t3", lambda: 1))
+
+    # Consume the ONE allowed hit via a different shared-bucket route.
+    first = await client.get("/public/onboarding-status", params={"session_id": "whatever"})
+    assert first.status_code == 404  # unknown session, but it got PAST the limiter
+
+    resp = await client.patch(
+        f"/public/signup-intents/{intent_id}", json={"catalog_ids": ["secretaria_basico"]}
+    )
+    assert resp.status_code == 429
 
 
 # --- Onboarding status: pending / ready / failed + token rotation ---------------------
@@ -633,7 +780,13 @@ async def test_provision_missing_tenant_fails_gracefully(db_session):
 
 async def test_checkout_config_returns_configured_trial_period(client, monkeypatch):
     """GET /public/checkout-config echoes the REAL deployed STRIPE_TRIAL_PERIOD_DAYS —
-    the funnel's pre-checkout disclosure copy quotes this instead of a hardcoded value."""
+    the funnel's pre-checkout disclosure copy quotes this instead of a hardcoded value.
+
+    The monkeypatch only replaces `public_signup.get_settings` (what `trial_period_days`
+    reads); `addons` is computed via `billing.price_id_for`'s OWN `get_settings()` call
+    and is unaffected — see test_checkout_config_addons_reflect_price_map_availability
+    for its full shape.
+    """
     from brain_api.api import public_signup
 
     monkeypatch.setattr(
@@ -641,7 +794,23 @@ async def test_checkout_config_returns_configured_trial_period(client, monkeypat
     )
     resp = await client.get("/public/checkout-config")
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"trial_period_days": 75}
+    body = resp.json()
+    assert body["trial_period_days"] == 75
+    assert len(body["addons"]) == len(catalog.ADDON_IDS)
+
+
+async def test_checkout_config_addons_reflect_price_map_availability(client):
+    """`addons` covers every `catalog.ADDON_IDS` id in stable alphabetical order;
+    `available=True` exactly for the ids the test STRIPE_PRICE_MAP (conftest.py) prices:
+    multi_professional, reactivation_pack, ehr."""
+    resp = await client.get("/public/checkout-config")
+    assert resp.status_code == 200, resp.text
+    addons = resp.json()["addons"]
+    assert [a["id"] for a in addons] == sorted(catalog.ADDON_IDS)
+    available = {a["id"] for a in addons if a["available"]}
+    assert available == {"multi_professional", "reactivation_pack", "ehr"}
+    unavailable = {a["id"] for a in addons if not a["available"]}
+    assert unavailable == set(catalog.ADDON_IDS) - available
 
 
 async def test_checkout_config_is_not_rate_limited(client, monkeypatch):

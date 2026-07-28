@@ -203,3 +203,19 @@ than silently patched over, since it affects how `GET /doctor/onboarding/test-wi
   of this repo.
 - **Next round** (per the handoff): a public intent PATCH endpoint, checkout-config
   add-ons, and relaxing two owner-only invite endpoints — none of that started here.
+
+## Follow-up (2026-07-27) — Stripe's own "free trial" banner
+
+Even after the app-controlled copy stopped saying "free trial" (this doc's §1 change
+above), Stripe's HOSTED Checkout page still renders its own default trial banner
+("X-day free trial") — that wording is tied to `subscription_data[trial_period_days]`
+being set and can't be turned off without removing the trial mechanism itself.
+`_apply_trial` (`services/billing.py`) now also sets
+`custom_text[submit][message]` on both checkout builders (`billing.create_checkout_session`
+and `signup.create_checkout_session_for_intent`, which share this helper) — the one lever
+Stripe's Checkout page exposes for adding our own text near the submit button. It states
+outright that nothing is charged yet, names the real reason for the delay (WhatsApp
+Coexistence approval), and repeats the hard day cap. This runs alongside, not instead of,
+the app's own pre-checkout screens (see brain-frontend's new `TestWindowExplainerStep` and
+the reworded `CheckoutTrialNotice`, added the same day) — the goal is that the "free trial"
+framing never gets the last word before the card is entered.

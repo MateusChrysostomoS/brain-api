@@ -303,10 +303,26 @@ def _append_subscription_items(data: dict[str, str], selection: CheckoutSelectio
 
 def _apply_trial(data: dict[str, str]) -> None:
     """Add `subscription_data[trial_period_days]` when configured (> 0); shared by both
-    checkout builders (CONTRACT_onboarding_v1.md §9)."""
+    checkout builders (CONTRACT_onboarding_v1.md §9).
+
+    Also sets `custom_text[submit][message]` — Stripe's OWN hosted Checkout page renders
+    a prominent default banner for any trial ("X-day free trial"), which reads as a
+    courtesy discount and is exactly the framing Task 2's corrections round removed from
+    every screen THIS codebase controls. Stripe's default banner wording can't be turned
+    off without removing the trial mechanism itself, so this custom text is the one lever
+    available on the page where the charge actually happens: it states outright that
+    nothing is charged yet, names the real reason for the delay (WhatsApp Coexistence
+    connection approval, not a free-trial courtesy), and gives the hard day cap."""
     days = get_settings().STRIPE_TRIAL_PERIOD_DAYS
-    if days > 0:
-        data["subscription_data[trial_period_days]"] = str(days)
+    if days <= 0:
+        return
+    data["subscription_data[trial_period_days]"] = str(days)
+    data["custom_text[submit][message]"] = (
+        f"Você ainda não será cobrado. Este é um período de teste de conexão do seu "
+        f"número com a API do WhatsApp Coexistence — no máximo {days} dias até a primeira "
+        f"cobrança, que só acontece se a Meta aprovar a conexão dentro desse prazo. Sem "
+        f"aprovação a tempo, a assinatura é cancelada automaticamente e você não paga nada."
+    )
 
 
 async def create_checkout_session(

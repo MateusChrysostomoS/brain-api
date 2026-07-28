@@ -195,5 +195,15 @@
   "193": "_clear_config_status_cache",
   "194": "AdminDemoRequestOut",
   "195": "meta_graph.py",
-  "196": "test_derive_initial_state_priority_prior_api_wins_over_fb_page"
+  "196": "test_derive_initial_state_priority_prior_api_wins_over_fb_page",
+  "197": "SignupAttempt",
+  "198": "post_attempt",
+  "199": "invite_professional",
+  "200": "list_onboarding_tenants",
+  "201": "list_professionals",
+  "202": "UsageEvent",
+  "203": "0009_test_window.py",
+  "204": "attach_intake",
+  "205": "test_price_map_accepts_secretaria_ferro_alias",
+  "206": "test_patch_intent_addon_not_available_409"
 }

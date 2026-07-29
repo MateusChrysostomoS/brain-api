@@ -10,11 +10,18 @@ the Stripe test doubles from tests/test_billing.py (real HMAC signatures, a fake
 client) and the seeded client fixture from tests/test_rbac.py (no separate DB setup needed).
 """
 
+import time
 from types import SimpleNamespace
+from uuid import UUID
 
 from brain_api.models import Tenant
 from brain_api.schemas.signup import IntakeIn, SignupIntentCreate
-from brain_api.services import catalog, onboarding, signup as signup_service
+from brain_api.services import (
+    billing as billing_service,
+    catalog,
+    onboarding,
+    signup as signup_service,
+)
 from tests.test_billing import _event, _install_fake_stripe_httpx, _post_webhook
 from tests.test_rbac import ADMIN_EMAIL, ADMIN_PASSWORD, OWNER_A_EMAIL, _bearer, _token
 
@@ -180,6 +187,103 @@ async def _register(client, *, email: str, catalog_ids: list[str]) -> str:
 _create_intent = _register
 
 
+def _install_setup_mode_stripe_fakes(
+    monkeypatch,
+    *,
+    session_id: str = "cs_setup",
+    subscription_id: str = "sub_setup",
+    payment_method: str | None = "pm_saved_card",
+    subscription_status: str = "trialing",
+) -> list[dict]:
+    """Fake `billing._stripe_get` / `billing._stripe_post` as plain async functions and
+    return the recorded POST calls (in order).
+
+    The setup-mode cold-signup flow makes THREE different Stripe calls across two requests
+    — POST /v1/checkout/sessions (checkout creation), then GET /v1/setup_intents/{id} +
+    POST /v1/subscriptions (webhook) — which `_install_fake_stripe_httpx`'s single fixed
+    `response_body` cannot express. Same monkeypatch-the-helpers pattern
+    tests/test_test_window.py uses for the restart endpoint's multi-call branch.
+
+    The `POST /v1/subscriptions` reply mirrors the REAL Stripe response shape: a
+    subscription created with `trial_period_days` comes back `status: "trialing"` (verified
+    against the live test API), and `provision_tenant_from_intent` now activates the
+    entitlement with exactly that status instead of hardcoding "active".
+    """
+    calls: list[dict] = []
+    now = int(time.time())
+
+    async def fake_stripe_get(path: str) -> dict:
+        if path.startswith("/v1/setup_intents/"):
+            return {"id": path.rsplit("/", 1)[-1], "payment_method": payment_method}
+        raise AssertionError(f"unexpected _stripe_get path: {path}")
+
+    async def fake_stripe_post(
+        path: str, data: dict, *, idempotency_key: str | None = None
+    ) -> dict:
+        calls.append({"path": path, "data": data, "idempotency_key": idempotency_key})
+        if path == "/v1/checkout/sessions":
+            return {"id": session_id, "url": f"https://checkout.stripe.test/{session_id}"}
+        if path == "/v1/subscriptions":
+            return {
+                "id": subscription_id,
+                "status": subscription_status,
+                "current_period_start": now,
+                "current_period_end": now + 30 * 24 * 3600,
+            }
+        raise AssertionError(f"unexpected _stripe_post path: {path}")
+
+    monkeypatch.setattr(billing_service, "_stripe_get", fake_stripe_get)
+    monkeypatch.setattr(billing_service, "_stripe_post", fake_stripe_post)
+    return calls
+
+
+async def _intent_row(intent_id: str):
+    """Re-read a `SignupIntent` straight from the `client` fixture's DB (a fresh session
+    over the SAME engine, via the app's own get_session override — the pattern
+    tests/test_smoke.py uses). Needed because `status`/`failure_reason` are deliberately
+    NOT exposed on any authenticated route."""
+    from brain_api.core.database import get_session
+    from brain_api.main import app
+    from brain_api.models import SignupIntent
+
+    gen = app.dependency_overrides[get_session]()
+    session = await gen.__anext__()
+    try:
+        return await session.get(SignupIntent, UUID(intent_id))
+    finally:
+        await gen.aclose()
+
+
+async def _force_intent_pending(intent_id: str) -> None:
+    """Rewind an intent to `pending_payment` in the DB, simulating the ONE case a Stripe
+    redelivery genuinely re-runs the whole handler: a crash between the Stripe POST and
+    our commit, which rolls the `processed_stripe_events` dedup row AND the intent's
+    status transition back together."""
+    from brain_api.core.database import get_session
+    from brain_api.main import app
+    from brain_api.models import SignupIntent
+
+    gen = app.dependency_overrides[get_session]()
+    session = await gen.__anext__()
+    try:
+        intent = await session.get(SignupIntent, UUID(intent_id))
+        intent.status = "pending_payment"
+        await session.commit()
+    finally:
+        await gen.aclose()
+
+
+def _setup_completed_obj(intent_id: str, *, customer: str, setup_intent: str) -> dict:
+    """A REAL `mode=setup` `checkout.session.completed` object: it carries `setup_intent`
+    and NO `subscription` (the subscription is ours to create, server-side)."""
+    return {
+        "customer": customer,
+        "setup_intent": setup_intent,
+        "client_reference_id": intent_id,
+        "metadata": {"kind": "signup_intent", "signup_intent_id": intent_id},
+    }
+
+
 async def test_checkout_session_unknown_intent_404(client):
     resp = await client.post(
         "/public/checkout-sessions",
@@ -189,6 +293,10 @@ async def test_checkout_session_unknown_intent_404(client):
 
 
 async def test_checkout_session_happy_path(client, monkeypatch):
+    """The signup Checkout Session is SETUP mode: it saves a card and nothing else, so
+    Stripe renders none of its own billing/trial wording. No `line_items`, no
+    `subscription_data` (Stripe rejects both in setup mode) — the subscription, with the
+    trial, is created server-side from the webhook instead."""
     intent_id = await _register(
         client, email="checkout.happy@example.com", catalog_ids=["secretaria_basico"]
     )
@@ -197,6 +305,7 @@ async def test_checkout_session_happy_path(client, monkeypatch):
         monkeypatch,
         captured,
         {"id": "cs_signup_1", "url": "https://checkout.stripe.test/signup"},
+        trial_period_days=30,
     )
 
     resp = await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
@@ -204,42 +313,402 @@ async def test_checkout_session_happy_path(client, monkeypatch):
     assert resp.json() == {"checkout_url": "https://checkout.stripe.test/signup"}
 
     data = captured["data"]
-    assert data["mode"] == "subscription"
-    assert data["line_items[0][price]"] == "price_ferro"
+    assert data["mode"] == "setup"
+    assert not [key for key in data if key.startswith("line_items[")]
+    assert not [key for key in data if key.startswith("subscription_data[")]
+    # The one piece of billing wording on the page is ours (setup mode also supports it).
+    assert data["custom_text[submit][message]"]
     assert data["metadata[kind]"] == "signup_intent"
     assert data["metadata[signup_intent_id]"] == intent_id
-    assert data["subscription_data[metadata][signup_intent_id]"] == intent_id
     assert data["client_reference_id"] == intent_id
     assert data["customer_email"] == "checkout.happy@example.com"
-    assert data["phone_number_collection[enabled]"] == "true"
+    # Setup mode has no line items to infer a currency from, so Stripe REQUIRES one
+    # explicitly (it 400s the whole request without it) — verified against the live API.
+    assert data["currency"] == "brl"
+    # Conversely `phone_number_collection` is valid ONLY in payment/subscription mode and
+    # 400s here — the buyer's number already rides SignupIntent.whatsapp_phone anyway.
+    assert "phone_number_collection[enabled]" not in data
     # The signup checkout carries the INTENT id, never a tenant id (routing invariant).
     assert "metadata[tenant_id]" not in data
+    # THE blocker fix: Stripe does NOT create a Customer for a setup-mode session on its
+    # own (`customer_creation` defaults to "if_required", and `customer_email` does not
+    # make one required — a completed session came back `customer: null` against the live
+    # API). Without a Customer there is nothing to subscribe, so every signup would end up
+    # entitled and never billed.
+    assert data["customer_creation"] == "always"
+
+
+async def test_checkout_session_no_trial_configured_has_no_custom_text(client, monkeypatch):
+    """`_apply_setup_custom_text` mirrors `_apply_trial`'s gate: with
+    STRIPE_TRIAL_PERIOD_DAYS at 0/off there is no test window to describe, so no invented
+    messaging about one."""
+    intent_id = await _register(
+        client, email="checkout.notrial@example.com", catalog_ids=["secretaria_basico"]
+    )
+    captured: dict = {}
+    _install_fake_stripe_httpx(
+        monkeypatch, captured, {"id": "cs_signup_nt", "url": "https://checkout.stripe.test/nt"}
+    )
+    resp = await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
+    assert resp.status_code == 200, resp.text
+    assert captured["data"]["mode"] == "setup"
+    assert "custom_text[submit][message]" not in captured["data"]
 
 
 async def test_checkout_session_not_pending_conflict(client, monkeypatch):
     intent_id = await _register(
         client, email="checkout.conflict@example.com", catalog_ids=["secretaria_basico"]
     )
-    captured: dict = {}
-    _install_fake_stripe_httpx(
-        monkeypatch, captured, {"id": "cs_signup_2", "url": "https://checkout.stripe.test/x"}
+    calls = _install_setup_mode_stripe_fakes(
+        monkeypatch, session_id="cs_signup_2", subscription_id="sub_conflict"
     )
     first = await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
     assert first.status_code == 200, first.text
 
-    # Activate it (webhook), which flips status away from pending_payment.
-    obj = {
-        "customer": "cus_conflict",
-        "subscription": "sub_conflict",
-        "metadata": {"kind": "signup_intent", "signup_intent_id": intent_id},
-    }
+    # Activate it (webhook), which flips status away from pending_payment. A real
+    # setup-mode event carries `setup_intent`, never `subscription`.
     webhook_resp = await _post_webhook(
-        client, _event("evt_signup_conflict", "checkout.session.completed", obj)
+        client,
+        _event(
+            "evt_signup_conflict",
+            "checkout.session.completed",
+            _setup_completed_obj(intent_id, customer="cus_conflict", setup_intent="seti_conflict"),
+        ),
     )
     assert webhook_resp.status_code == 200
+    assert [c["path"] for c in calls] == ["/v1/checkout/sessions", "/v1/subscriptions"]
 
     second = await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
     assert second.status_code == 409
+
+
+async def test_setup_webhook_creates_subscription_and_activates(client, monkeypatch):
+    """End-to-end of the new flow: a `mode=setup` completion resolves the saved card off
+    the SetupIntent, creates the subscription server-side with it, and hands the resulting
+    id to `provision_tenant_from_intent` (which links it on the entitlement)."""
+    intent_id = await _register(
+        client, email="setup.creates@example.com", catalog_ids=["secretaria_basico"]
+    )
+    calls = _install_setup_mode_stripe_fakes(
+        monkeypatch, session_id="cs_setup_creates", subscription_id="sub_setup_created"
+    )
+    assert (
+        await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
+    ).status_code == 200
+
+    resp = await _post_webhook(
+        client,
+        _event(
+            "evt_setup_creates",
+            "checkout.session.completed",
+            _setup_completed_obj(intent_id, customer="cus_setup", setup_intent="seti_setup"),
+        ),
+    )
+    assert resp.status_code == 200, resp.text
+
+    sub_calls = [c for c in calls if c["path"] == "/v1/subscriptions"]
+    assert len(sub_calls) == 1
+    data = sub_calls[0]["data"]
+    assert data["customer"] == "cus_setup"
+    assert data["default_payment_method"] == "pm_saved_card"
+    assert data["metadata[signup_intent_id]"] == intent_id
+    # `items[i]`, NOT `line_items[i]` — this is POST /v1/subscriptions, not Checkout.
+    assert data["items[0][price]"] == "price_ferro"
+    assert not [key for key in data if key.startswith("line_items[")]
+
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    tenants = (await client.get("/admin/tenants", headers=_bearer(admin_token))).json()["items"]
+    tenant_id = [t for t in tenants if t["clinic_name"] == "Clinica Signup Test"][0]["id"]
+    # The subscription carries the TENANT id too, so a later `customer.subscription.*`
+    # event resolves through `_entitlement_for_event`'s FIRST branch (metadata) instead of
+    # racing the `stripe_customer_id` column this same handler is still writing.
+    assert data["metadata[tenant_id]"] == tenant_id
+    ent = (
+        await client.get(f"/admin/tenants/{tenant_id}/entitlements", headers=_bearer(admin_token))
+    ).json()
+    # NOT "active": the subscription we just created is TRIALING, and both test-window
+    # mechanisms (harden_charge, trial_will_end auto-cancel) gate on exactly that status.
+    assert ent["status"] == "trialing"
+    assert ent["stripe_customer_id"] == "cus_setup"
+    assert ent["stripe_subscription_id"] == "sub_setup_created"
+
+
+async def test_setup_webhook_entitlement_status_follows_subscription_status(client, monkeypatch):
+    """Money-correctness: the entitlement status is whatever the subscription Stripe just
+    created reports — never a hardcoded "active".
+
+    A hardcoded "active" silently disables BOTH halves of the Meta/WABA test window:
+    `harden_charge` returns early unless the row says `trialing` (so a tenant that connects
+    WhatsApp is never billed on its normal cadence), and the `trial_will_end` handler
+    requires it too (so the auto-cancel is never scheduled and a tenant Meta never approved
+    DOES get charged — the exact opposite of what the checkout page promises).
+    """
+    intent_id = await _register(
+        client, email="setup.trialing@example.com", catalog_ids=["secretaria_basico"]
+    )
+    _install_setup_mode_stripe_fakes(
+        monkeypatch,
+        session_id="cs_setup_trialing",
+        subscription_id="sub_setup_trialing",
+        subscription_status="trialing",
+    )
+    assert (
+        await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
+    ).status_code == 200
+    assert (
+        await _post_webhook(
+            client,
+            _event(
+                "evt_setup_trialing",
+                "checkout.session.completed",
+                _setup_completed_obj(
+                    intent_id, customer="cus_trialing", setup_intent="seti_trialing"
+                ),
+            ),
+        )
+    ).status_code == 200
+
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    tenants = (await client.get("/admin/tenants", headers=_bearer(admin_token))).json()["items"]
+    tenant_id = [t for t in tenants if t["clinic_name"] == "Clinica Signup Test"][0]["id"]
+    ent = (
+        await client.get(f"/admin/tenants/{tenant_id}/entitlements", headers=_bearer(admin_token))
+    ).json()
+    assert ent["status"] == "trialing"
+    # The period the subscription reported is carried over too (it used to stay null until
+    # a later customer.subscription.* event happened to resolve).
+    assert ent["period_start"] is not None
+    assert ent["period_end"] is not None
+    # Products/plan still come from the intent's catalog_ids, unchanged by this.
+    assert ent["plan"] == "secretaria_basico"
+    assert ent["secretaria_enabled"] is True
+
+
+async def test_setup_webhook_without_payment_method_creates_no_subscription(client, monkeypatch):
+    """A SetupIntent with no `payment_method` (still `processing`) must NOT produce a
+    card-less subscription — that looks healthy for the whole trial and then cannot be
+    charged. It fails LOUD so Stripe redelivers once the SetupIntent has settled."""
+    intent_id = await _register(
+        client, email="setup.nopm@example.com", catalog_ids=["secretaria_basico"]
+    )
+    calls = _install_setup_mode_stripe_fakes(
+        monkeypatch, session_id="cs_setup_nopm", payment_method=None
+    )
+    assert (
+        await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
+    ).status_code == 200
+
+    resp = await _post_webhook(
+        client,
+        _event(
+            "evt_setup_nopm",
+            "checkout.session.completed",
+            _setup_completed_obj(intent_id, customer="cus_nopm", setup_intent="seti_nopm"),
+        ),
+    )
+    # Non-2xx => Stripe redelivers (the whole point); no subscription was created.
+    assert resp.status_code >= 500
+    assert not [c for c in calls if c["path"] == "/v1/subscriptions"]
+
+    # Nothing was committed: the intent is still pending, so the redelivery re-runs it.
+    intent = await _intent_row(intent_id)
+    assert intent.status == "pending_payment"
+
+
+async def test_setup_webhook_subscription_create_is_idempotent_on_redelivery(client, monkeypatch):
+    """A re-run of this handler for the SAME signup intent can never mint a SECOND
+    subscription.
+
+    THREE guards, in the order they actually fire:
+    1. A literal Stripe redelivery (same `event.id`) short-circuits on the
+       `processed_stripe_events` dedup row BEFORE any handler code runs — zero extra
+       Stripe calls.
+    2. A redelivery that gets PAST guard 1 (a fresh event id — e.g. the second of two
+       checkout sessions for one intent) finds `intent.status == "completed"` and reuses
+       `intent.stripe_subscription_id` instead of POSTing anything. This is the guard that
+       matters most: Stripe expires idempotency keys after ~24h but keeps redelivering a
+       failing webhook for ~3 days, so a day-2 redelivery relying on the key alone would
+       create a SECOND, orphaned, double-billing subscription.
+    3. Only when the handler genuinely re-runs on a still-`pending_payment` intent — the
+       crash-between-the-Stripe-POST-and-our-commit case, which rolls the dedup row AND
+       the status transition back together — does a second POST happen, and then it
+       carries the IDENTICAL deterministic `Idempotency-Key` so Stripe returns the
+       original subscription rather than creating another.
+    """
+    intent_id = await _register(
+        client, email="setup.idempotent@example.com", catalog_ids=["secretaria_basico"]
+    )
+    calls = _install_setup_mode_stripe_fakes(
+        monkeypatch, session_id="cs_setup_idem", subscription_id="sub_setup_idem"
+    )
+    assert (
+        await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
+    ).status_code == 200
+
+    obj = _setup_completed_obj(intent_id, customer="cus_idem", setup_intent="seti_idem")
+    event = _event("evt_setup_idem", "checkout.session.completed", obj)
+
+    first = await _post_webhook(client, event)
+    assert first.json() == {"received": True, "duplicate": False}
+    sub_calls = [c for c in calls if c["path"] == "/v1/subscriptions"]
+    assert len(sub_calls) == 1
+
+    # Guard 1: identical event id -> deduped, no second Stripe call at all.
+    replay = await _post_webhook(client, event)
+    assert replay.json() == {"received": True, "duplicate": True}
+    assert len([c for c in calls if c["path"] == "/v1/subscriptions"]) == 1
+
+    # Guard 2: fresh event id, so the handler DOES run — but the intent is already
+    # `completed`, so it reuses the stored subscription id and never touches Stripe.
+    rerun = await _post_webhook(
+        client, _event("evt_setup_idem_2", "checkout.session.completed", obj)
+    )
+    assert rerun.json() == {"received": True, "duplicate": False}
+    assert len([c for c in calls if c["path"] == "/v1/subscriptions"]) == 1
+
+    # Guard 3: rewind the intent to pending (what a crash-rolled-back transaction leaves
+    # behind) — NOW the handler really re-creates, with the SAME deterministic key.
+    await _force_intent_pending(intent_id)
+    crash_rerun = await _post_webhook(
+        client, _event("evt_setup_idem_3", "checkout.session.completed", obj)
+    )
+    assert crash_rerun.json() == {"received": True, "duplicate": False}
+    sub_calls = [c for c in calls if c["path"] == "/v1/subscriptions"]
+    assert len(sub_calls) == 2
+    assert sub_calls[0]["idempotency_key"] == f"signup-sub-{intent_id}"
+    assert sub_calls[1]["idempotency_key"] == sub_calls[0]["idempotency_key"]
+
+
+async def test_setup_webhook_already_completed_intent_never_reposts(client, monkeypatch):
+    """The `already_completed` short-circuit, isolated: a redelivery with a fresh event id
+    for an intent that was already activated makes ZERO Stripe calls and leaves the linked
+    subscription id untouched (it is read back off the intent, not re-created)."""
+    intent_id = await _register(
+        client, email="setup.completed@example.com", catalog_ids=["secretaria_basico"]
+    )
+    calls = _install_setup_mode_stripe_fakes(
+        monkeypatch, session_id="cs_setup_done", subscription_id="sub_setup_done"
+    )
+    assert (
+        await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
+    ).status_code == 200
+    obj = _setup_completed_obj(intent_id, customer="cus_done", setup_intent="seti_done")
+    assert (
+        await _post_webhook(client, _event("evt_done_1", "checkout.session.completed", obj))
+    ).status_code == 200
+
+    calls.clear()
+    assert (
+        await _post_webhook(client, _event("evt_done_2", "checkout.session.completed", obj))
+    ).status_code == 200
+    assert calls == []
+
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    tenants = (await client.get("/admin/tenants", headers=_bearer(admin_token))).json()["items"]
+    tenant_id = [t for t in tenants if t["clinic_name"] == "Clinica Signup Test"][0]["id"]
+    ent = (
+        await client.get(f"/admin/tenants/{tenant_id}/entitlements", headers=_bearer(admin_token))
+    ).json()
+    assert ent["stripe_subscription_id"] == "sub_setup_done"
+    assert ent["status"] == "trialing"
+
+
+async def test_setup_webhook_without_customer_fails_intent_and_grants_nothing(
+    client, monkeypatch
+):
+    """A setup completion with no `customer` cannot be subscribed (Stripe requires one).
+    With `customer_creation=always` this is unreachable, so if it ever fires it is a
+    genuine anomaly — and it must NOT hand out a free entitlement.
+
+    The old behavior "degraded" into `provision_tenant_from_intent(..., None, None)`, which
+    activated the tenant in full (`status="active"`, `secretaria_enabled=True`) with no
+    subscription and no customer: a working product, permanently unbilled, with the webhook
+    still answering 200 and nothing anywhere recording it. Now the intent is marked
+    `failed` (the same convention as `tenant_missing`), nothing is activated, and the buyer
+    sees `failed` on the onboarding poll rather than a spinner that never resolves.
+    """
+    intent_id = await _register(
+        client, email="setup.nocustomer@example.com", catalog_ids=["secretaria_basico"]
+    )
+    calls = _install_setup_mode_stripe_fakes(monkeypatch, session_id="cs_setup_nocus")
+    assert (
+        await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
+    ).status_code == 200
+
+    obj = {
+        "setup_intent": "seti_orphan",
+        "metadata": {"kind": "signup_intent", "signup_intent_id": intent_id},
+    }
+    resp = await _post_webhook(
+        client, _event("evt_setup_nocus", "checkout.session.completed", obj)
+    )
+    # Still acks (redelivering cannot fix a missing customer), but creates nothing.
+    assert resp.status_code == 200, resp.text
+    assert not [c for c in calls if c["path"] == "/v1/subscriptions"]
+
+    intent = await _intent_row(intent_id)
+    assert intent.status == "failed"
+    assert intent.failure_reason == "stripe_customer_missing"
+
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    tenants = (await client.get("/admin/tenants", headers=_bearer(admin_token))).json()["items"]
+    tenant_id = [t for t in tenants if t["clinic_name"] == "Clinica Signup Test"][0]["id"]
+    ent = (
+        await client.get(f"/admin/tenants/{tenant_id}/entitlements", headers=_bearer(admin_token))
+    ).json()
+    # The entitlement stays INERT — no free product.
+    assert ent["status"] == "inactive"
+    assert ent["plan"] == "free"
+    assert ent["secretaria_enabled"] is False
+    assert ent["stripe_subscription_id"] is None
+
+    # And the buyer's poll surfaces the failure instead of spinning forever.
+    status_resp = await client.get(
+        "/public/onboarding-status", params={"session_id": "cs_setup_nocus"}
+    )
+    assert status_resp.status_code == 200, status_resp.text
+    assert status_resp.json()["status"] == "failed"
+
+
+async def test_setup_webhook_unpriced_plan_fails_intent_and_acks(client, monkeypatch):
+    """A PERMANENT derive/create failure (here: `STRIPE_PRICE_MAP` no longer prices the
+    purchased plan, e.g. it was edited between checkout and webhook) marks the intent
+    failed and ACKS — three days of redeliveries cannot fix a config problem, and the
+    500-with-no-intent-id it used to produce named nothing."""
+    intent_id = await _register(
+        client, email="setup.unpriced@example.com", catalog_ids=["secretaria_basico"]
+    )
+    calls = _install_setup_mode_stripe_fakes(monkeypatch, session_id="cs_setup_unpriced")
+    assert (
+        await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
+    ).status_code == 200
+
+    # Pull the plan's price (and all three metered companions) out from under the webhook.
+    monkeypatch.setattr(billing_service, "price_id_for", lambda catalog_id: None)
+
+    resp = await _post_webhook(
+        client,
+        _event(
+            "evt_setup_unpriced",
+            "checkout.session.completed",
+            _setup_completed_obj(intent_id, customer="cus_unpriced", setup_intent="seti_unpriced"),
+        ),
+    )
+    assert resp.status_code == 200, resp.text
+    assert not [c for c in calls if c["path"] == "/v1/subscriptions"]
+
+    intent = await _intent_row(intent_id)
+    assert intent.status == "failed"
+    assert intent.failure_reason == "subscription_create_failed"
+
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    tenants = (await client.get("/admin/tenants", headers=_bearer(admin_token))).json()["items"]
+    tenant_id = [t for t in tenants if t["clinic_name"] == "Clinica Signup Test"][0]["id"]
+    ent = (
+        await client.get(f"/admin/tenants/{tenant_id}/entitlements", headers=_bearer(admin_token))
+    ).json()
+    assert ent["status"] == "inactive"
+    assert ent["secretaria_enabled"] is False
 
 
 # --- PATCH /public/signup-intents/{id} — add-on selection update (corrections round) --

@@ -584,7 +584,8 @@ Migration **`0001`** creates `tenants`/`users`/`entitlements`/`demo_requests`; m
 | `SIGNUP_RATE_LIMIT_PER_MIN` | `10` | per-IP budget shared by all three `/public/*` cold-signup routes (§15.1; `core/ratelimit.py`, in-process, fail-open) |
 | `ONBOARDING_TOKEN_EXPIRE_MINUTES` | `15` | lifetime of the one-time token `GET /public/onboarding-status` mints (§15.2) |
 | `STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL` / `STRIPE_SIGNUP_CHECKOUT_CANCEL_URL` | `""` (falls back to `STRIPE_CHECKOUT_SUCCESS_URL`/`_CANCEL_URL`) | cold-signup Checkout Sessions land on a **public** onboarding page (the buyer has no session yet); the success URL should carry Stripe's `{CHECKOUT_SESSION_ID}` template so the page can poll `GET /public/onboarding-status` (§15.1) |
-| `STRIPE_TRIAL_PERIOD_DAYS` | `0` | trial length (days) applied to EVERY subscription-mode Checkout Session (`subscription_data[trial_period_days]`) when `> 0` — both checkout builders (§13.3). Deploy sets it high enough (recommend ~75) to outlast the 60-day onboarding retry window before Stripe would otherwise charge a still-unconnected tenant; `harden_charge` (§13.4) ends the trial early on activation regardless of this value |
+| `STRIPE_SETUP_CURRENCY` | `brl` | currency for the cold-signup **`mode=setup`** Checkout Session (§15.1). Required by Stripe there and there only — a setup session carries no line items, so it cannot infer a currency off a price the way subscription mode does, and the request is rejected outright without it. Also drives which payment methods the hosted page offers |
+| `STRIPE_TRIAL_PERIOD_DAYS` | `0` | trial length (days), applied when `> 0` in TWO different shapes (§13.3): the authenticated checkout builder puts it on the Checkout Session (`subscription_data[trial_period_days]`); the cold-signup path has no subscription on its session at all (`mode=setup`, §15.1) and instead applies it as a TOP-LEVEL `trial_period_days` on the `POST /v1/subscriptions` the webhook makes. Deploy sets it high enough (recommend ~75) to outlast the 60-day onboarding retry window before Stripe would otherwise charge a still-unconnected tenant; `harden_charge` (§13.4) ends the trial early on activation regardless of this value |
 | `STRIPE_METER_EVENT_BILLABLE_PATIENTS` | `None` | Stripe Meter `event_name` for the `billable_patients` metered price; unset disables the forward entirely — metering-only, no billing impact either way (§13.3) |
 | `STRIPE_METER_EVENT_ACTIVE_PROFESSIONALS` | `None` | Stripe Meter `event_name` for the `active_professionals` metered PLAN price (the fully-metered secretaria_basico model, §13.3/§13.5); same forward/fail-soft contract as `STRIPE_METER_EVENT_BILLABLE_PATIENTS` — unset disables the forward entirely |
 | `STRIPE_METER_EVENT_REMINDERS` | `None` | Stripe Meter `event_name` for the `reminders` metered PLAN price (24h/1h appointment reminders sent outside the WhatsApp 24h window — the third leg of the fully-metered secretaria_basico model, §13.3/§13.5); same forward/fail-soft contract as `STRIPE_METER_EVENT_BILLABLE_PATIENTS` — unset disables the forward entirely |
@@ -1075,10 +1076,17 @@ No cache sits between the row and any gate.
 
 ### 13.3 Fully-metered plan pricing + subscription trial (billing meter pricing round)
 
-Two additive checkout-time behaviors, both implemented ONCE in `services/billing.py` and
-shared by **both** checkout builders — `create_checkout_session` (§13, the authenticated
-tenant upsell path) and `services.signup.create_checkout_session_for_intent` (§15.1, the
-cold-signup path) — so the two paths can never drift apart:
+Two additive purchase-time behaviors, both implemented ONCE in `services/billing.py`. The
+two purchase paths — `create_checkout_session` (§13, the authenticated tenant upsell,
+`mode=subscription`) and the cold signup (§15.1, whose Checkout Session is `mode=setup`
+and whose SUBSCRIPTION is created server-side by `_create_subscription_for_signup` at
+webhook time) — no longer share a single builder, because Stripe rejects `line_items` and
+`subscription_data` in setup mode. What they DO share is the price list itself:
+`_selection_price_items` is the one builder of the ordered `(price_id, quantity)` pairs a
+validated selection implies, projected two ways — `_append_checkout_line_items`
+(`line_items[i]`, Checkout) and `_append_subscription_items` (`items[i]`,
+`POST /v1/subscriptions`). So the two paths can still never disagree about WHAT is billed;
+they differ only in the Stripe form-key prefix and in where the trial is attached:
 
 - **Metered companion prices — THREE per plan, NO anchor.** `catalog.py` still sells
   only flat-fee plans/add-ons; a plan's metered pricing is expressed purely as a
@@ -1094,11 +1102,12 @@ cold-signup path) — so the two paths can never drift apart:
   accepts all three keys without requiring them to be a known catalog id (and ALSO still
   accepts the SUPERSEDED single `{plan_id}_metered` key — recognized-but-unused,
   graceful degradation for a not-yet-migrated deployed map — but no code path reads it
-  anymore). `_append_checkout_line_items` appends each companion the environment has
-  configured as an EXTRA Checkout line item with **no `quantity` field** (Stripe rejects
-  a `quantity` on a metered price); the plan's own line item is only added when it HAS a
-  direct/flat price (a fully-metered plan gets none). Any subset (including none) of the
-  three companions may be configured independently.
+  anymore). `_selection_price_items` appends each companion the environment has
+  configured as an EXTRA item with **no `quantity` field** (Stripe rejects a `quantity`
+  on a metered price) — as a `line_items[i]` on the authenticated Checkout Session, and
+  as an `items[i]` on the cold-signup subscription create; the plan's own item is only
+  added when it HAS a direct/flat price (a fully-metered plan gets none). Any subset
+  (including none) of the three companions may be configured independently.
 - **`validate_selection`'s fully-metered waiver — ALL THREE companions required.** A
   plan's own `price_id_for(plan.id)` requirement is WAIVED only when **all three** of
   `{plan.id}_metered_patients`, `{plan.id}_metered_professionals`, AND
@@ -1109,10 +1118,16 @@ cold-signup path) — so the two paths can never drift apart:
   (silent under-billing). `price_not_configured:{plan.id}` (503) is raised whenever the
   plan has NEITHER a direct price NOR all three companions. Add-ons are unaffected —
   each still requires its own price regardless of how the plan itself is billed.
-- **Subscription trial.** `_apply_trial` adds
+- **Subscription trial — same setting, two attachment points.** On the AUTHENTICATED
+  builder, `_apply_trial` adds
   `subscription_data[trial_period_days]=<STRIPE_TRIAL_PERIOD_DAYS>` to the Checkout
-  payload whenever that setting is `> 0` (default `0`/off, §7; the deployed value is 75).
-  Applies to every subscription-mode Checkout Session regardless of plan.
+  payload whenever that setting is `> 0` (default `0`/off, §7; the deployed value is 75),
+  for every subscription-mode Checkout Session regardless of plan. The COLD-SIGNUP path
+  cannot: its session is `mode=setup` and carries no subscription, so
+  `_create_subscription_for_signup` puts the same value on the subscription it creates as
+  a TOP-LEVEL `trial_period_days` instead, and `_apply_setup_custom_text` (not
+  `_apply_trial`) supplies that page's billing wording. Both read the one setting, so the
+  trial length still cannot drift between the two paths.
 
 These are pure request-building additions, but the webhook recompute (§13.1) DOES need to
 know about them: with no anchor price, a fully-metered subscription's `items` are ONLY the
@@ -1385,7 +1400,7 @@ writes an *inert* row, never a paid one).
 |---|---|---|---|
 | `POST` | `/public/signup-intents` | public | REGISTERS the lead at the first card. Body: `name`, `clinic_name`, `email`, `whatsapp_phone`, **`password`** (8-72 chars, ≥1 letter + ≥1 digit — same policy as `set-password`, else `422`), `catalog_ids` (exactly one assignable non-free plan id + any number of add-on ids, else `422`), optional `intake` (§15.1a), honeypot `website`. Creates the Tenant + owner User (this password) + INERT Entitlement + linked intent in one transaction (`register_signup`). `201 {intent_id, session}` where `session` is the SAME `TokenResponse` (§2.1) login returns — the caller saves it immediately and is logged in from here on. `409 email_already_registered` (up-front check AND the `users.email` unique constraint). A filled honeypot silently accepts-and-drops (`201` with a synthetic all-zero id + empty session, never persisted — mirrors `POST /demo-requests`, §5) |
 | `PATCH` | `/public/signup-intents/{intent_id}` | public | **(corrections round, 2026-07-22)** Body `{catalog_ids}` — replaces the selection on a still-`pending_payment` intent (the pre-checkout add-on picker, called right before `POST /public/checkout-sessions`). Re-validates with the SAME rule as registration above (`schemas.signup._validate_catalog_ids`, factored out and shared by both schemas): known ids only, exactly one assignable non-free plan, else `422`. `404 signup_intent_not_found` unknown id; `409 intent_not_pending` once `status != "pending_payment"`; `409 plan_change_not_allowed` if the derived plan differs from the one already stored (add-ons are the only mutable part); `409 addon_not_available` if a requested add-on has no price in `billing.price_id_for` for this environment (defense-in-depth on top of the `addons` field below). `200 {intent_id, catalog_ids, status}`, persisted order normalized (plan id first, add-ons deduped). Shares the SAME `_limiter` bucket as the other three `/public/*` routes in this table |
-| `POST` | `/public/checkout-sessions` | public | Body `{intent_id}`. Creates a subscription-mode Checkout Session for a `pending_payment` intent; `404` unknown intent, `409` already left `pending_payment`. `client_reference_id`/`metadata[signup_intent_id]` carry the INTENT id (never a tenant id — the routing invariant), tagged `metadata[kind]=signup_intent` so the webhook (§13.1/15.2) routes it here instead of the tenant-linking path. Reuses `billing.validate_selection` + `_append_checkout_line_items`/`_apply_trial` (§13.3) — an add-on already implied by the chosen plan is never double-billed. `200 {checkout_url}`; `503`/`502` as §13's checkout errors |
+| `POST` | `/public/checkout-sessions` | public | Body `{intent_id}`. Creates a **`mode=setup`** Checkout Session (card capture ONLY — no line items, no subscription, no trial) for a `pending_payment` intent; `404` unknown intent, `409` already left `pending_payment`. Setup mode is deliberate: Stripe's hosted page renders an unsuppressable "X-day free trial" banner for any subscription-mode session carrying a trial, and that framing is the one this product does not want. The real subscription (same `STRIPE_TRIAL_PERIOD_DAYS`) is created server-side at webhook time (§15.2 step 0). Setup-mode specifics, all verified against the live Stripe API: `currency` (`STRIPE_SETUP_CURRENCY`, §7) is REQUIRED — there are no prices to infer it from; `customer_creation=always` is REQUIRED — Stripe otherwise defaults to `if_required`, `customer_email` alone does not make one required, and a completed session comes back `customer: null`, leaving nothing to subscribe; `phone_number_collection` is REJECTED (payment/subscription mode only — the number already rides `SignupIntent.whatsapp_phone` anyway). `client_reference_id`/`metadata[signup_intent_id]` carry the INTENT id (never a tenant id — the routing invariant), tagged `metadata[kind]=signup_intent` so the webhook (§13.1/15.2) routes it here instead of the tenant-linking path. `billing.validate_selection` (§13.3) still runs, purely to FAIL FAST (422/503) before a checkout URL is handed to the buyer; the selection is re-derived at webhook time, where it actually builds the subscription items. `billing._apply_setup_custom_text` supplies the only billing wording on the page. `200 {checkout_url}`; `503`/`502` as §13's checkout errors. Nothing marks an intent as "checkout started", so a buyer who abandons and retries simply gets a second session (the intent keeps only the LATEST `stripe_session_id`) |
 | `GET` | `/public/onboarding-status?session_id=` | public | Resolves a Checkout Session id back to its intent: `{status: "pending"\|"ready"\|"failed", products, onboarding_token}`. `ready` = the webhook ACTIVATED the entitlement. While `ready` and unredeemed, MINTS (and rotates on every poll) the one-time onboarding token — now a FALLBACK for resuming in a browser that never got the registration session; only this synchronous poll can hand the plaintext to the browser, and only its sha256 (§6.6) is ever persisted. `404` unknown session id |
 | `POST` | `/auth/exchange-onboarding-token` | public | Body `{token}`. Redeems the token from the poll above; `401 invalid_onboarding_token` if unknown/expired/already-used/unprovisioned. Success mints the SAME session pair a password login would (§2.1 `TokenResponse` shape, access+refresh) for the tenant's owner user. Rate-limited on the shared `/auth` budget (§5, `AUTH_RATE_LIMIT_PER_MIN`) |
 | `POST` | `/auth/set-password` | Bearer | Body `{new_password}`. Lets the authenticated caller replace THEIR OWN password. Cold-signup OWNERS no longer need it (they set a real password at registration above); it remains the **second step of the professional-invite flow** (§16.3), where an invited `tenant_staff` user starts on a random, never-communicated password. `204`; `401` missing/invalid/expired token |
@@ -1415,19 +1430,50 @@ would be misread as a tenant id. Idempotent on `intent.status == "completed"` (a
 redelivered event is a no-op; NO LONGER keyed on `intent.tenant_id`, which registration
 always sets). Steps:
 
+0. **CREATE the Stripe subscription** (`_apply_signup_intent_checkout` →
+   `_create_subscription_for_signup`) — new since the §15.1 session became `mode=setup`,
+   which saves a card and nothing else. A `GET /v1/setup_intents/{id}` resolves the saved
+   card, then a `POST /v1/subscriptions` creates the real subscription against the
+   session's Customer, with the items `_append_subscription_items` derives from
+   `intent.catalog_ids` (§13.3), `default_payment_method`, top-level `trial_period_days`,
+   and `metadata[signup_intent_id]` + `metadata[tenant_id]`. Both Stripe calls happen
+   BEFORE any local write. Idempotency, in the order it fires: the
+   `processed_stripe_events` row → an `intent.status == "completed"` check made BEFORE any
+   Stripe call (an already-activated intent REUSES `intent.stripe_subscription_id` and
+   never re-POSTs) → a deterministic `Idempotency-Key` (`signup-sub-{intent_id}`) as a
+   backstop for the crash-before-commit window only, since Stripe expires those keys after
+   ~24h but redelivers a failing webhook for ~3 days. Failure handling: a TRANSIENT failure
+   (502 — Stripe erroring, or a SetupIntent with no `payment_method` yet) PROPAGATES so the
+   webhook does not ack and Stripe redelivers; a PERMANENT one (422/503 from
+   `validate_selection`, e.g. `STRIPE_PRICE_MAP` edited between checkout and webhook) marks
+   the intent `failed`/`subscription_create_failed` and acks. An event that carries a
+   `subscription` instead (a subscription-mode session — anything predating this change)
+   skips this step entirely.
 1. Look the tenant up via `intent.tenant_id` (never creates one). Missing tenant (a
    pre-split intent, or a deleted tenant) ⇒ `intent.status = "failed"`,
    `failure_reason = "tenant_missing"`, no writes — the webhook still acks and marks the
-   Stripe event processed.
+   Stripe event processed. A setup completion carrying no `customer` (unreachable now that
+   the session sets `customer_creation=always`) is failed the same way,
+   `failure_reason = "stripe_customer_missing"` — deliberately NOT degraded into an
+   activation, since an entitlement with no subscription behind it is silent, unmonitored
+   revenue loss. Either failure surfaces to the buyer as `status: "failed"` on
+   `GET /public/onboarding-status`.
 2. `services.onboarding.provision_defaults(tenant, intent.intake, now)` (§16.1) — seeds
    `onboarding_state`/`blocker_reason`/`onboarding_anchor_at`/`config_reminder_anchor_at`/
    `next_retry_at` from the (by-now-attached) intake, overwriting the model-default
    `pending` the tenant sat in while unpaid.
-3. ACTIVATE the existing inert `Entitlement`: `status="active"`, plan/products/addons/limits
-   materialized directly from `intent.catalog_ids` via `catalog.compute_entitlement_state`
-   (not from the `customer.subscription.created` event, which can race the webhook) + the
-   Stripe customer/subscription ids; later `subscription.*` events reconcile it via the
-   existing `stripe_customer_id` fallback resolution (§13.1).
+3. ACTIVATE the existing inert `Entitlement`: plan/products/addons/limits materialized
+   directly from `intent.catalog_ids` via `catalog.compute_entitlement_state` (not from the
+   `customer.subscription.created` event, which can race the webhook) + the Stripe
+   customer/subscription ids. `status`/`period_start`/`period_end` come from the
+   subscription payload step 0 returned, mapped through the same `_STATUS_MAP` the
+   `customer.subscription.*` handler uses — so a freshly created signup lands `trialing`,
+   NOT `active`. That matters for money: `harden_charge` (§13.4) and the `trial_will_end`
+   auto-cancel (§13.6) both no-op unless the row says `trialing`, so a hardcoded "active"
+   would mean a connected tenant is never billed on its normal cadence AND a tenant Meta
+   never approved is charged anyway. `"active"` remains the fallback for the legacy
+   subscription-mode path (no payload). Later `subscription.*` events reconcile via
+   `metadata.tenant_id` (stamped in step 0) or the `stripe_customer_id` fallback (§13.1).
 
 The owner keeps the REAL password chosen at registration — the onboarding-token exchange
 (§15.1) is only a resume-in-another-browser fallback now, not the sole way in. Does **not**

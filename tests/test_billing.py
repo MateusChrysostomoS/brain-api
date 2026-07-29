@@ -88,8 +88,16 @@ class _FakeResponse:
         return self._body
 
 
-def _install_fake_stripe_httpx(monkeypatch, captured: dict, response_body: dict) -> None:
-    """Point services.billing at fake Stripe settings + a recording fake httpx client."""
+def _install_fake_stripe_httpx(
+    monkeypatch, captured: dict, response_body: dict, *, trial_period_days: int = 0
+) -> None:
+    """Point services.billing at fake Stripe settings + a recording fake httpx client.
+
+    `trial_period_days` overrides the fake settings' STRIPE_TRIAL_PERIOD_DAYS (default 0 =
+    off, the historical behavior every existing caller relies on) — the cold-signup
+    setup-mode checkout only emits `custom_text[submit][message]` when it is > 0
+    (services.billing._apply_setup_custom_text), same gate as `_apply_trial`.
+    """
 
     class _FakeClient:
         def __init__(self, **kwargs: object) -> None:
@@ -101,10 +109,13 @@ def _install_fake_stripe_httpx(monkeypatch, captured: dict, response_body: dict)
         async def __aexit__(self, *args: object) -> bool:
             return False
 
-        async def post(self, path: str, data=None, auth=None) -> _FakeResponse:
+        async def post(self, path: str, data=None, auth=None, headers=None) -> _FakeResponse:
+            # `headers` carries the optional Idempotency-Key `_stripe_post` now supports
+            # (None for every caller that doesn't ask for one).
             captured["path"] = path
             captured["data"] = data
             captured["auth"] = auth
+            captured["headers"] = headers
             return _FakeResponse(200, response_body)
 
     fake_settings = SimpleNamespace(
@@ -121,7 +132,7 @@ def _install_fake_stripe_httpx(monkeypatch, captured: dict, response_body: dict)
         # standing in for get_settings() needs it, or that call 500s with an
         # AttributeError. tests/test_billing_phase1.py exercises the non-zero case with
         # its own extended fake settings.
-        STRIPE_TRIAL_PERIOD_DAYS=0,
+        STRIPE_TRIAL_PERIOD_DAYS=trial_period_days,
     )
     monkeypatch.setattr(billing_service, "get_settings", lambda: fake_settings)
     monkeypatch.setattr(billing_service.httpx, "AsyncClient", _FakeClient)

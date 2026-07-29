@@ -13,13 +13,30 @@ Price ids live in `Settings.STRIPE_PRICE_MAP` (per-environment JSON: catalog id 
 Stripe price id) — the catalog declares WHAT is sellable, the environment declares the
 Stripe price that charges for it. Nothing is hardcoded here.
 
-The webhook apply functions are pure local-DB writes: the event payload (subscription
-items, status, period) is the input; there is NO Stripe API call while applying. The
-webhook route verifies the signature (pure HMAC) and dedupes on `event.id`
+The webhook apply functions are ALMOST pure local-DB writes: the event payload
+(subscription items, status, period) is the input, and there is NO Stripe API call while
+applying — with exactly TWO deliberate exceptions:
+- `customer.subscription.trial_will_end` does a LIVE `GET /v1/subscriptions/{id}` verify
+  (plus the `cancel_at` POST it may schedule) because the local row can lag Stripe (§13.6);
+- `checkout.session.completed` for a COLD SIGNUP now CREATES the subscription itself
+  (`_apply_signup_intent_checkout` -> `_create_subscription_for_signup`: a
+  `GET /v1/setup_intents/{id}` + a `POST /v1/subscriptions`), because the signup Checkout
+  Session is `mode=setup` (card capture only, no Stripe-authored trial banner) and the
+  real subscription is therefore ours to create server-side. It is guarded against ever
+  minting a SECOND subscription for one signup intent by, in order: the
+  `processed_stripe_events` dedup row, an `intent.status == "completed"` check made BEFORE
+  any Stripe call (an already-activated intent reuses `intent.stripe_subscription_id`),
+  and only then a DETERMINISTIC `Idempotency-Key` (`signup-sub-{intent_id}`) covering the
+  residual window where our own crash between the Stripe call and the local commit rolls
+  the dedup row back with everything else. The key is LAST on that list on purpose:
+  Stripe expires idempotency keys after ~24h but redelivers a failing webhook for ~3 days.
+Both exceptions run their network calls BEFORE any local write, so a Stripe failure
+raises out of the handler with nothing half-committed and Stripe simply redelivers.
+The webhook route verifies the signature (pure HMAC) and dedupes on `event.id`
 (`processed_stripe_events`, same transaction as the mutation). brain-api deliberately
 has no Redis/arq (CONTRACTS.md §5), so the apply runs in-request — acceptable because
-it is a handful of local writes, not network work; the skill's "enqueue" guidance
-targets recomputes that call out.
+it is a handful of local writes plus (signup only) two Stripe calls, not heavy work; the
+skill's "enqueue" guidance targets recomputes that call out.
 
 Cold-signup checkouts (services/signup.py) ride the SAME `checkout.session.completed`
 event and carry the SIGNUP INTENT id (never a tenant id) in `metadata`/
@@ -140,36 +157,86 @@ def catalog_id_for_price(price_id: str) -> str | None:
 # --- Stripe API calls (checkout + portal only; NEVER in a read path) --------
 
 
-async def _stripe_post(path: str, data: dict[str, str]) -> dict[str, Any]:
+def _stripe_error_fields(resp: httpx.Response) -> dict[str, str | None]:
+    """Stripe's own `error.code` / `error.message` off a failed response, for the WARNING
+    log in `_stripe_post`/`_stripe_get`.
+
+    Neither field carries a secret (they name the offending PARAMETER and why Stripe
+    refused it — e.g. `parameter_unknown` / "Received unknown parameter:
+    phone_number_collection"), and they are precisely what turns a blind
+    `stripe_api_error upstream_status=400` into an actionable line: the two
+    already-fixed setup-mode bugs (missing `currency`, rejected
+    `phone_number_collection`) were only found by probing the live API by hand because
+    these fields were being thrown away. Parsed DEFENSIVELY — an error body is not
+    guaranteed to be JSON (a gateway/HTML 502 is not), and logging must never be the
+    thing that raises. The request payload is deliberately NOT logged.
+    """
+    try:
+        body = resp.json()
+    except Exception:  # noqa: BLE001 - any parse failure just means "no fields to log"
+        return {"error_code": None, "error_message": None}
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return {"error_code": None, "error_message": None}
+    code = error.get("code") or error.get("type")
+    message = error.get("message")
+    return {
+        "error_code": str(code) if code is not None else None,
+        "error_message": str(message) if message is not None else None,
+    }
+
+
+async def _stripe_post(
+    path: str, data: dict[str, str], *, idempotency_key: str | None = None
+) -> dict[str, Any]:
     """Form-encoded POST to the Stripe API. 503 when unconfigured, 502 on failure.
 
-    Stripe's error body is logged at WARNING without the request payload (it can carry
-    ids but no secrets); the secret key is only ever in the auth tuple, never logged.
+    Stripe's error `code`/`message` are logged at WARNING (`_stripe_error_fields`) without
+    the request payload; the secret key is only ever in the auth tuple, never logged.
+
+    `idempotency_key` (optional, off by default for every existing caller) is sent as
+    Stripe's `Idempotency-Key` header: replaying a POST with the SAME key returns the
+    ORIGINAL object instead of creating a second one. Used by the cold-signup
+    subscription create (`_create_subscription_for_signup`), whose webhook handler can
+    legitimately run more than once for one signup intent.
     """
     settings = get_settings()
     if not settings.STRIPE_SECRET_KEY:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "billing_not_configured")
+    headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
     try:
         async with httpx.AsyncClient(
             base_url=settings.STRIPE_API_BASE, timeout=settings.STRIPE_TIMEOUT_SECONDS
         ) as client:
-            resp = await client.post(path, data=data, auth=(settings.STRIPE_SECRET_KEY, ""))
+            resp = await client.post(
+                path, data=data, auth=(settings.STRIPE_SECRET_KEY, ""), headers=headers
+            )
     except httpx.RequestError as exc:
         logger.warning("stripe_unreachable", path=path)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "stripe_unavailable") from exc
     if resp.status_code >= 400:
-        logger.warning("stripe_api_error", path=path, upstream_status=resp.status_code)
+        logger.warning(
+            "stripe_api_error",
+            path=path,
+            upstream_status=resp.status_code,
+            **_stripe_error_fields(resp),
+        )
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "stripe_error")
     return resp.json()
 
 
 async def _stripe_get(path: str) -> dict[str, Any]:
-    """GET counterpart of `_stripe_post` (same 503/502 error mapping). Used ONLY by the
-    `customer.subscription.trial_will_end` handler's live-subscription verification
-    (§13.6) — every other Stripe touchpoint in this module is a POST (checkout, portal,
-    cancel scheduling, charge hardening); this is the one read of Stripe's own state,
-    justified because the local `entitlements` row can lag behind what Stripe actually
-    did (see the handler's own comments).
+    """GET counterpart of `_stripe_post` (same 503/502 error mapping). Reads of Stripe's
+    own state, deliberately rare — every other Stripe touchpoint in this module is a POST
+    (checkout, portal, cancel scheduling, charge hardening). Two callers:
+    - the `customer.subscription.trial_will_end` handler's live-subscription verification
+      (§13.6), justified because the local `entitlements` row can lag behind what Stripe
+      actually did (see the handler's own comments);
+    - `_create_subscription_for_signup`, which reads the completed SetupIntent to learn
+      which saved card to bill (the cold-signup Checkout Session is `mode=setup`, so the
+      card id exists only on Stripe's side).
+    `api/onboarding.py`'s test-window restart also calls it directly (payment methods +
+    live subscription).
     """
     settings = get_settings()
     if not settings.STRIPE_SECRET_KEY:
@@ -183,7 +250,12 @@ async def _stripe_get(path: str) -> dict[str, Any]:
         logger.warning("stripe_unreachable", path=path)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "stripe_unavailable") from exc
     if resp.status_code >= 400:
-        logger.warning("stripe_api_error", path=path, upstream_status=resp.status_code)
+        logger.warning(
+            "stripe_api_error",
+            path=path,
+            upstream_status=resp.status_code,
+            **_stripe_error_fields(resp),
+        )
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "stripe_error")
     return resp.json()
 
@@ -322,6 +394,33 @@ def _apply_trial(data: dict[str, str]) -> None:
         f"número com a API do WhatsApp Coexistence — no máximo {days} dias até a primeira "
         f"cobrança, que só acontece se a Meta aprovar a conexão dentro desse prazo. Sem "
         f"aprovação a tempo, a assinatura é cancelada automaticamente e você não paga nada."
+    )
+
+
+def _apply_setup_custom_text(data: dict[str, str]) -> None:
+    """`custom_text[submit][message]` for a SETUP-mode Checkout Session (the cold-signup
+    flow, `services.signup.create_checkout_session_for_intent`) — same settings read and
+    same `> 0` day gate as `_apply_trial`, but standalone wording.
+
+    Why a separate helper: a setup-mode session carries no subscription and no trial at
+    all, so Stripe renders NOTHING about billing on that page — not even the "X-day free
+    trial" banner `_apply_trial`'s text exists to reframe. The trial now lives on the
+    subscription OUR webhook creates afterwards (`_create_subscription_for_signup`), which
+    the buyer never sees. That makes this the ONLY place the real deal can be stated, and
+    it has to start from "you're saving your card" rather than "you won't be charged yet":
+    setup mode literally never charges anything, so the honest framing is what the saved
+    card is FOR (the Meta/WhatsApp Coexistence connection-test window) and when it can
+    first be billed.
+    """
+    days = get_settings().STRIPE_TRIAL_PERIOD_DAYS
+    if days <= 0:
+        return
+    data["custom_text[submit][message]"] = (
+        f"Aqui você apenas salva seu cartão — nada é cobrado agora. Este é o início do "
+        f"período de teste de conexão do seu número com a API do WhatsApp Coexistence: no "
+        f"máximo {days} dias até a primeira cobrança, que só acontece se a Meta aprovar a "
+        f"conexão dentro desse prazo. Sem aprovação a tempo, a assinatura é cancelada "
+        f"automaticamente e você não paga nada."
     )
 
 
@@ -488,19 +587,165 @@ def _state_from_subscription(sub: dict[str, Any]) -> dict[str, Any] | None:
     return state
 
 
+async def _create_subscription_for_signup(
+    *,
+    intent_id: UUID,
+    tenant_id: UUID | None,
+    selection: CheckoutSelection,
+    stripe_customer_id: str,
+    setup_intent_id: str,
+) -> dict[str, Any]:
+    """Create the REAL Stripe subscription behind a completed cold-signup SETUP session.
+
+    The signup Checkout Session is `mode=setup`: it only collects and saves a card (no
+    subscription, no trial, and therefore none of Stripe's own hosted "X-day free trial"
+    banner, which cannot be suppressed while the trial lives inside the Checkout Session).
+    The subscription is created HERE instead, server-side, invisible to the buyer, with the
+    SAME `trial_period_days` the embedded trial used to carry — and creating it fires the
+    very same `customer.subscription.created` event Stripe would have fired on its own, so
+    every downstream state machine (entitlement recompute, `harden_charge`,
+    `trial_will_end` auto-cancel) is untouched by this change.
+
+    Shape mirrors `api/onboarding.py`'s test-window restart branch exactly (`items[i]` via
+    `_append_subscription_items`, `default_payment_method`, `metadata[tenant_id]`, and
+    `trial_period_days` as a TOP-LEVEL key — the `subscription_data[...]` nesting only
+    applies to Checkout Sessions). The card comes from the completed SetupIntent's
+    `payment_method`; Checkout already attached it to the customer (verified live against
+    `GET /v1/payment_methods?customer=…&type=card`), so nothing needs attaching here.
+
+    Returns the FULL subscription object, not just its id: the caller activates the
+    entitlement with the `status`/period it reports (it comes back `trialing`, and the
+    whole test-window mechanism gates on that — see
+    `services.signup.provision_tenant_from_intent`'s `subscription_payload` docstring).
+    """
+    settings = get_settings()
+    setup_intent = await _stripe_get(f"/v1/setup_intents/{setup_intent_id}")
+    payment_method = setup_intent.get("payment_method")
+    if isinstance(payment_method, dict):  # defensive: only if someone expands the field
+        payment_method = payment_method.get("id")
+    if not payment_method:
+        # HARD failure, deliberately propagated (502 ⇒ the webhook does not ack ⇒ Stripe
+        # redelivers). A completed setup session normally has this populated with no
+        # `expand` at all (verified live), so the realistic cause is a SetupIntent still
+        # `processing` — which settles on its own within Stripe's retry window. Creating
+        # the subscription anyway would silently produce one with NO
+        # `default_payment_method`: perfectly healthy-looking for the whole trial, then
+        # unchargeable at the first invoice with no card on file and nobody watching.
+        logger.error(
+            "signup_setup_intent_without_payment_method",
+            intent_id=str(intent_id),
+            setup_intent_id=setup_intent_id,
+        )
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "setup_intent_without_payment_method"
+        )
+
+    data: dict[str, str] = {
+        "customer": stripe_customer_id,
+        "proration_behavior": "none",
+        # Same metadata the old `subscription_data[metadata][signup_intent_id]` put on the
+        # Checkout-created subscription — kept identical so nothing downstream loses the
+        # link back to the signup intent.
+        "metadata[signup_intent_id]": str(intent_id),
+        "default_payment_method": str(payment_method),
+    }
+    if tenant_id is not None:
+        # Parity with `api/onboarding.py`'s restart branch: `_entitlement_for_event`
+        # resolves `metadata.tenant_id` FIRST, so every later `customer.subscription.*`
+        # event for this subscription resolves without depending on the
+        # `stripe_customer_id` column — which the signup handler is still in the middle of
+        # writing when Stripe fires `customer.subscription.created` for this very POST.
+        # (Registration always links a tenant; guarded because the rest of this path is
+        # defensive about a null `tenant_id` too.)
+        data["metadata[tenant_id]"] = str(tenant_id)
+    _append_subscription_items(data, selection)
+    if settings.STRIPE_TRIAL_PERIOD_DAYS > 0:
+        data["trial_period_days"] = str(settings.STRIPE_TRIAL_PERIOD_DAYS)
+
+    # DETERMINISTIC idempotency key — the SECOND line of defense, not the first. The
+    # PRIMARY guard against minting a second subscription is local: `apply_stripe_event`'s
+    # `processed_stripe_events` dedup row, plus the `intent.status == "completed"` check
+    # the caller now performs BEFORE ever reaching this function. This key covers only the
+    # narrow window neither of those can: our process dying after Stripe confirms the
+    # subscription but before the commit that would have written both markers, which rolls
+    # them back together and lets a redelivered event re-run this code from the top.
+    # Stripe then returns the ORIGINAL object instead of creating a second one (verified
+    # live: replaying the same key with identical params yields the same subscription, and
+    # the customer still has exactly one). Note the key EXPIRES on Stripe's side after
+    # ~24h while redeliveries continue for ~3 days — which is precisely why it cannot be
+    # the primary guard and the caller's status check has to be.
+    payload = await _stripe_post(
+        "/v1/subscriptions", data, idempotency_key=f"signup-sub-{intent_id}"
+    )
+    logger.info(
+        "signup_subscription_created",
+        intent_id=str(intent_id),
+        subscription_id=str(payload.get("id")),
+        subscription_status=payload.get("status"),
+    )
+    return payload
+
+
+def _fail_intent(intent: SignupIntent, reason: str, intent_id: UUID) -> None:
+    """Mark a cold-signup intent permanently failed, WITHOUT raising and WITHOUT
+    activating anything.
+
+    Mirrors `services.signup.provision_tenant_from_intent`'s `tenant_missing` convention
+    exactly (`status="failed"` + `failure_reason`, no exception): the webhook must still
+    ack so Stripe stops redelivering an event that can never succeed, and
+    `apply_stripe_event`'s own commit — the one that also writes the
+    `processed_stripe_events` row — persists this state. Logged at ERROR, not WARNING:
+    every reason that lands here is a paying buyer who did NOT get what they bought, which
+    is an alert, not a note. `GET /public/onboarding-status` surfaces the row as
+    `status: "failed"` (services/signup.py), so the browser stops spinning too.
+    """
+    intent.status = "failed"
+    intent.failure_reason = reason
+    logger.error("signup_activation_failed", intent_id=str(intent_id), reason=reason)
+
+
 async def _apply_signup_intent_checkout(
     session: AsyncSession, obj: dict[str, Any]
 ) -> Tenant | None:
-    """`checkout.session.completed` for a cold signup: ACTIVATE the tenant it implies.
+    """`checkout.session.completed` for a cold signup: CREATE the subscription, then
+    ACTIVATE the tenant it implies.
+
+    The session is `mode=setup` (card capture only), so the event carries a `setup_intent`
+    and NO `subscription`: this function creates the real subscription itself first
+    (`_create_subscription_for_signup` — a Stripe GET + POST, the documented exception to
+    this module's "webhook applies are pure local-DB writes" rule), then hands the
+    resulting subscription id AND payload to `services.signup.provision_tenant_from_intent`.
+    Both Stripe calls happen BEFORE any local write, so a Stripe failure propagates out of
+    the webhook with nothing half-committed and Stripe redelivers. An event that DOES carry
+    a `subscription` (a subscription-mode session, i.e. anything predating this change or
+    replayed from before it) keeps the old behavior verbatim.
+
+    THE ORDER MATTERS: `intent.status == "completed"` is checked BEFORE anything is sent to
+    Stripe, and an already-completed intent REUSES `intent.stripe_subscription_id` instead
+    of re-creating. The local dedup (`processed_stripe_events` + this status check) is the
+    PRIMARY idempotency guard; the deterministic `Idempotency-Key` inside
+    `_create_subscription_for_signup` is a backstop for the sub-24h crash window only,
+    because Stripe expires idempotency keys after ~24h while it keeps redelivering a
+    failing webhook for ~3 days — a day-2 redelivery that re-POSTed would mint a SECOND,
+    orphaned, double-billing subscription no local row points at.
 
     The tenant/user/inert-entitlement already exist (registration built them at the first
-    card); this only flips the entitlement to the purchased plan via
-    `services.signup.provision_tenant_from_intent`.
+    card); provisioning only flips the entitlement to the purchased plan.
 
     Resolution: our own `metadata.signup_intent_id` (stamped at checkout,
     services/signup.create_checkout_session_for_intent), falling back to
     `client_reference_id`. An unresolvable/unknown id is logged and dropped — the event
     is still marked processed by the caller (a redelivery cannot do better).
+
+    FAILURE HANDLING: a setup completion carrying no `customer`, or a permanent failure of
+    the derive+create step (a 422/503 from `validate_selection` — e.g. `STRIPE_PRICE_MAP`
+    was edited between checkout and webhook — which will not fix itself inside Stripe's
+    retry window), marks the intent `failed` and ACKS. It never activates anything:
+    handing out a full entitlement with no subscription behind it is silent, total,
+    unmonitored revenue loss, and the buyer sees `status: "failed"` on
+    `GET /public/onboarding-status` instead of an eternal spinner. A TRANSIENT Stripe
+    failure (502) is re-raised instead, so the webhook 500s, Stripe redelivers, and the
+    signup self-heals.
 
     Returns the freshly-ACTIVATED `Tenant` row so the caller can fire the
     secretaria-provisioning bridge post-commit — `None` when nothing was newly activated
@@ -528,12 +773,86 @@ async def _apply_signup_intent_checkout(
         logger.warning("stripe_signup_event_unknown_intent", intent_id=str(intent_id))
         return None
 
+    stripe_customer_id = str(obj["customer"]) if obj.get("customer") else None
+    stripe_subscription_id = str(obj["subscription"]) if obj.get("subscription") else None
+    setup_intent_id = obj.get("setup_intent")
+    subscription_payload: dict[str, Any] | None = None
+
     already_completed = intent.status == "completed"
+    if already_completed:
+        # A redelivery of an intent we already activated. NEVER re-POST to Stripe: the
+        # subscription exists, its id is on the intent, and Stripe's idempotency key for it
+        # may well have expired by now (see the docstring). Reuse, never re-create.
+        stripe_subscription_id = intent.stripe_subscription_id or stripe_subscription_id
+        logger.info("stripe_signup_event_replayed", intent_id=str(intent_id))
+    elif stripe_subscription_id is None and setup_intent_id and stripe_customer_id:
+        # Re-derive the purchase from the intent's own catalog_ids — the same derivation
+        # `provision_tenant_from_intent` runs for entitlement state, and the same one
+        # `create_checkout_session_for_intent` ran to fail fast at checkout time. The
+        # duplication is pre-existing and deliberate: the intent, not the Stripe event, is
+        # the source of truth for WHAT was bought.
+        #
+        # Two checkout sessions for ONE intent are reachable (nothing marks an intent as
+        # "checkout started" — `create_checkout_session_for_intent` only refuses once the
+        # intent has LEFT `pending_payment`, so an abandoned-and-retried checkout simply
+        # overwrites `stripe_session_id`). If a buyer somehow completed BOTH, the two
+        # sessions would carry DIFFERENT Customers and collide on this intent's single
+        # idempotency key — Stripe answers that with a permanent "Keys for idempotent
+        # requests can only be used with the same parameters" error (verified live). The
+        # `already_completed` branch above absorbs that: the second event finds the intent
+        # completed and never calls Stripe at all. Only a genuinely CONCURRENT pair of
+        # completions could still race past it, which no cheap local guard fixes (it needs
+        # a row lock on the intent) and which requires the buyer to pay twice in parallel.
+        plan_id = signup_service._plan_id_of(intent.catalog_ids)
+        addon_ids = [cid for cid in intent.catalog_ids if cid in catalog.ADDON_IDS]
+        try:
+            selection = validate_selection(plan_id, addon_ids)
+            subscription_payload = await _create_subscription_for_signup(
+                intent_id=intent.id,
+                tenant_id=intent.tenant_id,
+                selection=selection,
+                stripe_customer_id=stripe_customer_id,
+                setup_intent_id=str(setup_intent_id),
+            )
+        except HTTPException as exc:
+            # Named, greppable ERROR — without this a failure here was an untraceable
+            # 500 repeating for three days with nothing in it identifying the signup.
+            logger.error(
+                "signup_subscription_create_failed",
+                intent_id=str(intent_id),
+                plan_id=plan_id,
+                upstream_status=exc.status_code,
+                detail=str(exc.detail),
+            )
+            if exc.status_code == status.HTTP_502_BAD_GATEWAY:
+                # TRANSIENT (Stripe unreachable/erroring, or a SetupIntent still
+                # settling): propagate so the webhook does NOT ack and Stripe redelivers.
+                # Nothing local has been written yet, so this self-heals cleanly.
+                raise
+            # PERMANENT (422 unknown plan/add-on, 503 price_not_configured or Stripe not
+            # configured at all): redelivering for three days cannot fix a config problem,
+            # so fail the intent visibly and ack.
+            _fail_intent(intent, "subscription_create_failed", intent_id)
+            return None
+        stripe_subscription_id = str(subscription_payload["id"])
+    elif stripe_subscription_id is None and setup_intent_id:
+        # A setup session with no `customer`. With `customer_creation=always` on the
+        # session (services/signup.py) this is now UNREACHABLE — which is exactly why it
+        # must be LOUD rather than degrade: it would mean Stripe changed behavior or the
+        # session was built without that parameter, and the old degrade path handed the
+        # tenant a full entitlement (`status="active"`, products ON) with no subscription
+        # and no customer — a working product, permanently free, with a 200 on the webhook
+        # and nothing anywhere saying so. Fail the intent instead: nothing is activated,
+        # the buyer sees `failed` on the onboarding poll, and the error names the intent.
+        _fail_intent(intent, "stripe_customer_missing", intent_id)
+        return None
+
     await signup_service.provision_tenant_from_intent(
         session,
         intent,
-        stripe_customer_id=str(obj["customer"]) if obj.get("customer") else None,
-        stripe_subscription_id=str(obj["subscription"]) if obj.get("subscription") else None,
+        stripe_customer_id=stripe_customer_id,
+        stripe_subscription_id=stripe_subscription_id,
+        subscription_payload=subscription_payload,
     )
     # Fire the bridge only when THIS call is the one that activated the intent (status went
     # completed just now). Already-completed (redelivery) or failed (tenant_missing) -> None.
@@ -590,8 +909,9 @@ async def apply_stripe_event(
 
     Handled types (everything else is marked processed and ignored):
     - checkout.session.completed        -> link stripe_customer_id / subscription_id
-      (or, for a cold-signup checkout — `metadata.kind == "signup_intent"` — ACTIVATE the
-      already-registered tenant's inert entitlement via `_apply_signup_intent_checkout`)
+      (or, for a cold-signup checkout — `metadata.kind == "signup_intent"` — CREATE the
+      subscription the `mode=setup` session's saved card implies and then ACTIVATE the
+      already-registered tenant's inert entitlement, via `_apply_signup_intent_checkout`)
     - customer.subscription.created/updated -> full recompute (plan/addons/limits/
       products/status/period) from the subscription items via the catalog
     - customer.subscription.deleted     -> status=canceled, products OFF

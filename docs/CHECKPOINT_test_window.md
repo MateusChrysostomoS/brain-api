@@ -211,11 +211,20 @@ above), Stripe's HOSTED Checkout page still renders its own default trial banner
 ("X-day free trial") — that wording is tied to `subscription_data[trial_period_days]`
 being set and can't be turned off without removing the trial mechanism itself.
 `_apply_trial` (`services/billing.py`) now also sets
-`custom_text[submit][message]` on both checkout builders (`billing.create_checkout_session`
-and `signup.create_checkout_session_for_intent`, which share this helper) — the one lever
-Stripe's Checkout page exposes for adding our own text near the submit button. It states
-outright that nothing is charged yet, names the real reason for the delay (WhatsApp
-Coexistence approval), and repeats the hard day cap. This runs alongside, not instead of,
-the app's own pre-checkout screens (see brain-frontend's new `TestWindowExplainerStep` and
-the reworded `CheckoutTrialNotice`, added the same day) — the goal is that the "free trial"
-framing never gets the last word before the card is entered.
+`custom_text[submit][message]` on the AUTHENTICATED checkout builder
+(`billing.create_checkout_session`) — the one lever Stripe's Checkout page exposes for
+adding our own text near the submit button. It states outright that nothing is charged
+yet, names the real reason for the delay (WhatsApp Coexistence approval), and repeats the
+hard day cap. This runs alongside, not instead of, the app's own pre-checkout screens (see
+brain-frontend's new `TestWindowExplainerStep` and the reworded `CheckoutTrialNotice`,
+added the same day) — the goal is that the "free trial" framing never gets the last word
+before the card is entered.
+
+**Superseded for the COLD-SIGNUP builder (2026-07-28).** `signup.create_checkout_session_
+for_intent` no longer shares `_apply_trial` at all: its session is now `mode=setup` (card
+capture only), which carries no subscription and no trial, so Stripe renders nothing about
+billing on that page — not even the banner this text existed to reframe. The trial moved
+onto the subscription the webhook creates (`billing._create_subscription_for_signup`), and
+that page's wording comes from a standalone `_apply_setup_custom_text`, which has to start
+from "you're saving your card" rather than "you won't be charged yet" (setup mode never
+charges anything). See CONTRACTS.md §15.1/§15.2.

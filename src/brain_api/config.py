@@ -170,9 +170,17 @@ class Settings(BaseSettings):
     # Stripe API base + client timeout (base overridable only for local stubs).
     STRIPE_API_BASE: str = "https://api.stripe.com"
     STRIPE_TIMEOUT_SECONDS: float = 15.0
-    # Trial length (days) applied to EVERY subscription-mode Checkout Session
-    # (subscription_data[trial_period_days]) when > 0 (services/billing.py,
-    # services/signup.py — both checkout builders). Default 0/off; deploy sets it high
+    # Currency for the cold-signup SETUP-mode Checkout Session. Required by Stripe there
+    # and there only: a setup session carries no line items, so it cannot infer a currency
+    # the way subscription mode does (which reads it off the prices) — omitting it makes
+    # Stripe reject the request outright. Drives which payment methods the page offers.
+    STRIPE_SETUP_CURRENCY: str = "brl"
+    # Trial length (days) when > 0, applied in two shapes: as
+    # subscription_data[trial_period_days] on every subscription-mode Checkout Session
+    # (services/billing.py::_apply_trial, the authenticated upsell), and as a TOP-LEVEL
+    # trial_period_days on the subscription the cold-signup webhook creates
+    # (services/billing.py::_create_subscription_for_signup — that path's Checkout Session
+    # is mode=setup and carries no subscription). Default 0/off; deploy sets it high
     # enough (e.g. ~75) to outlast the onboarding retry window before Stripe would
     # otherwise charge a still-unconnected tenant (services.billing.harden_charge ends
     # the trial early once the tenant reaches 'ativo', regardless of this value).

@@ -1,6 +1,8 @@
 """Billing Phase 1 / fully-metered vertical tests (CONTRACT_onboarding_v1.md §9): the
-three metered companion Checkout line items (no anchor price, ALL THREE required to
-waive the plan's own price) + trial period on BOTH checkout builders, `services.billing.
+three metered companion prices (no anchor price, ALL THREE required to waive the plan's
+own price) + trial period — as Checkout line items on the AUTHENTICATED builder, and as
+`POST /v1/subscriptions` items on the cold-signup path (whose Checkout Session is now
+`mode=setup`, so both moved to the webhook that creates the subscription) —, `services.billing.
 harden_charge`, the `customer.subscription.trial_will_end` -> scheduled cancellation
 handler (row-locked re-read + a LIVE Stripe GET verify, scoped to secretarIA-bearing
 plans only), the resubscription marker-reset guard, and the `services.usage` Stripe
@@ -43,7 +45,11 @@ from tests.test_rbac import (
     _bearer,
     _token,
 )
-from tests.test_signup import _create_intent
+from tests.test_signup import (
+    _create_intent,
+    _install_setup_mode_stripe_fakes,
+    _setup_completed_obj,
+)
 from tests.test_usage_events import _set_pair_key, _tenant_ids
 
 # ===========================================================================================
@@ -134,10 +140,12 @@ async def test_existing_tenant_checkout_no_metered_price_no_extra_line_item(clie
     assert "subscription_data[trial_period_days]" not in data
 
 
-async def test_signup_checkout_appends_all_three_metered_companions_and_trial(client, monkeypatch):
-    """The SAME fully-metered behavior on the cold-signup checkout builder
-    (services.signup.create_checkout_session_for_intent), which reuses
-    billing._append_checkout_line_items/_apply_trial."""
+async def test_signup_checkout_is_setup_mode_without_line_items_or_trial(client, monkeypatch):
+    """The cold-signup checkout builder no longer carries ANY of the fully-metered shape:
+    it is a SETUP session (card capture only), so line items and the trial moved to the
+    subscription our webhook creates afterwards — asserted by
+    `test_signup_webhook_subscription_carries_all_three_metered_companions_and_trial`
+    below, which is where that shape now actually gets built."""
     intent_id = await _create_intent(
         client, email="metered.signup@example.com", catalog_ids=["secretaria_basico"]
     )
@@ -154,14 +162,57 @@ async def test_signup_checkout_appends_all_three_metered_companions_and_trial(cl
     resp = await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
     assert resp.status_code == 200, resp.text
     data = captured["data"]
-    assert data["line_items[0][price]"] == "price_ferro"
-    assert data["line_items[1][price]"] == "price_ferro_meter_patients"
-    assert "line_items[1][quantity]" not in data
-    assert data["line_items[2][price]"] == "price_ferro_meter_professionals"
-    assert "line_items[2][quantity]" not in data
-    assert data["line_items[3][price]"] == "price_ferro_meter_reminders"
-    assert "line_items[3][quantity]" not in data
-    assert data["subscription_data[trial_period_days]"] == "30"
+    assert data["mode"] == "setup"
+    assert not [key for key in data if key.startswith("line_items[")]
+    assert "subscription_data[trial_period_days]" not in data
+    assert data["custom_text[submit][message]"]
+
+
+async def test_signup_webhook_subscription_carries_all_three_metered_companions_and_trial(
+    client, monkeypatch
+):
+    """The fully-metered shape (all three companion prices, no quantity on any of them) and
+    the trial now ride the `POST /v1/subscriptions` call the `checkout.session.completed`
+    webhook makes — `items[i]`, not `line_items[i]`, and `trial_period_days` top-level."""
+    intent_id = await _create_intent(
+        client, email="metered.webhook@example.com", catalog_ids=["secretaria_basico"]
+    )
+    monkeypatch.setattr(
+        billing_service,
+        "get_settings",
+        lambda: _extended_fake_settings(STRIPE_TRIAL_PERIOD_DAYS=30),
+    )
+    calls = _install_setup_mode_stripe_fakes(
+        monkeypatch, session_id="cs_metered_hook", subscription_id="sub_metered_hook"
+    )
+    assert (
+        await client.post("/public/checkout-sessions", json={"intent_id": intent_id})
+    ).status_code == 200
+
+    resp = await _post_webhook(
+        client,
+        _event(
+            "evt_metered_hook",
+            "checkout.session.completed",
+            _setup_completed_obj(intent_id, customer="cus_metered", setup_intent="seti_metered"),
+        ),
+    )
+    assert resp.status_code == 200, resp.text
+
+    sub_calls = [c for c in calls if c["path"] == "/v1/subscriptions"]
+    assert len(sub_calls) == 1
+    data = sub_calls[0]["data"]
+    assert data["items[0][price]"] == "price_ferro"
+    assert data["items[0][quantity]"] == "1"
+    assert data["items[1][price]"] == "price_ferro_meter_patients"
+    # Stripe rejects a quantity on a metered price -- must NOT be present.
+    assert "items[1][quantity]" not in data
+    assert data["items[2][price]"] == "price_ferro_meter_professionals"
+    assert "items[2][quantity]" not in data
+    assert data["items[3][price]"] == "price_ferro_meter_reminders"
+    assert "items[3][quantity]" not in data
+    assert data["trial_period_days"] == "30"
+    assert sub_calls[0]["idempotency_key"] == f"signup-sub-{intent_id}"
 
 
 def test_price_map_accepts_all_three_metered_companion_keys():

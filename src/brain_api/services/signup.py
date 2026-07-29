@@ -27,6 +27,13 @@ module; it used to say the webhook was the sole tenant/user/entitlement writer):
 `provision_tenant_from_intent` (webhook) -> `get_onboarding_status` poll. `attach_intake`
 is the authenticated mid-wizard step that stores the eligibility answers on the intent.
 
+The Checkout Session is `mode=setup` (card capture only, no Stripe-authored trial
+banner); the Stripe SUBSCRIPTION is created server-side, at webhook time, by
+`services.billing._create_subscription_for_signup` — which then passes that subscription's
+id AND its full payload (the `status`/period the entitlement is activated with) into
+`provision_tenant_from_intent`. This module still writes no Stripe subscription of its
+own, and `provision_tenant_from_intent` remains the sole activator, unchanged.
+
 The onboarding token (`get_onboarding_status`) is now a FALLBACK for resuming in a
 different browser/tab that never got the registration session: only that synchronous poll
 can hand the plaintext back, and only its SHA-256 hash
@@ -241,15 +248,28 @@ async def update_intent_catalog(
 
 
 async def create_checkout_session_for_intent(session: AsyncSession, intent_id: UUID) -> str:
-    """Create a subscription-mode Checkout Session for a pending signup intent.
+    """Create a SETUP-mode Checkout Session for a pending signup intent (card capture only).
+
+    Deliberately NOT `mode=subscription` anymore: Stripe's hosted page renders its own
+    large "X-day free trial" banner for any subscription-mode session carrying a trial,
+    and that wording cannot be suppressed while the trial lives inside the Checkout
+    Session. A setup-mode session collects and saves a card and nothing else — no
+    subscription, no trial, nothing Stripe-authored about billing. The REAL subscription
+    (same `trial_period_days` as before) is created server-side by
+    `billing._create_subscription_for_signup` when the resulting
+    `checkout.session.completed` webhook lands, using the card this session saved.
+    Consequently NO `line_items` / `subscription_data` here — Stripe rejects both in setup
+    mode; `billing._apply_setup_custom_text` supplies the only billing wording on the page.
 
     `client_reference_id` / `metadata` carry the INTENT id (never a tenant — none exists
     yet), tagged `metadata[kind]=signup_intent` so `apply_stripe_event` routes the
-    resulting `checkout.session.completed` to `provision_tenant_from_intent` instead of
-    the existing tenant-linking path. Line items are built from the validated
-    `CheckoutSelection` (same helper + same shape as the authenticated
-    `billing.create_checkout_session`) so an add-on already implied by the chosen plan
-    is never double-billed as a second line item.
+    resulting `checkout.session.completed` to `_apply_signup_intent_checkout` ->
+    `provision_tenant_from_intent` instead of the existing tenant-linking path.
+
+    `billing.validate_selection` is still called up front even though its
+    `CheckoutSelection` is no longer used HERE: it is the fail-fast (422/503) on a bad
+    catalog/price configuration, and it must fail BEFORE a checkout URL is handed to the
+    buyer — not later, at webhook time, with money-adjacent state already in flight.
     """
     intent = await session.get(SignupIntent, intent_id)
     if intent is None:
@@ -259,7 +279,9 @@ async def create_checkout_session_for_intent(session: AsyncSession, intent_id: U
 
     plan_id = _plan_id_of(intent.catalog_ids)
     addon_ids = [cid for cid in intent.catalog_ids if cid in catalog.ADDON_IDS]
-    selection = billing.validate_selection(plan_id, addon_ids)
+    # Fail-fast only (see the docstring): the selection is re-derived from the SAME
+    # catalog_ids at webhook time, where it actually builds the subscription items.
+    billing.validate_selection(plan_id, addon_ids)
 
     settings = get_settings()
     # Signup checkouts get their own return URLs (public onboarding page — the buyer has
@@ -269,23 +291,38 @@ async def create_checkout_session_for_intent(session: AsyncSession, intent_id: U
     )
     cancel_url = settings.STRIPE_SIGNUP_CHECKOUT_CANCEL_URL or settings.STRIPE_CHECKOUT_CANCEL_URL
     data: dict[str, str] = {
-        "mode": "subscription",
+        "mode": "setup",
+        # Required in setup mode and ONLY there: with no line items there is no price for
+        # Stripe to infer a currency from, and it rejects the request without one.
+        "currency": settings.STRIPE_SETUP_CURRENCY,
         "success_url": success_url,
         "cancel_url": cancel_url,
         "client_reference_id": str(intent.id),
         "metadata[kind]": "signup_intent",
         "metadata[signup_intent_id]": str(intent.id),
-        "subscription_data[metadata][signup_intent_id]": str(intent.id),
         "customer_email": intent.email,
-        "phone_number_collection[enabled]": "true",
+        # Stripe does NOT create a Customer for a setup-mode session on its own: the
+        # default is `customer_creation="if_required"`, and `customer_email` alone does
+        # NOT make one required — VERIFIED against the live API, where a completed
+        # session came back with `customer: null`. Without a Customer there is nothing to
+        # subscribe, so `_apply_signup_intent_checkout` would fall into its no-customer
+        # branch on EVERY signup: entitled, provisioned, and never billed. With
+        # `always`, the completed session carries a real `customer` id, the SetupIntent's
+        # `payment_method` is populated without any `expand`, and that card is already
+        # ATTACHED to the customer (also verified live) — which is exactly what
+        # `_create_subscription_for_signup` needs.
+        "customer_creation": "always",
+        # NO `phone_number_collection`: Stripe allows it only in payment/subscription mode
+        # and 400s the whole request in setup mode. Nothing is lost — the buyer's number is
+        # already captured at registration (`SignupIntent.whatsapp_phone`, first card),
+        # which is where every downstream consumer reads it from anyway.
     }
-    billing._append_checkout_line_items(data, selection)
-    billing._apply_trial(data)
+    billing._apply_setup_custom_text(data)
 
     payload = await billing._stripe_post("/v1/checkout/sessions", data)
     intent.stripe_session_id = payload["id"]
     await session.commit()
-    logger.info("signup_checkout_created", intent_id=str(intent.id), plan=selection.plan_id)
+    logger.info("signup_checkout_created", intent_id=str(intent.id), plan=plan_id)
     return payload["url"]
 
 
@@ -341,6 +378,7 @@ async def provision_tenant_from_intent(
     *,
     stripe_customer_id: str | None,
     stripe_subscription_id: str | None,
+    subscription_payload: dict | None = None,
 ) -> None:
     """ACTIVATE the inert entitlement a paid signup intent implies, on the tenant that
     `register_signup` already created.
@@ -351,9 +389,27 @@ async def provision_tenant_from_intent(
     - flips its entitlement from inert to the purchased plan/add-ons (materialized from
       `intent.catalog_ids` — the same `compute_entitlement_state` admin PATCH uses);
     - links the Stripe customer/subscription ids;
+    - sets `status`/`period_start`/`period_end` from `subscription_payload` when the
+      caller has one (see below);
     - seeds the onboarding state machine from `intent.intake`
       (`onboarding.provision_defaults` — the tenant sat in the model-default `pending`
       state until now).
+
+    `subscription_payload` is the `POST /v1/subscriptions` response body of the
+    subscription `services.billing._create_subscription_for_signup` just created for this
+    signup (setup-mode path). It exists because the entitlement's STATUS is money-critical
+    and cannot be hardcoded here: that subscription comes back `trialing`, not `active`,
+    and BOTH test-window mechanisms gate on `trialing` — `billing.harden_charge` returns
+    early unless `status == "trialing"` (a hardcoded "active" ⇒ a tenant that connects
+    WhatsApp is never hardened and rides the whole window free) and the
+    `customer.subscription.trial_will_end` handler requires it too (⇒ the auto-cancel is
+    never scheduled and a tenant Meta never approved DOES get charged, contradicting the
+    checkout page's own promise). The `customer.subscription.created` event Stripe fires
+    for that POST would normally set the status, but it can arrive while this handler is
+    still mid-transaction and be dropped as an unresolved tenant (`_entitlement_for_event`
+    falls back to a `stripe_customer_id` lookup against the very column this call is in
+    the middle of writing). `None` (the legacy subscription-mode path and the no-Stripe-ids
+    case) keeps the historical hardcoded `"active"`.
 
     Idempotent on `intent.status == "completed"` (a redelivered `checkout.session.
     completed` is a no-op). NO LONGER keyed on `intent.tenant_id` — that is set at
@@ -401,7 +457,16 @@ async def provision_tenant_from_intent(
         # pre-split tenant) rather than crash the webhook.
         ent = Entitlement(tenant_id=tenant.id)
         session.add(ent)
-    ent.status = "active"
+    # Status comes from the subscription we just created when we have it (it reports
+    # `trialing`, and the test-window machinery gates on exactly that — see the
+    # docstring); unknown Stripe statuses fail CLOSED to "inactive", the same mapping the
+    # `customer.subscription.*` handler applies. No payload ⇒ the legacy "active".
+    if subscription_payload and subscription_payload.get("status"):
+        ent.status = billing._STATUS_MAP.get(str(subscription_payload["status"]), "inactive")
+        ent.period_start = billing._period_dt(subscription_payload.get("current_period_start"))
+        ent.period_end = billing._period_dt(subscription_payload.get("current_period_end"))
+    else:
+        ent.status = "active"
     ent.plan = plan_id
     ent.stripe_customer_id = stripe_customer_id
     ent.stripe_subscription_id = stripe_subscription_id

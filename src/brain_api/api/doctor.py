@@ -20,9 +20,9 @@ from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.core.security import create_hub_token
-from brain_api.schemas.doctor import DoctorMeOut, HubTokenOut
+from brain_api.schemas.doctor import DoctorMeOut, DoctorMeUpdateIn, HubTokenOut
 from brain_api.services import precheck_client, secretaria_internal
-from brain_api.services.doctor import get_doctor_me
+from brain_api.services.doctor import get_doctor_me, update_doctor_me
 from brain_api.services.entitlements import ACTIVE_STATUSES, resolve_entitlement
 
 logger = get_logger(__name__)
@@ -41,6 +41,23 @@ async def doctor_me(
     return await get_doctor_me(session, principal)
 
 
+@router.patch("/me", response_model=DoctorMeOut, summary="Self-edit low-risk profile fields")
+async def doctor_me_update(
+    payload: DoctorMeUpdateIn,
+    principal: Principal = Depends(require_doctor),
+    session: AsyncSession = Depends(get_session),
+) -> DoctorMeOut:
+    """Edit the CALLER'S OWN low-risk fields (today: `name` only — "Meu Perfil" foundation).
+
+    Email (login key + PreCheck SSO identity), role, tenant, and password are never
+    accepted here: `DoctorMeUpdateIn` uses `extra="forbid"`, so a payload that includes
+    any of them is rejected with 422 by the schema itself, before this handler runs.
+    Returns the refreshed `DoctorMeOut` (same shape as `GET /doctor/me`).
+    """
+    logger.info("doctor_me_update", tenant_id=str(principal.tenant_id))
+    return await update_doctor_me(session, principal, payload)
+
+
 @router.get("/appointments", summary="Tenant appointments")
 async def appointments(
     skip: int = Query(0, ge=0),
@@ -55,9 +72,7 @@ async def appointments(
     surface as `502` (never secretaria's body, never a config issue as the doctor's 401).
     """
     logger.info("doctor_appointments", tenant_id=str(principal.tenant_id))
-    return await secretaria_internal.list_appointments(
-        principal.tenant_id, skip=skip, limit=limit
-    )
+    return await secretaria_internal.list_appointments(principal.tenant_id, skip=skip, limit=limit)
 
 
 @router.get("/patients", summary="Tenant patients")
@@ -71,9 +86,7 @@ async def patients(
     Same tenant-scoping and fail-closed behaviour as `appointments`.
     """
     logger.info("doctor_patients", tenant_id=str(principal.tenant_id))
-    return await secretaria_internal.list_patients(
-        principal.tenant_id, skip=skip, limit=limit
-    )
+    return await secretaria_internal.list_patients(principal.tenant_id, skip=skip, limit=limit)
 
 
 @router.post(

@@ -6,7 +6,7 @@ entitlements (which products they may use). It reuses the whitelisted identity s
 `password_hash` can be serialized here either.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from brain_api.schemas.auth import TenantOut, UserOut
 from brain_api.schemas.entitlement import EntitlementOut
@@ -22,6 +22,28 @@ class DoctorMeOut(BaseModel):
     user: UserOut
     tenant: TenantOut
     entitlements: EntitlementOut
+
+
+class DoctorMeUpdateIn(BaseModel):
+    """`PATCH /doctor/me` body — self-edit of the CALLER'S OWN low-risk identity fields.
+
+    `name` is the ONLY editable field here. Email (login key + PreCheck SSO identity via
+    the shared-SECRET_KEY handoff), role, tenant, and password are deliberately NOT
+    accepted — `extra="forbid"` means a request that includes any of them is rejected
+    with `422` by the schema itself, never by a manual field filter that could drift.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("name")
+    @classmethod
+    def _trim(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("must not be blank")
+        return v
 
 
 class HubTokenOut(BaseModel):

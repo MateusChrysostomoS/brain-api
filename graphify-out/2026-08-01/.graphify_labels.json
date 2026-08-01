@@ -207,6 +207,5 @@
   "205": "test_price_map_accepts_secretaria_ferro_alias",
   "206": "test_patch_intent_addon_not_available_409",
   "207": "bind_self_professional",
-  "208": "PrivacyRequest",
-  "209": "test_price_map_accepts_secretaria_ferro_alias"
+  "208": "PrivacyRequest"
 }

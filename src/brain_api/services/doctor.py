@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.api.deps import Principal
 from brain_api.schemas.auth import TenantOut, UserOut
-from brain_api.schemas.doctor import DoctorMeOut
+from brain_api.schemas.doctor import DoctorMeOut, DoctorMeUpdateIn
 from brain_api.services.auth import get_tenant, get_user
 from brain_api.services.entitlements import resolve_entitlement
 
@@ -30,6 +30,35 @@ async def get_doctor_me(session: AsyncSession, principal: Principal) -> DoctorMe
     tenant = await get_tenant(session, principal.tenant_id)
     if user is None or tenant is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
+
+    entitlements = await resolve_entitlement(session, principal.tenant_id)
+    return DoctorMeOut(
+        user=UserOut.model_validate(user),
+        tenant=TenantOut.model_validate(tenant),
+        entitlements=entitlements,
+    )
+
+
+async def update_doctor_me(
+    session: AsyncSession, principal: Principal, payload: DoctorMeUpdateIn
+) -> DoctorMeOut:
+    """Apply the caller's own low-risk profile edit (today: `name` only) and return the
+    refreshed view — same shape and same "deleted user/tenant behind a still-valid
+    token" handling as `get_doctor_me`.
+
+    Only `payload.name` is ever written. `DoctorMeUpdateIn` (`extra="forbid"`) already
+    guarantees email/role/tenant/password can never reach this function — the schema
+    rejects them with 422 before the route handler is even called.
+    """
+    assert principal.tenant_id is not None  # enforced by require_doctor on the route
+
+    user = await get_user(session, UUID(principal.user_id))
+    tenant = await get_tenant(session, principal.tenant_id)
+    if user is None or tenant is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
+
+    user.name = payload.name
+    await session.commit()
 
     entitlements = await resolve_entitlement(session, principal.tenant_id)
     return DoctorMeOut(

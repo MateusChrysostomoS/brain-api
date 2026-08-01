@@ -862,6 +862,7 @@ body param**, so a doctor cannot read another tenant's data by forging an id.
 | method | path | notes |
 |---|---|---|
 | `GET` | `/doctor/me` | `{user{id,email,name,role}, tenant{id,clinic_name}, entitlements{…}}`. Identity + products, no secrets |
+| `PATCH` | `/doctor/me` | self-edit the CALLER'S OWN low-risk fields ("Meu Perfil" foundation round; today: `name` only). Body `{name}` (`DoctorMeUpdateIn`, `extra="forbid"` — `email`/`role`/`tenant_id`/`password` in the body are rejected `422` by the schema itself, never silently dropped). Returns the refreshed `DoctorMeOut` (same shape as `GET /doctor/me`) |
 | `GET` | `/doctor/appointments` | **proxy** → secretaria `GET /internal/tenants/{tenant_id}/appointments` (§12.1), `X-Internal-Api-Key`, scoped to `principal.tenant_id`. `{"data": [...]}`; query `skip>=0`, `1<=limit<=100`. Unconfigured mesh → `{"data": [], "stub": true}` |
 | `GET` | `/doctor/patients` | **proxy** → secretaria `GET /internal/tenants/{tenant_id}/patients` (§12.1) (same auth/scope/fallback as appointments) |
 | `GET` | `/doctor/anamneses` | **proxy** → PreCheck `GET /api/v1/doctor/anamneses` (§11.1); tenant-scoped by the forwarded token |

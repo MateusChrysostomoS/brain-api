@@ -392,7 +392,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "scripts_create_admin",
-      "community": 88,
+      "community": 0,
       "norm_label": "create_admin.py"
     },
     {
@@ -402,7 +402,7 @@
       "source_location": "L37",
       "_origin": "ast",
       "id": "scripts_create_admin_parse_args",
-      "community": 88,
+      "community": 0,
       "norm_label": "_parse_args()"
     },
     {
@@ -412,7 +412,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "scripts_create_admin_py_namespace",
-      "community": 88,
+      "community": 0,
       "norm_label": "namespace"
     },
     {
@@ -422,7 +422,7 @@
       "source_location": "L49",
       "_origin": "ast",
       "id": "scripts_create_admin_create_admin",
-      "community": 88,
+      "community": 0,
       "norm_label": "create_admin()"
     },
     {
@@ -432,7 +432,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "scripts_create_admin_rationale_1",
-      "community": 88,
+      "community": 0,
       "norm_label": "create (or promote) a platform-admin user \u2014 full access to the /admin/* surface."
     },
     {
@@ -502,7 +502,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "scripts_seed_admin",
-      "community": 96,
+      "community": 187,
       "norm_label": "seed_admin.py"
     },
     {
@@ -512,7 +512,7 @@
       "source_location": "L32",
       "_origin": "ast",
       "id": "scripts_seed_admin_seed_admin",
-      "community": 88,
+      "community": 187,
       "norm_label": "seed_admin()"
     },
     {
@@ -522,7 +522,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "scripts_seed_admin_py_asyncsession",
-      "community": 88,
+      "community": 187,
       "norm_label": "asyncsession"
     },
     {
@@ -532,7 +532,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "scripts_seed_admin_rationale_1",
-      "community": 96,
+      "community": 187,
       "norm_label": "seed the single platform admin user (idempotent).  reads admin_email / admin_pas"
     },
     {
@@ -542,7 +542,7 @@
       "source_location": "L38",
       "_origin": "ast",
       "id": "scripts_seed_admin_rationale_38",
-      "community": 88,
+      "community": 187,
       "norm_label": "create the platform admin if it does not already exist. idempotent.      credent"
     },
     {
@@ -552,7 +552,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "scripts_seed_dev",
-      "community": 88,
+      "community": 206,
       "norm_label": "seed_dev.py"
     },
     {
@@ -572,7 +572,7 @@
       "source_location": "L67",
       "_origin": "ast",
       "id": "scripts_seed_dev_ensure_demo_link",
-      "community": 88,
+      "community": 206,
       "norm_label": "ensure_demo_link()"
     },
     {
@@ -582,7 +582,7 @@
       "source_location": "L106",
       "_origin": "ast",
       "id": "scripts_seed_dev_main",
-      "community": 88,
+      "community": 206,
       "norm_label": "main()"
     },
     {
@@ -592,7 +592,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "scripts_seed_dev_rationale_1",
-      "community": 88,
+      "community": 206,
       "norm_label": "seed a development tenant + owner user + entitlement.  idempotent: re-running"
     },
     {
@@ -602,7 +602,7 @@
       "source_location": "L68",
       "_origin": "ast",
       "id": "scripts_seed_dev_rationale_68",
-      "community": 88,
+      "community": 206,
       "norm_label": "optionally link the demo user to a precheck user for a full local sso e2e."
     },
     {
@@ -1782,7 +1782,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "src_brain_api_api_internal_py_asyncsession",
-      "community": 65,
+      "community": 97,
       "norm_label": "asyncsession"
     },
     {
@@ -2102,7 +2102,7 @@
       "source_location": "L403",
       "_origin": "ast",
       "id": "src_brain_api_api_onboarding_invite_professional",
-      "community": 85,
+      "community": 199,
       "norm_label": "invite_professional()"
     },
     {
@@ -2222,7 +2222,7 @@
       "source_location": "L408",
       "_origin": "ast",
       "id": "src_brain_api_api_onboarding_rationale_408",
-      "community": 85,
+      "community": 199,
       "norm_label": "create-or-attach the secretaria professional, then a local `tenant_staff` user"
     },
     {
@@ -2522,7 +2522,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_api_sso",
-      "community": 89,
+      "community": 49,
       "norm_label": "sso.py"
     },
     {
@@ -2532,7 +2532,7 @@
       "source_location": "L23",
       "_origin": "ast",
       "id": "src_brain_api_api_sso_precheck_sso_token",
-      "community": 89,
+      "community": 49,
       "norm_label": "precheck_sso_token()"
     },
     {
@@ -2542,7 +2542,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "src_brain_api_api_sso_py_asyncsession",
-      "community": 89,
+      "community": 49,
       "norm_label": "asyncsession"
     },
     {
@@ -2552,7 +2552,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_api_sso_rationale_1",
-      "community": 89,
+      "community": 49,
       "norm_label": "sso endpoint (contracts.md \u00a75, auth-jwt-multitenant skill).  `post /sso/precheck"
     },
     {
@@ -2562,7 +2562,7 @@
       "source_location": "L27",
       "_origin": "ast",
       "id": "src_brain_api_api_sso_rationale_27",
-      "community": 89,
+      "community": 49,
       "norm_label": "mint a precheck session for the authenticated tenant's linked user.      `requir"
     },
     {
@@ -2952,7 +2952,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_core_security",
-      "community": 16,
+      "community": 45,
       "norm_label": "security.py"
     },
     {
@@ -2972,7 +2972,7 @@
       "source_location": "L40",
       "_origin": "ast",
       "id": "src_brain_api_core_security_verify_password",
-      "community": 16,
+      "community": 90,
       "norm_label": "verify_password()"
     },
     {
@@ -3022,7 +3022,7 @@
       "source_location": "L121",
       "_origin": "ast",
       "id": "src_brain_api_core_security_create_hub_token",
-      "community": 10,
+      "community": 45,
       "norm_label": "create_hub_token()"
     },
     {
@@ -3062,7 +3062,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_core_security_rationale_1",
-      "community": 16,
+      "community": 45,
       "norm_label": "jwt issuance/validation and password hashing (the identity-authority primitives)"
     },
     {
@@ -3102,7 +3102,7 @@
       "source_location": "L124",
       "_origin": "ast",
       "id": "src_brain_api_core_security_rationale_124",
-      "community": 10,
+      "community": 45,
       "norm_label": "mint the tenant-scoped token the doctor portal presents to secretaria's hub."
     },
     {
@@ -3302,7 +3302,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_models_precheck_link",
-      "community": 49,
+      "community": 13,
       "norm_label": "precheck_link.py"
     },
     {
@@ -3312,7 +3312,7 @@
       "source_location": "L28",
       "_origin": "ast",
       "id": "src_brain_api_models_precheck_link_precheckaccountlink",
-      "community": 49,
+      "community": 13,
       "norm_label": "precheckaccountlink"
     },
     {
@@ -3322,7 +3322,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_models_precheck_link_rationale_1",
-      "community": 49,
+      "community": 13,
       "norm_label": "account-link model \u2014 maps a brain user to their precheck user (sso bridge).  the"
     },
     {
@@ -3332,7 +3332,7 @@
       "source_location": "L29",
       "_origin": "ast",
       "id": "src_brain_api_models_precheck_link_rationale_29",
-      "community": 49,
+      "community": 13,
       "norm_label": "one-to-one link: brain user (uuid) -> precheck user (int), scoped to a tenant."
     },
     {
@@ -3342,7 +3342,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_models_privacy_request",
-      "community": 202,
+      "community": 208,
       "norm_label": "privacy_request.py"
     },
     {
@@ -3352,7 +3352,7 @@
       "source_location": "L22",
       "_origin": "ast",
       "id": "src_brain_api_models_privacy_request_privacyrequest",
-      "community": 202,
+      "community": 208,
       "norm_label": "privacyrequest"
     },
     {
@@ -3362,7 +3362,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_models_privacy_request_rationale_1",
-      "community": 202,
+      "community": 208,
       "norm_label": "privacyrequest model \u2014 the lgpd audit trail for cross-database erasure/export."
     },
     {
@@ -3372,7 +3372,7 @@
       "source_location": "L23",
       "_origin": "ast",
       "id": "src_brain_api_models_privacy_request_rationale_23",
-      "community": 202,
+      "community": 208,
       "norm_label": "one lgpd erasure/export invocation (`post /admin/privacy/erasure|export`)."
     },
     {
@@ -3462,7 +3462,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_models_signup_intent",
-      "community": 187,
+      "community": 18,
       "norm_label": "signup_intent.py"
     },
     {
@@ -3482,7 +3482,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_models_signup_intent_rationale_1",
-      "community": 187,
+      "community": 18,
       "norm_label": "signupintent model \u2014 cold-signup lead through stripe checkout to entitlement act"
     },
     {
@@ -3582,7 +3582,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_models_user",
-      "community": 88,
+      "community": 16,
       "norm_label": "user.py"
     },
     {
@@ -3592,7 +3592,7 @@
       "source_location": "L22",
       "_origin": "ast",
       "id": "src_brain_api_models_user_user",
-      "community": 88,
+      "community": 16,
       "norm_label": "user"
     },
     {
@@ -3602,7 +3602,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_models_user_rationale_1",
-      "community": 88,
+      "community": 16,
       "norm_label": "user model \u2014 a person who logs into the brain portal.  `password_hash` (bcrypt)"
     },
     {
@@ -3612,7 +3612,7 @@
       "source_location": "L23",
       "_origin": "ast",
       "id": "src_brain_api_models_user_rationale_23",
-      "community": 88,
+      "community": 16,
       "norm_label": "a portal user. `tenant_id` is null for a platform admin."
     },
     {
@@ -3652,7 +3652,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "basemodel",
-      "community": 51,
+      "community": 195,
       "norm_label": "basemodel"
     },
     {
@@ -3672,7 +3672,7 @@
       "source_location": "L56",
       "_origin": "ast",
       "id": "src_brain_api_schemas_admin_entitlementadminout",
-      "community": 51,
+      "community": 8,
       "norm_label": "entitlementadminout"
     },
     {
@@ -3842,7 +3842,7 @@
       "source_location": "L57",
       "_origin": "ast",
       "id": "src_brain_api_schemas_admin_rationale_57",
-      "community": 51,
+      "community": 8,
       "norm_label": "full entitlement record for one tenant (admin read).      the stripe linkage i"
     },
     {
@@ -4192,7 +4192,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_schemas_billing",
-      "community": 41,
+      "community": 195,
       "norm_label": "billing.py"
     },
     {
@@ -4202,7 +4202,7 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "src_brain_api_schemas_billing_checkoutrequest",
-      "community": 41,
+      "community": 195,
       "norm_label": "checkoutrequest"
     },
     {
@@ -4212,7 +4212,7 @@
       "source_location": "L21",
       "_origin": "ast",
       "id": "src_brain_api_schemas_billing_checkoutsessionout",
-      "community": 41,
+      "community": 195,
       "norm_label": "checkoutsessionout"
     },
     {
@@ -4222,7 +4222,7 @@
       "source_location": "L27",
       "_origin": "ast",
       "id": "src_brain_api_schemas_billing_portalsessionout",
-      "community": 41,
+      "community": 195,
       "norm_label": "portalsessionout"
     },
     {
@@ -4232,7 +4232,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_schemas_billing_rationale_1",
-      "community": 41,
+      "community": 195,
       "norm_label": "pydantic v2 schemas for the billing vertical (stripe-billing-entitlements).  t"
     },
     {
@@ -4242,7 +4242,7 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "src_brain_api_schemas_billing_rationale_13",
-      "community": 41,
+      "community": 195,
       "norm_label": "`post /billing/checkout` body \u2014 buy a catalog plan (optionally with add-ons)."
     },
     {
@@ -4252,7 +4252,7 @@
       "source_location": "L22",
       "_origin": "ast",
       "id": "src_brain_api_schemas_billing_rationale_22",
-      "community": 41,
+      "community": 195,
       "norm_label": "the stripe-hosted checkout page to redirect the browser to."
     },
     {
@@ -4262,7 +4262,7 @@
       "source_location": "L28",
       "_origin": "ast",
       "id": "src_brain_api_schemas_billing_rationale_28",
-      "community": 41,
+      "community": 195,
       "norm_label": "the stripe-hosted billing portal page to redirect the browser to."
     },
     {
@@ -4692,7 +4692,7 @@
       "source_location": "L159",
       "_origin": "ast",
       "id": "src_brain_api_schemas_internal_internalonboardingeventin",
-      "community": 43,
+      "community": 38,
       "norm_label": "internalonboardingeventin"
     },
     {
@@ -4802,7 +4802,7 @@
       "source_location": "L160",
       "_origin": "ast",
       "id": "src_brain_api_schemas_internal_rationale_160",
-      "community": 43,
+      "community": 38,
       "norm_label": "`post /internal/onboarding/tenants/{tenant_id}/events` body \u2014 one cron     book"
     },
     {
@@ -4932,7 +4932,7 @@
       "source_location": "L128",
       "_origin": "ast",
       "id": "src_brain_api_schemas_onboarding_professionalinvitein",
-      "community": 100,
+      "community": 199,
       "norm_label": "professionalinvitein"
     },
     {
@@ -4942,7 +4942,7 @@
       "source_location": "L139",
       "_origin": "ast",
       "id": "src_brain_api_schemas_onboarding_professionalinviteout",
-      "community": 100,
+      "community": 199,
       "norm_label": "professionalinviteout"
     },
     {
@@ -5082,7 +5082,7 @@
       "source_location": "L129",
       "_origin": "ast",
       "id": "src_brain_api_schemas_onboarding_rationale_129",
-      "community": 100,
+      "community": 199,
       "norm_label": "`post /doctor/professionals/invites` body. open to any doctor (owner or staff) \u2014"
     },
     {
@@ -5092,7 +5092,7 @@
       "source_location": "L140",
       "_origin": "ast",
       "id": "src_brain_api_schemas_onboarding_rationale_140",
-      "community": 100,
+      "community": 199,
       "norm_label": "`invite_link` is always present (even when the notification email failed to"
     },
     {
@@ -5252,7 +5252,7 @@
       "source_location": "L26",
       "_origin": "ast",
       "id": "src_brain_api_schemas_signup_validate_catalog_ids",
-      "community": 118,
+      "community": 21,
       "norm_label": "_validate_catalog_ids()"
     },
     {
@@ -5262,7 +5262,7 @@
       "source_location": "L45",
       "_origin": "ast",
       "id": "src_brain_api_schemas_signup_intakein",
-      "community": 90,
+      "community": 18,
       "norm_label": "intakein"
     },
     {
@@ -5302,7 +5302,7 @@
       "source_location": "L114",
       "_origin": "ast",
       "id": "src_brain_api_schemas_signup_signupintentcreate_validate_catalog_selection",
-      "community": 118,
+      "community": 21,
       "norm_label": "._validate_catalog_selection()"
     },
     {
@@ -5322,7 +5322,7 @@
       "source_location": "L132",
       "_origin": "ast",
       "id": "src_brain_api_schemas_signup_signupintentcatalogpatchin",
-      "community": 118,
+      "community": 21,
       "norm_label": "signupintentcatalogpatchin"
     },
     {
@@ -5332,7 +5332,7 @@
       "source_location": "L150",
       "_origin": "ast",
       "id": "src_brain_api_schemas_signup_signupintentcatalogpatchin_validate_catalog_selection",
-      "community": 118,
+      "community": 21,
       "norm_label": "._validate_catalog_selection()"
     },
     {
@@ -5392,7 +5392,7 @@
       "source_location": "L205",
       "_origin": "ast",
       "id": "src_brain_api_schemas_signup_onboardingstatusout",
-      "community": 21,
+      "community": 18,
       "norm_label": "onboardingstatusout"
     },
     {
@@ -5412,7 +5412,7 @@
       "source_location": "L27",
       "_origin": "ast",
       "id": "src_brain_api_schemas_signup_rationale_27",
-      "community": 118,
+      "community": 21,
       "norm_label": "shared catalog-selection rule for both registration (`signupintentcreate`) and t"
     },
     {
@@ -5422,7 +5422,7 @@
       "source_location": "L46",
       "_origin": "ast",
       "id": "src_brain_api_schemas_signup_rationale_46",
-      "community": 90,
+      "community": 18,
       "norm_label": "pre-checkout intake answers (contract_onboarding_v1.md \u00a77).      stored verbat"
     },
     {
@@ -5462,7 +5462,7 @@
       "source_location": "L133",
       "_origin": "ast",
       "id": "src_brain_api_schemas_signup_rationale_133",
-      "community": 118,
+      "community": 21,
       "norm_label": "body for `patch /public/signup-intents/{intent_id}` \u2014 replace the catalog     s"
     },
     {
@@ -5522,7 +5522,7 @@
       "source_location": "L206",
       "_origin": "ast",
       "id": "src_brain_api_schemas_signup_rationale_206",
-      "community": 21,
+      "community": 18,
       "norm_label": "`get /public/onboarding-status` response.      `products`/`onboarding_token` a"
     },
     {
@@ -5532,7 +5532,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_schemas_sso",
-      "community": 51,
+      "community": 49,
       "norm_label": "sso.py"
     },
     {
@@ -5542,7 +5542,7 @@
       "source_location": "L11",
       "_origin": "ast",
       "id": "src_brain_api_schemas_sso_precheckssotokenresponse",
-      "community": 51,
+      "community": 49,
       "norm_label": "precheckssotokenresponse"
     },
     {
@@ -5552,7 +5552,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_schemas_sso_rationale_1",
-      "community": 51,
+      "community": 49,
       "norm_label": "sso handoff schemas (contracts.md \u00a75).  the response of post /sso/precheck/token"
     },
     {
@@ -5562,7 +5562,7 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "src_brain_api_schemas_sso_rationale_12",
-      "community": 51,
+      "community": 49,
       "norm_label": "a minted precheck session token + how long it is valid (seconds)."
     },
     {
@@ -6182,7 +6182,7 @@
       "source_location": "L106",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_parse_price_map",
-      "community": 199,
+      "community": 205,
       "norm_label": "_parse_price_map()"
     },
     {
@@ -6192,7 +6192,7 @@
       "source_location": "L143",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_price_id_for",
-      "community": 9,
+      "community": 205,
       "norm_label": "price_id_for()"
     },
     {
@@ -6202,7 +6202,7 @@
       "source_location": "L149",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_catalog_id_for_price",
-      "community": 199,
+      "community": 205,
       "norm_label": "catalog_id_for_price()"
     },
     {
@@ -6212,7 +6212,7 @@
       "source_location": "L160",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_stripe_error_fields",
-      "community": 205,
+      "community": 9,
       "norm_label": "_stripe_error_fields()"
     },
     {
@@ -6222,7 +6222,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_py_response",
-      "community": 205,
+      "community": 9,
       "norm_label": "response"
     },
     {
@@ -6242,7 +6242,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_py_any",
-      "community": 205,
+      "community": 9,
       "norm_label": "any"
     },
     {
@@ -6252,7 +6252,7 @@
       "source_location": "L228",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_stripe_get",
-      "community": 205,
+      "community": 9,
       "norm_label": "_stripe_get()"
     },
     {
@@ -6372,7 +6372,7 @@
       "source_location": "L486",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_entitlement_for_event",
-      "community": 205,
+      "community": 9,
       "norm_label": "_entitlement_for_event()"
     },
     {
@@ -6382,7 +6382,7 @@
       "source_location": "L514",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_period_dt",
-      "community": 205,
+      "community": 9,
       "norm_label": "_period_dt()"
     },
     {
@@ -6392,7 +6392,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_py_datetime",
-      "community": 205,
+      "community": 9,
       "norm_label": "datetime"
     },
     {
@@ -6452,7 +6452,7 @@
       "source_location": "L864",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_reset_markers_if_subscription_changed",
-      "community": 205,
+      "community": 9,
       "norm_label": "_reset_markers_if_subscription_changed()"
     },
     {
@@ -6472,7 +6472,7 @@
       "source_location": "L904",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_apply_stripe_event",
-      "community": 205,
+      "community": 9,
       "norm_label": "apply_stripe_event()"
     },
     {
@@ -6502,7 +6502,7 @@
       "source_location": "L107",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_rationale_107",
-      "community": 199,
+      "community": 205,
       "norm_label": "parse stripe_price_map (keyed by the raw string so a settings monkeypatch in"
     },
     {
@@ -6512,7 +6512,7 @@
       "source_location": "L144",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_rationale_144",
-      "community": 9,
+      "community": 205,
       "norm_label": "the stripe price id selling a catalog plan/add-on (or a `{plan_id}_metered_patie"
     },
     {
@@ -6522,7 +6522,7 @@
       "source_location": "L150",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_rationale_150",
-      "community": 199,
+      "community": 205,
       "norm_label": "reverse lookup: which catalog id a stripe price id sells (webhook recompute)."
     },
     {
@@ -6532,7 +6532,7 @@
       "source_location": "L161",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_rationale_161",
-      "community": 205,
+      "community": 9,
       "norm_label": "stripe's own `error.code` / `error.message` off a failed response, for the warni"
     },
     {
@@ -6552,7 +6552,7 @@
       "source_location": "L229",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_rationale_229",
-      "community": 205,
+      "community": 9,
       "norm_label": "get counterpart of `_stripe_post` (same 503/502 error mapping). reads of stripe'"
     },
     {
@@ -6652,7 +6652,7 @@
       "source_location": "L487",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_rationale_487",
-      "community": 205,
+      "community": 9,
       "norm_label": "resolve the entitlement row an event object refers to (fail: none, logged)."
     },
     {
@@ -6662,7 +6662,7 @@
       "source_location": "L515",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_rationale_515",
-      "community": 205,
+      "community": 9,
       "norm_label": "stripe unix timestamp -> aware utc datetime (none passes through)."
     },
     {
@@ -6722,7 +6722,7 @@
       "source_location": "L865",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_rationale_865",
-      "community": 205,
+      "community": 9,
       "norm_label": "reset `charge_hardened_at`/`cancel_scheduled_at` to `none` when a new (non-null,"
     },
     {
@@ -6742,7 +6742,7 @@
       "source_location": "L907",
       "_origin": "ast",
       "id": "src_brain_api_services_billing_rationale_907",
-      "community": 205,
+      "community": 9,
       "norm_label": "apply one verified stripe event to the local entitlement. returns false for a"
     },
     {
@@ -7062,7 +7062,7 @@
       "source_location": "L42",
       "_origin": "ast",
       "id": "src_brain_api_services_doctor_update_doctor_me",
-      "community": 34,
+      "community": 16,
       "norm_label": "update_doctor_me()"
     },
     {
@@ -7092,7 +7092,7 @@
       "source_location": "L45",
       "_origin": "ast",
       "id": "src_brain_api_services_doctor_rationale_45",
-      "community": 34,
+      "community": 16,
       "norm_label": "apply the caller's own low-risk profile edit (today: `name` only) and return the"
     },
     {
@@ -7902,7 +7902,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_services_precheck_handoff",
-      "community": 185,
+      "community": 89,
       "norm_label": "precheck_handoff.py"
     },
     {
@@ -7912,7 +7912,7 @@
       "source_location": "L42",
       "_origin": "ast",
       "id": "src_brain_api_services_precheck_handoff_request_handoff",
-      "community": 185,
+      "community": 89,
       "norm_label": "request_handoff()"
     },
     {
@@ -7922,7 +7922,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "src_brain_api_services_precheck_handoff_py_uuid",
-      "community": 185,
+      "community": 89,
       "norm_label": "uuid"
     },
     {
@@ -7932,7 +7932,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "src_brain_api_services_precheck_handoff_py_any",
-      "community": 185,
+      "community": 89,
       "norm_label": "any"
     },
     {
@@ -7942,7 +7942,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_services_precheck_handoff_rationale_1",
-      "community": 185,
+      "community": 89,
       "norm_label": "secretaria -> brain-api -> precheck patient handoff (contracts.md \u00a712.3, one leg"
     },
     {
@@ -7952,7 +7952,7 @@
       "source_location": "L43",
       "_origin": "ast",
       "id": "src_brain_api_services_precheck_handoff_rationale_43",
-      "community": 185,
+      "community": 89,
       "norm_label": "post precheck's `/internal/precheck-handoff`; caller has already confirmed the"
     },
     {
@@ -8002,7 +8002,7 @@
       "source_location": "L104",
       "_origin": "ast",
       "id": "src_brain_api_services_privacy_erase_brain_user",
-      "community": 49,
+      "community": 189,
       "norm_label": "_erase_brain_user()"
     },
     {
@@ -8162,7 +8162,7 @@
       "source_location": "L105",
       "_origin": "ast",
       "id": "src_brain_api_services_privacy_rationale_105",
-      "community": 49,
+      "community": 189,
       "norm_label": "erase a brain portal user by email (lower-cased) and any demo-request leads of t"
     },
     {
@@ -8762,7 +8762,7 @@
       "source_location": "L80",
       "_origin": "ast",
       "id": "src_brain_api_services_signup_registration",
-      "community": 90,
+      "community": 18,
       "norm_label": "registration"
     },
     {
@@ -8772,7 +8772,7 @@
       "source_location": "L88",
       "_origin": "ast",
       "id": "src_brain_api_services_signup_register_signup",
-      "community": 90,
+      "community": 88,
       "norm_label": "register_signup()"
     },
     {
@@ -8912,7 +8912,7 @@
       "source_location": "L81",
       "_origin": "ast",
       "id": "src_brain_api_services_signup_rationale_81",
-      "community": 90,
+      "community": 18,
       "norm_label": "the result of registering a lead: the intent (drives checkout) + the owner user"
     },
     {
@@ -8922,7 +8922,7 @@
       "source_location": "L89",
       "_origin": "ast",
       "id": "src_brain_api_services_signup_rationale_89",
-      "community": 90,
+      "community": 88,
       "norm_label": "register a cold-signup lead at the first card, atomically.      creates, in on"
     },
     {
@@ -9082,7 +9082,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_services_usage",
-      "community": 79,
+      "community": 202,
       "norm_label": "usage.py"
     },
     {
@@ -9092,7 +9092,7 @@
       "source_location": "L37",
       "_origin": "ast",
       "id": "src_brain_api_services_usage_record_usage",
-      "community": 79,
+      "community": 202,
       "norm_label": "record_usage()"
     },
     {
@@ -9102,7 +9102,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "src_brain_api_services_usage_py_asyncsession",
-      "community": 79,
+      "community": 202,
       "norm_label": "asyncsession"
     },
     {
@@ -9112,7 +9112,7 @@
       "source_location": "L88",
       "_origin": "ast",
       "id": "src_brain_api_services_usage_forward_meter_event",
-      "community": 79,
+      "community": 202,
       "norm_label": "_forward_meter_event()"
     },
     {
@@ -9122,7 +9122,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_brain_api_services_usage_rationale_1",
-      "community": 79,
+      "community": 202,
       "norm_label": "usage-event recording (metering leg \u2014 stripe-billing-entitlements skill).  met"
     },
     {
@@ -9132,7 +9132,7 @@
       "source_location": "L38",
       "_origin": "ast",
       "id": "src_brain_api_services_usage_rationale_38",
-      "community": 79,
+      "community": 202,
       "norm_label": "apply one usage event: idempotent ledger insert + entitlement counter increment."
     },
     {
@@ -9142,7 +9142,7 @@
       "source_location": "L89",
       "_origin": "ast",
       "id": "src_brain_api_services_usage_rationale_89",
-      "community": 79,
+      "community": 202,
       "norm_label": "best-effort stripe meter-event forward for a metered feature (`billable_patients"
     },
     {
@@ -9162,7 +9162,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "tests_conftest",
-      "community": 206,
+      "community": 88,
       "norm_label": "conftest.py"
     },
     {
@@ -9172,7 +9172,7 @@
       "source_location": "L66",
       "_origin": "ast",
       "id": "tests_conftest_db_session",
-      "community": 206,
+      "community": 88,
       "norm_label": "db_session()"
     },
     {
@@ -9182,7 +9182,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "tests_conftest_rationale_1",
-      "community": 206,
+      "community": 88,
       "norm_label": "test configuration.  pytest imports conftest before any test module, so config"
     },
     {
@@ -9192,7 +9192,7 @@
       "source_location": "L67",
       "_origin": "ast",
       "id": "tests_conftest_rationale_67",
-      "community": 206,
+      "community": 88,
       "norm_label": "a bare `asyncsession` over a fresh in-memory sqlite db (all tables created)."
     },
     {
@@ -9202,7 +9202,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "tests_test_admin_tenant_delete",
-      "community": 0,
+      "community": 32,
       "norm_label": "test_admin_tenant_delete.py"
     },
     {
@@ -9212,7 +9212,7 @@
       "source_location": "L44",
       "_origin": "ast",
       "id": "tests_test_admin_tenant_delete_test_delete_tenant_requires_admin",
-      "community": 0,
+      "community": 32,
       "norm_label": "test_delete_tenant_requires_admin()"
     },
     {
@@ -9222,7 +9222,7 @@
       "source_location": "L52",
       "_origin": "ast",
       "id": "tests_test_admin_tenant_delete_test_delete_tenant_unknown_is_404",
-      "community": 0,
+      "community": 32,
       "norm_label": "test_delete_tenant_unknown_is_404()"
     },
     {
@@ -9232,7 +9232,7 @@
       "source_location": "L58",
       "_origin": "ast",
       "id": "tests_test_admin_tenant_delete_test_delete_tenant_removes_clinic_everywhere",
-      "community": 0,
+      "community": 32,
       "norm_label": "test_delete_tenant_removes_clinic_everywhere()"
     },
     {
@@ -9242,7 +9242,7 @@
       "source_location": "L107",
       "_origin": "ast",
       "id": "tests_test_admin_tenant_delete_test_delete_tenant_sweeps_children_but_keeps_audit",
-      "community": 202,
+      "community": 42,
       "norm_label": "test_delete_tenant_sweeps_children_but_keeps_audit()"
     },
     {
@@ -9252,7 +9252,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "tests_test_admin_tenant_delete_rationale_1",
-      "community": 0,
+      "community": 32,
       "norm_label": "tenant cascade-delete tests (delete /admin/tenants/{id}).  two layers: - endpoin"
     },
     {
@@ -9262,7 +9262,7 @@
       "source_location": "L45",
       "_origin": "ast",
       "id": "tests_test_admin_tenant_delete_rationale_45",
-      "community": 0,
+      "community": 32,
       "norm_label": "the delete route is behind the same admin gate as the rest of /admin/*."
     },
     {
@@ -9272,7 +9272,7 @@
       "source_location": "L59",
       "_origin": "ast",
       "id": "tests_test_admin_tenant_delete_rationale_59",
-      "community": 0,
+      "community": 32,
       "norm_label": "a deleted clinic vanishes from every admin view and its owner can no longer log"
     },
     {
@@ -9282,7 +9282,7 @@
       "source_location": "L108",
       "_origin": "ast",
       "id": "tests_test_admin_tenant_delete_rationale_108",
-      "community": 202,
+      "community": 42,
       "norm_label": "delete_tenant removes every brain-owned child row; a privacy_requests audit row"
     },
     {
@@ -9472,7 +9472,7 @@
       "source_location": "L388",
       "_origin": "ast",
       "id": "tests_test_auth_hardening_test_hub_token_round_trips_professional_id",
-      "community": 10,
+      "community": 45,
       "norm_label": "test_hub_token_round_trips_professional_id()"
     },
     {
@@ -9592,7 +9592,7 @@
       "source_location": "L536",
       "_origin": "ast",
       "id": "tests_test_auth_hardening_test_internal_hub_token_verify_professional_id_null_when_absent",
-      "community": 10,
+      "community": 45,
       "norm_label": "test_internal_hub_token_verify_professional_id_null_when_absent()"
     },
     {
@@ -9672,7 +9672,7 @@
       "source_location": "L47",
       "_origin": "ast",
       "id": "tests_test_billing_event",
-      "community": 25,
+      "community": 54,
       "norm_label": "_event()"
     },
     {
@@ -9742,7 +9742,7 @@
       "source_location": "L91",
       "_origin": "ast",
       "id": "tests_test_billing_install_fake_stripe_httpx",
-      "community": 25,
+      "community": 54,
       "norm_label": "_install_fake_stripe_httpx()"
     },
     {
@@ -9752,7 +9752,7 @@
       "source_location": "L144",
       "_origin": "ast",
       "id": "tests_test_billing_test_webhook_bad_signature_rejected",
-      "community": 25,
+      "community": 54,
       "norm_label": "test_webhook_bad_signature_rejected()"
     },
     {
@@ -9882,7 +9882,7 @@
       "source_location": "L505",
       "_origin": "ast",
       "id": "tests_test_billing_test_checkout_requires_tenant_scoped_token",
-      "community": 10,
+      "community": 32,
       "norm_label": "test_checkout_requires_tenant_scoped_token()"
     },
     {
@@ -9892,7 +9892,7 @@
       "source_location": "L519",
       "_origin": "ast",
       "id": "tests_test_billing_test_price_map_accepts_secretaria_ferro_alias",
-      "community": 209,
+      "community": 25,
       "norm_label": "test_price_map_accepts_secretaria_ferro_alias()"
     },
     {
@@ -9922,7 +9922,7 @@
       "source_location": "L94",
       "_origin": "ast",
       "id": "tests_test_billing_rationale_94",
-      "community": 25,
+      "community": 54,
       "norm_label": "point services.billing at fake stripe settings + a recording fake httpx client."
     },
     {
@@ -9952,7 +9952,7 @@
       "source_location": "L520",
       "_origin": "ast",
       "id": "tests_test_billing_rationale_520",
-      "community": 209,
+      "community": 25,
       "norm_label": "a not-yet-migrated deployed stripe_price_map may still key the secretaria price"
     },
     {
@@ -9962,7 +9962,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "tests_test_billing_phase1",
-      "community": 54,
+      "community": 98,
       "norm_label": "test_billing_phase1.py"
     },
     {
@@ -10022,7 +10022,7 @@
       "source_location": "L171",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_test_signup_webhook_subscription_carries_all_three_metered_companions_and_trial",
-      "community": 54,
+      "community": 52,
       "norm_label": "test_signup_webhook_subscription_carries_all_three_metered_companions_and_trial()"
     },
     {
@@ -10032,7 +10032,7 @@
       "source_location": "L218",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_test_price_map_accepts_all_three_metered_companion_keys",
-      "community": 54,
+      "community": 98,
       "norm_label": "test_price_map_accepts_all_three_metered_companion_keys()"
     },
     {
@@ -10042,7 +10042,7 @@
       "source_location": "L237",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_test_price_map_still_accepts_legacy_single_metered_key",
-      "community": 54,
+      "community": 98,
       "norm_label": "test_price_map_still_accepts_legacy_single_metered_key()"
     },
     {
@@ -10052,7 +10052,7 @@
       "source_location": "L251",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_test_price_map_still_rejects_genuinely_unknown_keys",
-      "community": 54,
+      "community": 98,
       "norm_label": "test_price_map_still_rejects_genuinely_unknown_keys()"
     },
     {
@@ -10062,7 +10062,7 @@
       "source_location": "L256",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_test_append_checkout_line_items_fully_metered_plan_omits_blank_plan_line_item",
-      "community": 54,
+      "community": 98,
       "norm_label": "test_append_checkout_line_items_fully_metered_plan_omits_blank_plan_line_item()"
     },
     {
@@ -10072,7 +10072,7 @@
       "source_location": "L277",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_test_validate_selection_fully_metered_plan_passes_without_direct_price",
-      "community": 54,
+      "community": 98,
       "norm_label": "test_validate_selection_fully_metered_plan_passes_without_direct_price()"
     },
     {
@@ -10082,7 +10082,7 @@
       "source_location": "L291",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_test_validate_selection_neither_direct_nor_companion_raises_price_not_configured",
-      "community": 54,
+      "community": 98,
       "norm_label": "test_validate_selection_neither_direct_nor_companion_raises_price_not_configured()"
     },
     {
@@ -10092,7 +10092,7 @@
       "source_location": "L303",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_test_validate_selection_professionals_only_no_anchor_raises",
-      "community": 54,
+      "community": 98,
       "norm_label": "test_validate_selection_professionals_only_no_anchor_raises()"
     },
     {
@@ -10102,7 +10102,7 @@
       "source_location": "L323",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_test_validate_selection_patients_only_no_anchor_raises",
-      "community": 54,
+      "community": 98,
       "norm_label": "test_validate_selection_patients_only_no_anchor_raises()"
     },
     {
@@ -10112,7 +10112,7 @@
       "source_location": "L339",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_test_validate_selection_two_of_three_companions_missing_reminders_raises",
-      "community": 54,
+      "community": 98,
       "norm_label": "test_validate_selection_two_of_three_companions_missing_reminders_raises()"
     },
     {
@@ -10132,7 +10132,7 @@
       "source_location": "L407",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_test_subscription_with_anchor_and_companions_resolves_plan_no_bogus_addons",
-      "community": 25,
+      "community": 54,
       "norm_label": "test_subscription_with_anchor_and_companions_resolves_plan_no_bogus_addons()"
     },
     {
@@ -10162,7 +10162,7 @@
       "source_location": "L471",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_test_harden_charge_noop_when_no_entitlement_row",
-      "community": 54,
+      "community": 42,
       "norm_label": "test_harden_charge_noop_when_no_entitlement_row()"
     },
     {
@@ -10402,7 +10402,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_rationale_1",
-      "community": 54,
+      "community": 98,
       "norm_label": "billing phase 1 / fully-metered vertical tests (contract_onboarding_v1.md \u00a79): t"
     },
     {
@@ -10432,7 +10432,7 @@
       "source_location": "L174",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_rationale_174",
-      "community": 54,
+      "community": 52,
       "norm_label": "the fully-metered shape (all three companion prices, no quantity on any of them)"
     },
     {
@@ -10442,7 +10442,7 @@
       "source_location": "L219",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_rationale_219",
-      "community": 54,
+      "community": 98,
       "norm_label": "`_parse_price_map` must accept `{plan_id}_metered_patients`,     `{plan_id}_met"
     },
     {
@@ -10452,7 +10452,7 @@
       "source_location": "L238",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_rationale_238",
-      "community": 54,
+      "community": 98,
       "norm_label": "the superseded single-companion `{plan_id}_metered` key (pre-fully-metered"
     },
     {
@@ -10462,7 +10462,7 @@
       "source_location": "L259",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_rationale_259",
-      "community": 54,
+      "community": 98,
       "norm_label": "a plan with no direct price (fully metered) must not get a blank-price line item"
     },
     {
@@ -10472,7 +10472,7 @@
       "source_location": "L278",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_rationale_278",
-      "community": 54,
+      "community": 98,
       "norm_label": "secretaria_basico with only the three metered companions configured (no flat/"
     },
     {
@@ -10482,7 +10482,7 @@
       "source_location": "L304",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_rationale_304",
-      "community": 54,
+      "community": 98,
       "norm_label": "a companion set missing `_metered_patients` and `_metered_reminders` (and no"
     },
     {
@@ -10492,7 +10492,7 @@
       "source_location": "L324",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_rationale_324",
-      "community": 54,
+      "community": 98,
       "norm_label": "symmetric case: only the patients companion configured, professionals and     r"
     },
     {
@@ -10502,7 +10502,7 @@
       "source_location": "L340",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_rationale_340",
-      "community": 54,
+      "community": 98,
       "norm_label": "new boundary introduced by the third companion: patients + professionals both"
     },
     {
@@ -10522,7 +10522,7 @@
       "source_location": "L410",
       "_origin": "ast",
       "id": "tests_test_billing_phase1_rationale_410",
-      "community": 25,
+      "community": 54,
       "norm_label": "a plan that has both a direct/anchor price item and the three metered companion"
     },
     {
@@ -10852,7 +10852,7 @@
       "source_location": "L198",
       "_origin": "ast",
       "id": "tests_test_catalog_entitlements_test_get_entitlements_owner_a_precheck_plan",
-      "community": 10,
+      "community": 32,
       "norm_label": "test_get_entitlements_owner_a_precheck_plan()"
     },
     {
@@ -10862,7 +10862,7 @@
       "source_location": "L212",
       "_origin": "ast",
       "id": "tests_test_catalog_entitlements_test_get_entitlements_owner_b_default_free",
-      "community": 10,
+      "community": 32,
       "norm_label": "test_get_entitlements_owner_b_default_free()"
     },
     {
@@ -11922,7 +11922,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "tests_test_onboarding_endpoints",
-      "community": 83,
+      "community": 30,
       "norm_label": "test_onboarding_endpoints.py"
     },
     {
@@ -11932,7 +11932,7 @@
       "source_location": "L47",
       "_origin": "ast",
       "id": "tests_test_onboarding_endpoints_clear_config_status_cache",
-      "community": 83,
+      "community": 30,
       "norm_label": "_clear_config_status_cache()"
     },
     {
@@ -12162,7 +12162,7 @@
       "source_location": "L341",
       "_origin": "ast",
       "id": "tests_test_onboarding_endpoints_test_webhook_provisioning_bridge_fires_and_stamps_secretaria_provisioned_at",
-      "community": 25,
+      "community": 54,
       "norm_label": "test_webhook_provisioning_bridge_fires_and_stamps_secretaria_provisioned_at()"
     },
     {
@@ -12172,7 +12172,7 @@
       "source_location": "L394",
       "_origin": "ast",
       "id": "tests_test_onboarding_endpoints_test_webhook_provisioning_bridge_failure_still_acks_webhook",
-      "community": 25,
+      "community": 54,
       "norm_label": "test_webhook_provisioning_bridge_failure_still_acks_webhook()"
     },
     {
@@ -12222,7 +12222,7 @@
       "source_location": "L510",
       "_origin": "ast",
       "id": "tests_test_onboarding_endpoints_test_get_onboarding_rejects_admin_token",
-      "community": 83,
+      "community": 32,
       "norm_label": "test_get_onboarding_rejects_admin_token()"
     },
     {
@@ -12262,7 +12262,7 @@
       "source_location": "L597",
       "_origin": "ast",
       "id": "tests_test_onboarding_endpoints_test_attempt_pass_requires_phone_number_id",
-      "community": 83,
+      "community": 32,
       "norm_label": "test_attempt_pass_requires_phone_number_id()"
     },
     {
@@ -12322,7 +12322,7 @@
       "source_location": "L731",
       "_origin": "ast",
       "id": "tests_test_onboarding_endpoints_test_attempt_unknown_doctor_token_rejected",
-      "community": 83,
+      "community": 30,
       "norm_label": "test_attempt_unknown_doctor_token_rejected()"
     },
     {
@@ -12452,7 +12452,7 @@
       "source_location": "L1031",
       "_origin": "ast",
       "id": "tests_test_onboarding_endpoints_set_pair_key",
-      "community": 83,
+      "community": 30,
       "norm_label": "_set_pair_key()"
     },
     {
@@ -12462,7 +12462,7 @@
       "source_location": "L1047",
       "_origin": "ast",
       "id": "tests_test_onboarding_endpoints_test_internal_onboarding_tenants_key_gate",
-      "community": 83,
+      "community": 30,
       "norm_label": "test_internal_onboarding_tenants_key_gate()"
     },
     {
@@ -12502,7 +12502,7 @@
       "source_location": "L1178",
       "_origin": "ast",
       "id": "tests_test_onboarding_endpoints_test_internal_onboarding_events_unknown_tenant_404",
-      "community": 83,
+      "community": 30,
       "norm_label": "test_internal_onboarding_events_unknown_tenant_404()"
     },
     {
@@ -12512,7 +12512,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "tests_test_onboarding_endpoints_rationale_1",
-      "community": 83,
+      "community": 30,
       "norm_label": "onboarding endpoints + integration vertical tests (endpoints + integration + bil"
     },
     {
@@ -12522,7 +12522,7 @@
       "source_location": "L48",
       "_origin": "ast",
       "id": "tests_test_onboarding_endpoints_rationale_48",
-      "community": 83,
+      "community": 30,
       "norm_label": "`services.onboarding_sync._config_status_cache` is a module-level (per-process)"
     },
     {
@@ -12532,7 +12532,7 @@
       "source_location": "L395",
       "_origin": "ast",
       "id": "tests_test_onboarding_endpoints_rationale_395",
-      "community": 25,
+      "community": 54,
       "norm_label": "a secretaria outage during the post-commit bridge must never break the webhook"
     },
     {
@@ -13022,7 +13022,7 @@
       "source_location": "L192",
       "_origin": "ast",
       "id": "tests_test_privacy_test_privacy_requires_admin",
-      "community": 10,
+      "community": 32,
       "norm_label": "test_privacy_requires_admin()"
     },
     {
@@ -13162,7 +13162,7 @@
       "source_location": "L193",
       "_origin": "ast",
       "id": "tests_test_privacy_rationale_193",
-      "community": 10,
+      "community": 32,
       "norm_label": "non-admin -> 403 (with a valid body, so the 403 is really the role gate firing"
     },
     {
@@ -13232,7 +13232,7 @@
       "source_location": "L145",
       "_origin": "ast",
       "id": "tests_test_rbac_token",
-      "community": 30,
+      "community": 32,
       "norm_label": "_token()"
     },
     {
@@ -13292,7 +13292,7 @@
       "source_location": "L244",
       "_origin": "ast",
       "id": "tests_test_rbac_test_admin_seed_idempotent",
-      "community": 88,
+      "community": 187,
       "norm_label": "test_admin_seed_idempotent()"
     },
     {
@@ -13462,7 +13462,7 @@
       "source_location": "L245",
       "_origin": "ast",
       "id": "tests_test_rbac_rationale_245",
-      "community": 88,
+      "community": 187,
       "norm_label": "running the admin seed twice creates exactly one admin and never errors."
     },
     {
@@ -13692,7 +13692,7 @@
       "source_location": "L174",
       "_origin": "ast",
       "id": "tests_test_signup_register",
-      "community": 15,
+      "community": 118,
       "norm_label": "_register()"
     },
     {
@@ -13722,7 +13722,7 @@
       "source_location": "L257",
       "_origin": "ast",
       "id": "tests_test_signup_force_intent_pending",
-      "community": 208,
+      "community": 52,
       "norm_label": "_force_intent_pending()"
     },
     {
@@ -13732,7 +13732,7 @@
       "source_location": "L276",
       "_origin": "ast",
       "id": "tests_test_signup_setup_completed_obj",
-      "community": 54,
+      "community": 52,
       "norm_label": "_setup_completed_obj()"
     },
     {
@@ -13752,7 +13752,7 @@
       "source_location": "L295",
       "_origin": "ast",
       "id": "tests_test_signup_test_checkout_session_happy_path",
-      "community": 15,
+      "community": 118,
       "norm_label": "test_checkout_session_happy_path()"
     },
     {
@@ -13762,7 +13762,7 @@
       "source_location": "L341",
       "_origin": "ast",
       "id": "tests_test_signup_test_checkout_session_no_trial_configured_has_no_custom_text",
-      "community": 15,
+      "community": 118,
       "norm_label": "test_checkout_session_no_trial_configured_has_no_custom_text()"
     },
     {
@@ -13772,7 +13772,7 @@
       "source_location": "L358",
       "_origin": "ast",
       "id": "tests_test_signup_test_checkout_session_not_pending_conflict",
-      "community": 15,
+      "community": 52,
       "norm_label": "test_checkout_session_not_pending_conflict()"
     },
     {
@@ -13802,7 +13802,7 @@
       "source_location": "L487",
       "_origin": "ast",
       "id": "tests_test_signup_test_setup_webhook_without_payment_method_creates_no_subscription",
-      "community": 15,
+      "community": 52,
       "norm_label": "test_setup_webhook_without_payment_method_creates_no_subscription()"
     },
     {
@@ -13812,7 +13812,7 @@
       "source_location": "L518",
       "_origin": "ast",
       "id": "tests_test_signup_test_setup_webhook_subscription_create_is_idempotent_on_redelivery",
-      "community": 208,
+      "community": 52,
       "norm_label": "test_setup_webhook_subscription_create_is_idempotent_on_redelivery()"
     },
     {
@@ -13852,7 +13852,7 @@
       "source_location": "L723",
       "_origin": "ast",
       "id": "tests_test_signup_test_patch_intent_adds_addon",
-      "community": 15,
+      "community": 118,
       "norm_label": "test_patch_intent_adds_addon()"
     },
     {
@@ -13862,7 +13862,7 @@
       "source_location": "L739",
       "_origin": "ast",
       "id": "tests_test_signup_test_patch_intent_removes_addon",
-      "community": 15,
+      "community": 118,
       "norm_label": "test_patch_intent_removes_addon()"
     },
     {
@@ -13872,7 +13872,7 @@
       "source_location": "L752",
       "_origin": "ast",
       "id": "tests_test_signup_test_patch_intent_normalizes_plan_first_and_dedupes",
-      "community": 15,
+      "community": 118,
       "norm_label": "test_patch_intent_normalizes_plan_first_and_dedupes()"
     },
     {
@@ -13892,7 +13892,7 @@
       "source_location": "L775",
       "_origin": "ast",
       "id": "tests_test_signup_test_patch_intent_not_pending_conflict",
-      "community": 25,
+      "community": 54,
       "norm_label": "test_patch_intent_not_pending_conflict()"
     },
     {
@@ -13902,7 +13902,7 @@
       "source_location": "L802",
       "_origin": "ast",
       "id": "tests_test_signup_test_patch_intent_plan_change_not_allowed",
-      "community": 15,
+      "community": 118,
       "norm_label": "test_patch_intent_plan_change_not_allowed()"
     },
     {
@@ -13912,7 +13912,7 @@
       "source_location": "L813",
       "_origin": "ast",
       "id": "tests_test_signup_test_patch_intent_unknown_catalog_id_422",
-      "community": 15,
+      "community": 118,
       "norm_label": "test_patch_intent_unknown_catalog_id_422()"
     },
     {
@@ -13922,7 +13922,7 @@
       "source_location": "L824",
       "_origin": "ast",
       "id": "tests_test_signup_test_patch_intent_addon_not_available_409",
-      "community": 15,
+      "community": 118,
       "norm_label": "test_patch_intent_addon_not_available_409()"
     },
     {
@@ -13952,7 +13952,7 @@
       "source_location": "L869",
       "_origin": "ast",
       "id": "tests_test_signup_test_onboarding_status_pending_then_ready_with_token_rotation",
-      "community": 25,
+      "community": 54,
       "norm_label": "test_onboarding_status_pending_then_ready_with_token_rotation()"
     },
     {
@@ -13962,7 +13962,7 @@
       "source_location": "L942",
       "_origin": "ast",
       "id": "tests_test_signup_test_onboarding_status_expired_token_rejected",
-      "community": 25,
+      "community": 54,
       "norm_label": "test_onboarding_status_expired_token_rejected()"
     },
     {
@@ -13972,7 +13972,7 @@
       "source_location": "L982",
       "_origin": "ast",
       "id": "tests_test_signup_test_webhook_signup_intent_activates_entitlement_and_is_idempotent",
-      "community": 25,
+      "community": 54,
       "norm_label": "test_webhook_signup_intent_activates_entitlement_and_is_idempotent()"
     },
     {
@@ -14032,7 +14032,7 @@
       "source_location": "L1134",
       "_origin": "ast",
       "id": "tests_test_signup_test_register_signup_creates_tenant_user_and_inert_entitlement",
-      "community": 16,
+      "community": 90,
       "norm_label": "test_register_signup_creates_tenant_user_and_inert_entitlement()"
     },
     {
@@ -14052,7 +14052,7 @@
       "source_location": "L1201",
       "_origin": "ast",
       "id": "tests_test_signup_test_provision_none_intake_defaults_to_aquecimento",
-      "community": 15,
+      "community": 90,
       "norm_label": "test_provision_none_intake_defaults_to_aquecimento()"
     },
     {
@@ -14062,7 +14062,7 @@
       "source_location": "L1224",
       "_origin": "ast",
       "id": "tests_test_signup_test_provision_missing_tenant_fails_gracefully",
-      "community": 187,
+      "community": 18,
       "norm_label": "test_provision_missing_tenant_fails_gracefully()"
     },
     {
@@ -14172,7 +14172,7 @@
       "source_location": "L175",
       "_origin": "ast",
       "id": "tests_test_signup_rationale_175",
-      "community": 15,
+      "community": 118,
       "norm_label": "register a lead (first card) and return its intent_id."
     },
     {
@@ -14202,7 +14202,7 @@
       "source_location": "L258",
       "_origin": "ast",
       "id": "tests_test_signup_rationale_258",
-      "community": 208,
+      "community": 52,
       "norm_label": "rewind an intent to `pending_payment` in the db, simulating the one case a strip"
     },
     {
@@ -14212,7 +14212,7 @@
       "source_location": "L277",
       "_origin": "ast",
       "id": "tests_test_signup_rationale_277",
-      "community": 54,
+      "community": 52,
       "norm_label": "a real `mode=setup` `checkout.session.completed` object: it carries `setup_inten"
     },
     {
@@ -14222,7 +14222,7 @@
       "source_location": "L296",
       "_origin": "ast",
       "id": "tests_test_signup_rationale_296",
-      "community": 15,
+      "community": 118,
       "norm_label": "the signup checkout session is setup mode: it saves a card and nothing else, so"
     },
     {
@@ -14232,7 +14232,7 @@
       "source_location": "L342",
       "_origin": "ast",
       "id": "tests_test_signup_rationale_342",
-      "community": 15,
+      "community": 118,
       "norm_label": "`_apply_setup_custom_text` mirrors `_apply_trial`'s gate: with     stripe_trial_"
     },
     {
@@ -14262,7 +14262,7 @@
       "source_location": "L488",
       "_origin": "ast",
       "id": "tests_test_signup_rationale_488",
-      "community": 15,
+      "community": 52,
       "norm_label": "a setupintent with no `payment_method` (still `processing`) must not produce a"
     },
     {
@@ -14272,7 +14272,7 @@
       "source_location": "L519",
       "_origin": "ast",
       "id": "tests_test_signup_rationale_519",
-      "community": 208,
+      "community": 52,
       "norm_label": "a re-run of this handler for the same signup intent can never mint a second"
     },
     {
@@ -14312,7 +14312,7 @@
       "source_location": "L753",
       "_origin": "ast",
       "id": "tests_test_signup_rationale_753",
-      "community": 15,
+      "community": 118,
       "norm_label": "persisted order is normalized (plan first, add-ons deduped) regardless of what"
     },
     {
@@ -14322,7 +14322,7 @@
       "source_location": "L825",
       "_origin": "ast",
       "id": "tests_test_signup_rationale_825",
-      "community": 15,
+      "community": 118,
       "norm_label": "defense-in-depth: an add-on with no configured stripe price is rejected even"
     },
     {
@@ -14372,7 +14372,7 @@
       "source_location": "L1225",
       "_origin": "ast",
       "id": "tests_test_signup_rationale_1225",
-      "community": 187,
+      "community": 18,
       "norm_label": "defensive: an intent whose linked tenant no longer exists (e.g. a pre-split inte"
     },
     {
@@ -14852,7 +14852,7 @@
       "source_location": "L48",
       "_origin": "ast",
       "id": "tests_test_test_window_noop_async",
-      "community": 178,
+      "community": 185,
       "norm_label": "_noop_async()"
     },
     {
@@ -14862,7 +14862,7 @@
       "source_location": "L55",
       "_origin": "ast",
       "id": "tests_test_test_window_tenant_ids",
-      "community": 178,
+      "community": 185,
       "norm_label": "_tenant_ids()"
     },
     {
@@ -14872,7 +14872,7 @@
       "source_location": "L60",
       "_origin": "ast",
       "id": "tests_test_test_window_link_and_set_plan",
-      "community": 178,
+      "community": 185,
       "norm_label": "_link_and_set_plan()"
     },
     {
@@ -14882,7 +14882,7 @@
       "source_location": "L102",
       "_origin": "ast",
       "id": "tests_test_test_window_test_attempt_pass_at_conectado_triggers_harden_charge",
-      "community": 178,
+      "community": 185,
       "norm_label": "test_attempt_pass_at_conectado_triggers_harden_charge()"
     },
     {
@@ -14892,7 +14892,7 @@
       "source_location": "L150",
       "_origin": "ast",
       "id": "tests_test_test_window_test_attempt_pass_at_conectado_noop_when_not_trialing",
-      "community": 10,
+      "community": 185,
       "norm_label": "test_attempt_pass_at_conectado_noop_when_not_trialing()"
     },
     {
@@ -14912,7 +14912,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "tests_test_test_window_py_simplenamespace",
-      "community": 178,
+      "community": 185,
       "norm_label": "simplenamespace"
     },
     {
@@ -15062,7 +15062,7 @@
       "source_location": "L307",
       "_origin": "ast",
       "id": "tests_test_test_window_test_internal_event_test_window_email_sent_one_shot",
-      "community": 83,
+      "community": 185,
       "norm_label": "test_internal_event_test_window_email_sent_one_shot()"
     },
     {
@@ -15082,7 +15082,7 @@
       "source_location": "L354",
       "_origin": "ast",
       "id": "tests_test_test_window_test_restart_test_window_live_trialing_extends_trial_end",
-      "community": 178,
+      "community": 185,
       "norm_label": "test_restart_test_window_live_trialing_extends_trial_end()"
     },
     {
@@ -15092,7 +15092,7 @@
       "source_location": "L415",
       "_origin": "ast",
       "id": "tests_test_test_window_test_restart_test_window_canceled_creates_new_subscription",
-      "community": 178,
+      "community": 185,
       "norm_label": "test_restart_test_window_canceled_creates_new_subscription()"
     },
     {
@@ -15102,7 +15102,7 @@
       "source_location": "L486",
       "_origin": "ast",
       "id": "tests_test_test_window_test_restart_test_window_three_guards",
-      "community": 178,
+      "community": 185,
       "norm_label": "test_restart_test_window_three_guards()"
     },
     {
@@ -15112,7 +15112,7 @@
       "source_location": "L564",
       "_origin": "ast",
       "id": "tests_test_test_window_test_provision_tenant_from_intent_sets_test_window_started_at",
-      "community": 25,
+      "community": 54,
       "norm_label": "test_provision_tenant_from_intent_sets_test_window_started_at()"
     },
     {
@@ -15152,7 +15152,7 @@
       "source_location": "L63",
       "_origin": "ast",
       "id": "tests_test_test_window_rationale_63",
-      "community": 178,
+      "community": 185,
       "norm_label": "link a stripe customer+subscription to `tenant_id` and set its plan to     secre"
     },
     {
@@ -15162,7 +15162,7 @@
       "source_location": "L103",
       "_origin": "ast",
       "id": "tests_test_test_window_rationale_103",
-      "community": 178,
+      "community": 185,
       "norm_label": "task 2's core billing-semantics change: the billing cycle anchors at 'conectado'"
     },
     {
@@ -15172,7 +15172,7 @@
       "source_location": "L151",
       "_origin": "ast",
       "id": "tests_test_test_window_rationale_151",
-      "community": 10,
+      "community": 185,
       "norm_label": "the pre-existing tenant a fixture (plan=precheck, status=active, no subscription"
     },
     {
@@ -16596,20 +16596,20 @@
       "norm_label": "1. app id e app secret"
     },
     {
-      "label": "2. Configuration ID do Embedded Signup (caminho v4 \u2014 ver se\u00e7\u00e3o \"Vers\u00e3o do Embedded Signup\")",
+      "label": "2. Configuration ID do Embedded Signup",
       "file_type": "document",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
       "source_location": "L37",
       "_origin": "ast",
-      "id": "docs_guia_credenciais_meta_embedded_signup_2_configuration_id_do_embedded_signup_caminho_v4_ver_se\u00e7\u00e3o_vers\u00e3o_do_embedded_signup",
+      "id": "docs_guia_credenciais_meta_embedded_signup_2_configuration_id_do_embedded_signup",
       "community": 167,
-      "norm_label": "2. configuration id do embedded signup (caminho v4 \u2014 ver secao \"versao do embedded signup\")"
+      "norm_label": "2. configuration id do embedded signup"
     },
     {
       "label": "Parte B \u2014 Aplica\u00e7\u00e3o no EasyPanel",
       "file_type": "document",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L65",
+      "source_location": "L51",
       "_origin": "ast",
       "id": "docs_guia_credenciais_meta_embedded_signup_parte_b_aplica\u00e7\u00e3o_no_easypanel",
       "community": 167,
@@ -16619,7 +16619,7 @@
       "label": "1. Configura\u00e7\u00e3o do brain-api",
       "file_type": "document",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L67",
+      "source_location": "L53",
       "_origin": "ast",
       "id": "docs_guia_credenciais_meta_embedded_signup_1_configura\u00e7\u00e3o_do_brain_api",
       "community": 167,
@@ -16629,7 +16629,7 @@
       "label": "No EasyPanel:",
       "file_type": "document",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L71",
+      "source_location": "L57",
       "_origin": "ast",
       "id": "docs_guia_credenciais_meta_embedded_signup_no_easypanel",
       "community": 167,
@@ -16639,7 +16639,7 @@
       "label": "brain-frontend: Nenhuma Configura\u00e7\u00e3o Necess\u00e1ria",
       "file_type": "document",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L90",
+      "source_location": "L76",
       "_origin": "ast",
       "id": "docs_guia_credenciais_meta_embedded_signup_brain_frontend_nenhuma_configura\u00e7\u00e3o_necess\u00e1ria",
       "community": 167,
@@ -16649,7 +16649,7 @@
       "label": "Valida\u00e7\u00e3o",
       "file_type": "document",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L100",
+      "source_location": "L86",
       "_origin": "ast",
       "id": "docs_guia_credenciais_meta_embedded_signup_valida\u00e7\u00e3o",
       "community": 167,
@@ -16659,7 +16659,7 @@
       "label": "Crit\u00e9rio 1: backend respondendo `configured=true`",
       "file_type": "document",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L102",
+      "source_location": "L88",
       "_origin": "ast",
       "id": "docs_guia_credenciais_meta_embedded_signup_crit\u00e9rio_1_backend_respondendo_configured_true",
       "community": 167,
@@ -16669,77 +16669,17 @@
       "label": "Crit\u00e9rio 2: frontend exibindo o bot\u00e3o ativo",
       "file_type": "document",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L130",
+      "source_location": "L116",
       "_origin": "ast",
       "id": "docs_guia_credenciais_meta_embedded_signup_crit\u00e9rio_2_frontend_exibindo_o_bot\u00e3o_ativo",
       "community": 167,
       "norm_label": "criterio 2: frontend exibindo o botao ativo"
     },
     {
-      "label": "Vers\u00e3o do Embedded Signup (v2 vs v4)",
-      "file_type": "document",
-      "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L148",
-      "_origin": "ast",
-      "id": "docs_guia_credenciais_meta_embedded_signup_vers\u00e3o_do_embedded_signup_v2_vs_v4",
-      "community": 167,
-      "norm_label": "versao do embedded signup (v2 vs v4)"
-    },
-    {
-      "label": "Conclus\u00e3o: s\u00e3o tr\u00eas eixos independentes",
-      "file_type": "document",
-      "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L157",
-      "_origin": "ast",
-      "id": "docs_guia_credenciais_meta_embedded_signup_conclus\u00e3o_s\u00e3o_tr\u00eas_eixos_independentes",
-      "community": 167,
-      "norm_label": "conclusao: sao tres eixos independentes"
-    },
-    {
-      "label": "O que `sessionInfoVersion: \"3\"` de fato \u00e9",
-      "file_type": "document",
-      "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L195",
-      "_origin": "ast",
-      "id": "docs_guia_credenciais_meta_embedded_signup_o_que_sessioninfoversion_3_de_fato_\u00e9",
-      "community": 167,
-      "norm_label": "o que `sessioninfoversion: \"3\"` de fato e"
-    },
-    {
-      "label": "O c\u00f3digo estava em v2 ou v4?",
-      "file_type": "document",
-      "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L217",
-      "_origin": "ast",
-      "id": "docs_guia_credenciais_meta_embedded_signup_o_c\u00f3digo_estava_em_v2_ou_v4",
-      "community": 167,
-      "norm_label": "o codigo estava em v2 ou v4?"
-    },
-    {
-      "label": "Pend\u00eancia (fora do escopo de c\u00f3digo)",
-      "file_type": "document",
-      "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L245",
-      "_origin": "ast",
-      "id": "docs_guia_credenciais_meta_embedded_signup_pend\u00eancia_fora_do_escopo_de_c\u00f3digo",
-      "community": 167,
-      "norm_label": "pendencia (fora do escopo de codigo)"
-    },
-    {
-      "label": "Fontes oficiais consultadas (2026-08-01)",
-      "file_type": "document",
-      "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L254",
-      "_origin": "ast",
-      "id": "docs_guia_credenciais_meta_embedded_signup_fontes_oficiais_consultadas_2026_08_01",
-      "community": 167,
-      "norm_label": "fontes oficiais consultadas (2026-08-01)"
-    },
-    {
       "label": "Resumo das Etapas",
       "file_type": "document",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L266",
+      "source_location": "L134",
       "_origin": "ast",
       "id": "docs_guia_credenciais_meta_embedded_signup_resumo_das_etapas",
       "community": 167,
@@ -16749,7 +16689,7 @@
       "label": "Refer\u00eancias",
       "file_type": "document",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L277",
+      "source_location": "L145",
       "_origin": "ast",
       "id": "docs_guia_credenciais_meta_embedded_signup_refer\u00eancias",
       "community": 167,
@@ -53798,7 +53738,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L65",
+      "source_location": "L51",
       "weight": 1.0,
       "source": "docs_guia_credenciais_meta_embedded_signup_guia_obten\u00e7\u00e3o_e_configura\u00e7\u00e3o_das_credenciais_meta_para_embedded_signup",
       "target": "docs_guia_credenciais_meta_embedded_signup_parte_b_aplica\u00e7\u00e3o_no_easypanel",
@@ -53808,7 +53748,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L277",
+      "source_location": "L145",
       "weight": 1.0,
       "source": "docs_guia_credenciais_meta_embedded_signup_guia_obten\u00e7\u00e3o_e_configura\u00e7\u00e3o_das_credenciais_meta_para_embedded_signup",
       "target": "docs_guia_credenciais_meta_embedded_signup_refer\u00eancias",
@@ -53818,7 +53758,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L266",
+      "source_location": "L134",
       "weight": 1.0,
       "source": "docs_guia_credenciais_meta_embedded_signup_guia_obten\u00e7\u00e3o_e_configura\u00e7\u00e3o_das_credenciais_meta_para_embedded_signup",
       "target": "docs_guia_credenciais_meta_embedded_signup_resumo_das_etapas",
@@ -53828,20 +53768,10 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L100",
+      "source_location": "L86",
       "weight": 1.0,
       "source": "docs_guia_credenciais_meta_embedded_signup_guia_obten\u00e7\u00e3o_e_configura\u00e7\u00e3o_das_credenciais_meta_para_embedded_signup",
       "target": "docs_guia_credenciais_meta_embedded_signup_valida\u00e7\u00e3o",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L148",
-      "weight": 1.0,
-      "source": "docs_guia_credenciais_meta_embedded_signup_guia_obten\u00e7\u00e3o_e_configura\u00e7\u00e3o_das_credenciais_meta_para_embedded_signup",
-      "target": "docs_guia_credenciais_meta_embedded_signup_vers\u00e3o_do_embedded_signup_v2_vs_v4",
       "confidence_score": 1.0
     },
     {
@@ -53861,7 +53791,7 @@
       "source_location": "L37",
       "weight": 1.0,
       "source": "docs_guia_credenciais_meta_embedded_signup_parte_a_obten\u00e7\u00e3o_das_credenciais_no_painel_da_meta",
-      "target": "docs_guia_credenciais_meta_embedded_signup_2_configuration_id_do_embedded_signup_caminho_v4_ver_se\u00e7\u00e3o_vers\u00e3o_do_embedded_signup",
+      "target": "docs_guia_credenciais_meta_embedded_signup_2_configuration_id_do_embedded_signup",
       "confidence_score": 1.0
     },
     {
@@ -53878,7 +53808,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L67",
+      "source_location": "L53",
       "weight": 1.0,
       "source": "docs_guia_credenciais_meta_embedded_signup_parte_b_aplica\u00e7\u00e3o_no_easypanel",
       "target": "docs_guia_credenciais_meta_embedded_signup_1_configura\u00e7\u00e3o_do_brain_api",
@@ -53888,7 +53818,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L90",
+      "source_location": "L76",
       "weight": 1.0,
       "source": "docs_guia_credenciais_meta_embedded_signup_parte_b_aplica\u00e7\u00e3o_no_easypanel",
       "target": "docs_guia_credenciais_meta_embedded_signup_brain_frontend_nenhuma_configura\u00e7\u00e3o_necess\u00e1ria",
@@ -53898,7 +53828,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L71",
+      "source_location": "L57",
       "weight": 1.0,
       "source": "docs_guia_credenciais_meta_embedded_signup_1_configura\u00e7\u00e3o_do_brain_api",
       "target": "docs_guia_credenciais_meta_embedded_signup_no_easypanel",
@@ -53908,7 +53838,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L102",
+      "source_location": "L88",
       "weight": 1.0,
       "source": "docs_guia_credenciais_meta_embedded_signup_valida\u00e7\u00e3o",
       "target": "docs_guia_credenciais_meta_embedded_signup_crit\u00e9rio_1_backend_respondendo_configured_true",
@@ -53918,60 +53848,10 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L130",
+      "source_location": "L116",
       "weight": 1.0,
       "source": "docs_guia_credenciais_meta_embedded_signup_valida\u00e7\u00e3o",
       "target": "docs_guia_credenciais_meta_embedded_signup_crit\u00e9rio_2_frontend_exibindo_o_bot\u00e3o_ativo",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L157",
-      "weight": 1.0,
-      "source": "docs_guia_credenciais_meta_embedded_signup_vers\u00e3o_do_embedded_signup_v2_vs_v4",
-      "target": "docs_guia_credenciais_meta_embedded_signup_conclus\u00e3o_s\u00e3o_tr\u00eas_eixos_independentes",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L254",
-      "weight": 1.0,
-      "source": "docs_guia_credenciais_meta_embedded_signup_vers\u00e3o_do_embedded_signup_v2_vs_v4",
-      "target": "docs_guia_credenciais_meta_embedded_signup_fontes_oficiais_consultadas_2026_08_01",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L217",
-      "weight": 1.0,
-      "source": "docs_guia_credenciais_meta_embedded_signup_vers\u00e3o_do_embedded_signup_v2_vs_v4",
-      "target": "docs_guia_credenciais_meta_embedded_signup_o_c\u00f3digo_estava_em_v2_ou_v4",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L195",
-      "weight": 1.0,
-      "source": "docs_guia_credenciais_meta_embedded_signup_vers\u00e3o_do_embedded_signup_v2_vs_v4",
-      "target": "docs_guia_credenciais_meta_embedded_signup_o_que_sessioninfoversion_3_de_fato_\u00e9",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md",
-      "source_location": "L245",
-      "weight": 1.0,
-      "source": "docs_guia_credenciais_meta_embedded_signup_vers\u00e3o_do_embedded_signup_v2_vs_v4",
-      "target": "docs_guia_credenciais_meta_embedded_signup_pend\u00eancia_fora_do_escopo_de_c\u00f3digo",
       "confidence_score": 1.0
     },
     {

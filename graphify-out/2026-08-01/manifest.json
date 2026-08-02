@@ -40,13 +40,13 @@
     "semantic_hash": "1b0094337eb6789c16d8fcfe1cc856e7"
   },
   "src/brain_api/config.py": {
-    "mtime": 1785210310.3633292,
-    "ast_hash": "818033022188d37fd5bc20639417bad2",
+    "mtime": 1785611403.1819184,
+    "ast_hash": "fad41445284554ca1ab39345f8b1a19b",
     "semantic_hash": ""
   },
   "src/brain_api/main.py": {
-    "mtime": 1784354999.3521,
-    "ast_hash": "e9ea053937950cd65dc0b5da34d1196b",
+    "mtime": 1785611397.4724615,
+    "ast_hash": "290de05fcef25d17879427340f2e3c66",
     "semantic_hash": ""
   },
   "src/brain_api/__init__.py": {
@@ -145,8 +145,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/models/__init__.py": {
-    "mtime": 1784352265.3307514,
-    "ast_hash": "35c00a2049a9ccbc883a6a892c0fbb74",
+    "mtime": 1785611318.69591,
+    "ast_hash": "602db60cb3fed306ecfa02217d8d8a5f",
     "semantic_hash": ""
   },
   "src/brain_api/schemas/admin.py": {
@@ -200,8 +200,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/services/catalog.py": {
-    "mtime": 1784733129.604957,
-    "ast_hash": "a91a7b04e7f2b113eb0ca4812e550dd7",
+    "mtime": 1785611045.8124435,
+    "ast_hash": "7541ef1d0bd9f8224fc35b3122983b38",
     "semantic_hash": ""
   },
   "src/brain_api/services/demo.py": {
@@ -245,13 +245,13 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "tests/conftest.py": {
-    "mtime": 1784734339.8617685,
-    "ast_hash": "2c5a12c2b55ec2b5189d05e3af5dd80d",
+    "mtime": 1785611407.2927675,
+    "ast_hash": "fa583869c8556207e5a3798ae510c3cd",
     "semantic_hash": ""
   },
   "tests/test_catalog_entitlements.py": {
-    "mtime": 1784735012.2892897,
-    "ast_hash": "867bcc2bdcfca5eb22bc6c5eeb9ff15d",
+    "mtime": 1785602598.5366654,
+    "ast_hash": "4c35e0df2bb4b02529f921c67e722a20",
     "semantic_hash": ""
   },
   "tests/test_doctor_secretaria.py": {
@@ -300,8 +300,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/api/billing.py": {
-    "mtime": 1784235214.7958825,
-    "ast_hash": "6d3d4a94a6710ddbd1c5976f6f221052",
+    "mtime": 1785611024.5410118,
+    "ast_hash": "6e62f5693dca717f0771235147558e86",
     "semantic_hash": ""
   },
   "src/brain_api/api/internal.py": {
@@ -325,8 +325,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/schemas/billing.py": {
-    "mtime": 1784235214.8275054,
-    "ast_hash": "9eb28d3a31510c0c1f3a1d4531f0d26f",
+    "mtime": 1785611012.5496032,
+    "ast_hash": "e205cfeb00de93c666c28840cb19eea7",
     "semantic_hash": ""
   },
   "src/brain_api/schemas/internal.py": {
@@ -335,8 +335,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/services/billing.py": {
-    "mtime": 1785209649.6730325,
-    "ast_hash": "2403caf8342cad06e22c0fecc017be13",
+    "mtime": 1785610997.0360212,
+    "ast_hash": "c0977699fc0b9c6519c7c009811aaf68",
     "semantic_hash": ""
   },
   "tests/test_auth_hardening.py": {
@@ -345,8 +345,8 @@
     "semantic_hash": ""
   },
   "tests/test_billing.py": {
-    "mtime": 1785207102.626891,
-    "ast_hash": "68ca8d29b860be26a368d9a6741f810f",
+    "mtime": 1785611131.4730704,
+    "ast_hash": "6091bbad2f1d130d9d4e3896f6b0ebc8",
     "semantic_hash": ""
   },
   "docs/key-rotation.md": {
@@ -375,8 +375,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/models/usage_event.py": {
-    "mtime": 1784235214.8275054,
-    "ast_hash": "e4a13c600c1a6551e7b59bae63b07052",
+    "mtime": 1785602358.028559,
+    "ast_hash": "d639c380fe3dc4e0e08abe894a0057a5",
     "semantic_hash": ""
   },
   "src/brain_api/schemas/privacy.py": {
@@ -450,8 +450,8 @@
     "semantic_hash": ""
   },
   "tests/test_signup.py": {
-    "mtime": 1785209824.066431,
-    "ast_hash": "ac54f7f934d637b4fe1c502b85fe0ead",
+    "mtime": 1785602624.1324883,
+    "ast_hash": "3ec43156c642ec08c514d2b7f050369e",
     "semantic_hash": ""
   },
   "CLAUDE.md": {
@@ -560,8 +560,73 @@
     "semantic_hash": ""
   },
   "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md": {
-    "mtime": 1785553354.1350055,
-    "ast_hash": "dc35bb7204ffbff1a739fe9e601dcc1a",
+    "mtime": 1785558841.513264,
+    "ast_hash": "19372ca606fa10231623e90f3276a523",
+    "semantic_hash": ""
+  },
+  "migrations/versions/0010_precheck_billing.py": {
+    "mtime": 1785602368.5313435,
+    "ast_hash": "377fc4e945e0728700b87873a638ccee",
+    "semantic_hash": ""
+  },
+  "src/brain_api/api/internal_precheck.py": {
+    "mtime": 1785602423.8369217,
+    "ast_hash": "00d8fcbed6c1f47fd140c9e3c3e3b160",
+    "semantic_hash": ""
+  },
+  "src/brain_api/models/precheck_topup_credit.py": {
+    "mtime": 1785611040.779577,
+    "ast_hash": "b7f28fb99d0de05fb05ad7e5af5feb97",
+    "semantic_hash": ""
+  },
+  "src/brain_api/schemas/internal_precheck.py": {
+    "mtime": 1785602403.863727,
+    "ast_hash": "b4b247ebecf344294a31dd622969a06f",
+    "semantic_hash": ""
+  },
+  "src/brain_api/services/precheck_billing.py": {
+    "mtime": 1785611049.917451,
+    "ast_hash": "f3c513d1a4541d8ea6f46cc94cf677e1",
+    "semantic_hash": ""
+  },
+  "tests/test_precheck_billing.py": {
+    "mtime": 1785611168.824327,
+    "ast_hash": "7fcd978bcdf22d68748f4d57c98ebc94",
+    "semantic_hash": ""
+  },
+  "migrations/versions/0011_launch_waitlist.py": {
+    "mtime": 1785611805.674702,
+    "ast_hash": "e835d1c511600c0997fb5f53f9aab403",
+    "semantic_hash": ""
+  },
+  "src/brain_api/api/public_waitlist.py": {
+    "mtime": 1785611805.674702,
+    "ast_hash": "87169708b882507457e8bb7b1b1e8e83",
+    "semantic_hash": ""
+  },
+  "src/brain_api/models/waitlist_lead.py": {
+    "mtime": 1785611312.7422597,
+    "ast_hash": "6d83a992e94d09bbdc91c4c3c83a684b",
+    "semantic_hash": ""
+  },
+  "src/brain_api/schemas/waitlist.py": {
+    "mtime": 1785611353.0817728,
+    "ast_hash": "d3b73b6afe79ec0d67127c9f33d9e5a9",
+    "semantic_hash": ""
+  },
+  "src/brain_api/services/waitlist.py": {
+    "mtime": 1785611371.3322947,
+    "ast_hash": "3e0c140eeb17f77affb927e0aebca5a9",
+    "semantic_hash": ""
+  },
+  "tests/test_launch_waitlist.py": {
+    "mtime": 1785611453.833534,
+    "ast_hash": "df836c1e7ad0e81663af67bf416d148f",
+    "semantic_hash": ""
+  },
+  "docs/CHECKPOINT_precheck_billing.md": {
+    "mtime": 1785611911.897946,
+    "ast_hash": "fd552ef30e3ec70f8fe3af32535a0d4d",
     "semantic_hash": ""
   }
 }

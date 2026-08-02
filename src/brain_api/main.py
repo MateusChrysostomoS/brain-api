@@ -19,9 +19,11 @@ from brain_api.api import (
     entitlements,
     health,
     internal,
+    internal_precheck,
     onboarding,
     privacy,
     public_signup,
+    public_waitlist,
     sso,
 )
 from brain_api.config import get_settings
@@ -62,12 +64,14 @@ def create_app() -> FastAPI:
     app.include_router(sso.router, tags=["sso"])
     app.include_router(demo.router, tags=["demo"])
     app.include_router(public_signup.router, tags=["public"])
+    app.include_router(public_waitlist.router, tags=["public"])
     app.include_router(admin.router, tags=["admin"])
     app.include_router(privacy.router, tags=["admin", "privacy"])
     app.include_router(doctor.router, tags=["doctor"])
     app.include_router(onboarding.router, tags=["doctor", "onboarding"])
     app.include_router(billing.router, tags=["billing"])
     app.include_router(internal.router)
+    app.include_router(internal_precheck.router)
     return app
 
 

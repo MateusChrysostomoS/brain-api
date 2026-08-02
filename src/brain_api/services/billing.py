@@ -4,10 +4,14 @@ The three concerns stay separated:
 - ENTITLEMENT: the local `entitlements` row — recomputed HERE (webhook apply path) via
   the same `catalog.compute_entitlement_state` the admin PATCH uses. Reads never call
   Stripe.
-- BILLING: Stripe owns money. This module talks to it in exactly two places, both
-  explicit user actions (create a Checkout Session, open the Billing Portal) — async
-  httpx, form-encoded, never in a read path.
-- METERING: out of scope this round (`usage` stays a scaffold).
+- BILLING: Stripe owns money. This module talks to it only from explicit user actions
+  (create a Checkout Session — subscription, PreCheck top-up `payment`, or signup
+  `setup`; open the Billing Portal; swap a PreCheck subscription's price) — async httpx,
+  form-encoded, never in a read path.
+- METERING: out of scope this round (`usage` stays a scaffold). PreCheck consultations
+  are the one exception that is NOT metered even though they ARE counted: see
+  services/precheck_billing.py — flat plan price + quota + one-off per-unit top-ups, no
+  Stripe Meter involved at all.
 
 Price ids live in `Settings.STRIPE_PRICE_MAP` (per-environment JSON: catalog id ->
 Stripe price id) — the catalog declares WHAT is sellable, the environment declares the
@@ -59,12 +63,19 @@ from uuid import UUID
 import httpx
 from fastapi import HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
 from brain_api.core.logging import get_logger
-from brain_api.models import Entitlement, ProcessedStripeEvent, SignupIntent, Tenant
-from brain_api.services import catalog
+from brain_api.models import (
+    Entitlement,
+    PrecheckTopupCredit,
+    ProcessedStripeEvent,
+    SignupIntent,
+    Tenant,
+)
+from brain_api.services import catalog, precheck_billing
 
 logger = get_logger(__name__)
 
@@ -107,14 +118,17 @@ def _parse_price_map(raw: str) -> dict[str, str]:
     """Parse STRIPE_PRICE_MAP (keyed by the raw string so a settings monkeypatch in
     tests gets its own cache slot). Keys are normalized through the catalog's
     LEGACY_PLAN_ALIASES (the deployed map may still say "secretaria_ferro" for what the
-    catalog now calls secretaria_basico), then unknown catalog ids are rejected loudly at
-    parse time — a typo'd map must not silently unsell a product. `{plan_id}_metered_patients`
+    catalog now calls secretaria_basico, or bare "precheck" for what it now calls
+    precheck_basic), then unknown catalog ids are rejected loudly at parse time — a
+    typo'd map must not silently unsell a product. `{plan_id}_metered_patients`
     / `{plan_id}_metered_professionals` / `{plan_id}_metered_reminders` keys (e.g.
     "secretaria_basico_metered_patients") are ALSO accepted: the three metered companion
     prices for a plan's Checkout line items, not catalog ids of their own (§9). The
     SUPERSEDED single-companion `{plan_id}_metered` key is ALSO accepted, purely for
     graceful degradation (recognized-but-unused — see METERED_SUFFIX) so a deployed map
-    not yet cleaned up doesn't break every billing call.
+    not yet cleaned up doesn't break every billing call. `catalog.PRECHECK_TOPUP_PRICE_KEY`
+    ("precheck_topup") is ALSO accepted: the avulso PreCheck consultation's one-off
+    PER-UNIT Price, not a plan/add-on id either (precheck-billing round).
     """
     try:
         mapping = json.loads(raw or "{}")
@@ -123,7 +137,7 @@ def _parse_price_map(raw: str) -> dict[str, str]:
     normalized = {
         catalog.LEGACY_PLAN_ALIASES.get(str(k), str(k)): str(v) for k, v in mapping.items()
     }
-    known = catalog.PLAN_IDS | catalog.ADDON_IDS
+    known = catalog.PLAN_IDS | catalog.ADDON_IDS | {catalog.PRECHECK_TOPUP_PRICE_KEY}
     metered_known = {
         f"{plan_id}{suffix}"
         for plan_id in catalog.PLAN_IDS
@@ -478,6 +492,162 @@ async def create_portal_session(session: AsyncSession, tenant_id: UUID) -> str:
     )
     logger.info("billing_portal_opened", tenant_id=str(tenant_id))
     return payload["url"]
+
+
+# --- PreCheck billing: one-off top-up + tier upgrade (precheck-billing round) -------
+
+
+async def create_precheck_topup_checkout_session(
+    session: AsyncSession, tenant_id: UUID, quantity: int
+) -> str:
+    """Create a ONE-OFF `mode=payment` Checkout Session for `quantity` avulso PreCheck
+    consultations; return its URL.
+
+    The FIRST `mode=payment` Checkout Session in this codebase — every other session here
+    is `mode=subscription` (checkout/portal above) or, for cold signup, `mode=setup`
+    (services/signup.py). Avulso top-ups are a one-time purchase, never a recurring
+    price, so a plain payment session is the correct shape.
+
+    The Stripe Price behind `PRECHECK_TOPUP_PRICE_KEY` is PER UNIT (one consultation,
+    standard pricing — deliberately NOT Stripe "package pricing"), so the line item's
+    QUANTITY is what the doctor is buying and Stripe charges `quantity x unit price`.
+    The quantity is chosen in the BRAIN UI and passed here; Checkout is created WITHOUT
+    `adjustable_quantity`, so Stripe's hosted page never re-asks for it.
+
+    Checks, in order: 409 `not_precheck_plan` unless the tenant's CURRENT resolved plan
+    is PreCheck-enabled (`catalog.get_plan(ent.plan).precheck`) — a tenant with no
+    PreCheck plan has nothing to top up; then 422 `quantity_below_minimum` /
+    `quantity_above_maximum` against `Settings.PRECHECK_TOPUP_MIN_QUANTITY` /
+    `PRECHECK_TOPUP_MAX_QUANTITY`. Those bounds are re-checked HERE and not merely in the
+    schema: the frontend's own minimum is a convenience, never the enforcement point.
+
+    `quantity` is stamped into `metadata` AT PURCHASE TIME so the grant is decided by
+    what was actually bought — the webhook grant (`_apply_precheck_topup_checkout`) reads
+    it back from the completed event's own metadata, never from live settings, so a later
+    bounds change can't retroactively alter a purchase someone already paid for.
+    """
+    settings = get_settings()
+    ent = await session.get(Entitlement, tenant_id)
+    plan = catalog.get_plan(ent.plan) if ent is not None else None
+    if plan is None or not plan.precheck:
+        raise HTTPException(status.HTTP_409_CONFLICT, "not_precheck_plan")
+
+    if quantity < settings.PRECHECK_TOPUP_MIN_QUANTITY:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "quantity_below_minimum")
+    if quantity > settings.PRECHECK_TOPUP_MAX_QUANTITY:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "quantity_above_maximum")
+
+    price_id = price_id_for(catalog.PRECHECK_TOPUP_PRICE_KEY)
+    if price_id is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"price_not_configured:{catalog.PRECHECK_TOPUP_PRICE_KEY}",
+        )
+
+    data: dict[str, str] = {
+        "mode": "payment",
+        "success_url": settings.STRIPE_CHECKOUT_SUCCESS_URL,
+        "cancel_url": settings.STRIPE_CHECKOUT_CANCEL_URL,
+        "client_reference_id": str(tenant_id),
+        "metadata[kind]": "precheck_topup",
+        "metadata[tenant_id]": str(tenant_id),
+        "metadata[quantity]": str(quantity),
+        "line_items[0][price]": price_id,
+        "line_items[0][quantity]": str(quantity),
+    }
+    if ent is not None and ent.stripe_customer_id:
+        data["customer"] = ent.stripe_customer_id
+
+    payload = await _stripe_post("/v1/checkout/sessions", data)
+    logger.info("precheck_topup_checkout_created", tenant_id=str(tenant_id), quantity=quantity)
+    return payload["url"]
+
+
+async def upgrade_precheck_plan(
+    session: AsyncSession, tenant_id: UUID, target_plan_id: str
+) -> precheck_billing.PrecheckUsageSummary:
+    """Swap a tenant's PreCheck subscription between the two PreCheck tiers (Basic <->
+    Advanced) via a LIVE Stripe subscription-item price swap, then OPTIMISTICALLY update
+    the local entitlement so the new quota applies immediately — the later
+    `customer.subscription.updated` webhook recompute confirms the same state
+    independently from Stripe's own event.
+
+    Checks, in order: 422 `invalid_precheck_plan:{target}` unless `target_plan_id`
+    resolves to one of the two PreCheck plans; 409 `not_precheck_plan` when the tenant's
+    CURRENT resolved plan isn't PreCheck-enabled at all (nothing to swap); 409
+    `already_on_plan` when the target IS the tenant's current (canonical) plan; 409
+    `no_active_subscription` when the entitlement carries no `stripe_subscription_id`;
+    503 `price_not_configured:{id}` when either plan's Stripe price is missing; 409
+    `subscription_price_mismatch` (defensive) if the live subscription carries no item at
+    the CURRENT plan's price at all, so there is nothing to identify as "the item to
+    swap".
+
+    `proration_behavior="create_prorations"` is the ONE deliberate exception to this
+    module's usual "proration none" convention: a mid-cycle tier swap should true up the
+    price difference, unlike every other mutation here (checkout/portal never touch an
+    existing subscription item's price).
+    """
+    target_plan = catalog.get_plan(target_plan_id)
+    if target_plan is None or target_plan.id not in (
+        catalog.PLAN_PRECHECK_BASIC,
+        catalog.PLAN_PRECHECK_ADVANCED,
+    ):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, f"invalid_precheck_plan:{target_plan_id}"
+        )
+
+    ent = await session.get(Entitlement, tenant_id)
+    current_plan = catalog.get_plan(ent.plan) if ent is not None else None
+    if current_plan is None or not current_plan.precheck:
+        raise HTTPException(status.HTTP_409_CONFLICT, "not_precheck_plan")
+    if target_plan.id == current_plan.id:
+        raise HTTPException(status.HTTP_409_CONFLICT, "already_on_plan")
+    if not ent.stripe_subscription_id:
+        raise HTTPException(status.HTTP_409_CONFLICT, "no_active_subscription")
+
+    current_price_id = price_id_for(current_plan.id)
+    if not current_price_id:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, f"price_not_configured:{current_plan.id}"
+        )
+    target_price_id = price_id_for(target_plan.id)
+    if not target_price_id:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, f"price_not_configured:{target_plan.id}"
+        )
+
+    subscription = await _stripe_get(f"/v1/subscriptions/{ent.stripe_subscription_id}")
+    item_id: str | None = None
+    for item in (subscription.get("items") or {}).get("data") or []:
+        if (item.get("price") or {}).get("id") == current_price_id:
+            item_id = item.get("id")
+            break
+    if item_id is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "subscription_price_mismatch")
+
+    await _stripe_post(
+        f"/v1/subscriptions/{ent.stripe_subscription_id}",
+        {
+            "items[0][id]": str(item_id),
+            "items[0][price]": target_price_id,
+            "proration_behavior": "create_prorations",
+        },
+    )
+
+    # Optimistic local update — mirrors services.admin.update_entitlement's plan-change
+    # semantics exactly (a plan swap recomputes addons/limits fresh from the NEW plan's
+    # catalog defaults; no addon_overrides carried over, same as that PATCH branch).
+    ent.plan = target_plan.id
+    state = catalog.compute_entitlement_state(target_plan.id)
+    ent.precheck_enabled = state["precheck_enabled"]
+    ent.secretaria_enabled = state["secretaria_enabled"]
+    ent.addons = state["addons"]
+    ent.limits = state["limits"]
+    await session.commit()
+    await session.refresh(ent)
+
+    logger.info("precheck_plan_upgraded", tenant_id=str(tenant_id), plan=target_plan.id)
+    return await precheck_billing.usage_summary(session, ent, datetime.now(UTC))
 
 
 # --- Webhook apply path (pure local DB; the ONLY billing writer of entitlements) ----
@@ -861,6 +1031,72 @@ async def _apply_signup_intent_checkout(
     return await session.get(Tenant, intent.tenant_id)
 
 
+async def _apply_precheck_topup_checkout(
+    session: AsyncSession, ent: Entitlement, obj: dict[str, Any], metadata: dict[str, Any]
+) -> None:
+    """Grant a PreCheck top-up credit for a completed ONE-OFF `mode=payment` Checkout
+    Session (`metadata.kind == "precheck_topup"`).
+
+    `amount` comes from `metadata.quantity` — the quantity the doctor actually bought,
+    stamped at purchase time by `create_precheck_topup_checkout_session` and NEVER
+    re-read from live settings, so a later `PRECHECK_TOPUP_MIN_QUANTITY`/`MAX_QUANTITY`
+    change can't retroactively change what an already-paid purchase grants (and the grant
+    is always exactly what was charged, since Stripe billed that same line-item
+    quantity). `expires_at` is the END of the entitlement's CURRENT
+    quota window (`services.precheck_billing.quota_window`) — a top-up never outlives the
+    billing cycle (or calendar month) it was bought in.
+
+    Idempotency: `processed_stripe_events` (this event's own dedup row, inserted by
+    `apply_stripe_event` in the SAME transaction) is the PRIMARY guard — a redelivery of
+    the SAME `event.id` never reaches this function twice. This is a BELT-AND-BRACES
+    second guard against the narrower case of Stripe (or a manual dashboard resend)
+    completing the SAME Checkout Session under a genuinely DIFFERENT `event.id`:
+    `stripe_checkout_session_id` is UNIQUE, so a duplicate insert is caught via a
+    SAVEPOINT (nested transaction) and treated as a no-op replay — the OUTER transaction
+    (carrying the `processed_stripe_events` row) is committed either way.
+    """
+    try:
+        quantity = int(metadata.get("quantity") or 0)
+    except (TypeError, ValueError):
+        quantity = 0
+    session_id = obj.get("id")
+    if quantity <= 0 or not session_id:
+        logger.warning(
+            "precheck_topup_grant_skipped",
+            tenant_id=str(ent.tenant_id),
+            quantity=metadata.get("quantity"),
+            has_session_id=bool(session_id),
+        )
+        return
+
+    _, window_end = precheck_billing.quota_window(ent, datetime.now(UTC))
+    credit = PrecheckTopupCredit(
+        tenant_id=ent.tenant_id,
+        amount=quantity,
+        amount_total_cents=obj.get("amount_total"),
+        currency=obj.get("currency"),
+        stripe_checkout_session_id=str(session_id),
+        expires_at=window_end,
+    )
+    try:
+        async with session.begin_nested():
+            session.add(credit)
+            await session.flush()
+    except IntegrityError:
+        logger.info(
+            "precheck_topup_replay_ignored",
+            tenant_id=str(ent.tenant_id),
+            stripe_checkout_session_id=str(session_id),
+        )
+    else:
+        logger.info(
+            "precheck_topup_granted",
+            tenant_id=str(ent.tenant_id),
+            amount=quantity,
+            stripe_checkout_session_id=str(session_id),
+        )
+
+
 def _reset_markers_if_subscription_changed(ent: Entitlement, new_subscription_id: str) -> bool:
     """Reset `charge_hardened_at`/`cancel_scheduled_at` to `None` when a NEW (non-null,
     different) subscription id is about to replace an existing one on this entitlement.
@@ -935,13 +1171,23 @@ async def apply_stripe_event(
         await session.commit()
         logger.info("stripe_event_applied", event_type=event_type, kind="signup_intent")
         if provisioned_tenant is not None:
-            # Best-effort, post-commit, fully self-contained try/except (never raises —
-            # see its own docstring): a secretaria outage must never break this webhook.
-            # Local import: services.onboarding_sync imports services.billing
-            # (harden_charge), so a module-level import here would cycle.
-            from brain_api.services import onboarding_sync
+            # Gated on the JUST-ACTIVATED entitlement actually enabling secretaria — a
+            # PreCheck-only signup (precheck-billing round fix) must not ping secretaria
+            # provisioning at all. Deliberately narrower than api/onboarding.py's OWN
+            # (still-ungated) lazy-retry call to the same bridge: THAT call site has
+            # existing tests relying on the ungated behavior for a not-yet-purchased
+            # tenant manually reaching the wizard (see docs/CHECKPOINT_register_at_first_
+            # card.md); this webhook call site has no such constraint.
+            ent_after_activation = await session.get(Entitlement, provisioned_tenant.id)
+            if ent_after_activation is not None and ent_after_activation.secretaria_enabled:
+                # Best-effort, post-commit, fully self-contained try/except (never raises
+                # — see its own docstring): a secretaria outage must never break this
+                # webhook. Local import: services.onboarding_sync imports
+                # services.billing (harden_charge), so a module-level import here would
+                # cycle.
+                from brain_api.services import onboarding_sync
 
-            await onboarding_sync.ensure_secretaria_provisioned(session, provisioned_tenant)
+                await onboarding_sync.ensure_secretaria_provisioned(session, provisioned_tenant)
         return True
 
     ent = await _entitlement_for_event(session, obj)
@@ -952,15 +1198,23 @@ async def apply_stripe_event(
         return True
 
     if event_type == "checkout.session.completed":
-        if obj.get("customer"):
-            ent.stripe_customer_id = str(obj["customer"])
-        if obj.get("subscription"):
-            new_subscription_id = str(obj["subscription"])
-            if _reset_markers_if_subscription_changed(ent, new_subscription_id):
-                # Task 2: a genuine subscription-id change restarts the test window too.
-                await _restart_test_window(session, ent.tenant_id)
-            ent.stripe_subscription_id = new_subscription_id
-        # Plan/status recompute rides the subscription.* events Stripe sends alongside.
+        metadata = obj.get("metadata") or {}
+        if metadata.get("kind") == "precheck_topup":
+            # One-off avulso top-up purchase (mode=payment): grant the credit. This session
+            # shape carries no `subscription` and reuses the tenant's EXISTING
+            # `stripe_customer_id`, so the generic link-ids fallback below does not apply
+            # to it at all — handled BEFORE that fallback, not after.
+            await _apply_precheck_topup_checkout(session, ent, obj, metadata)
+        else:
+            if obj.get("customer"):
+                ent.stripe_customer_id = str(obj["customer"])
+            if obj.get("subscription"):
+                new_subscription_id = str(obj["subscription"])
+                if _reset_markers_if_subscription_changed(ent, new_subscription_id):
+                    # Task 2: a genuine subscription-id change restarts the test window too.
+                    await _restart_test_window(session, ent.tenant_id)
+                ent.stripe_subscription_id = new_subscription_id
+            # Plan/status recompute rides the subscription.* events Stripe sends alongside.
 
     elif event_type in ("customer.subscription.created", "customer.subscription.updated"):
         if obj.get("customer"):

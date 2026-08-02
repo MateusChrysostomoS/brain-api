@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     # Max POST /demo-requests per client IP per minute (basic, in-process).
     DEMO_RATE_LIMIT_PER_MIN: int = 5
 
+    # --- Launch-waitlist anti-spam (pre-launch buy gate, services/waitlist.py) ---
+    # Max POST /public/launch-waitlist per client IP per minute. Its OWN bucket, not the
+    # /public/* signup one: a pre-launch pricing-page form must never be able to eat the
+    # budget the real checkout funnel depends on once PRODUCT_LAUNCHED flips to true.
+    WAITLIST_RATE_LIMIT_PER_MIN: int = 5
+
     # --- Cold signup anti-spam (public checkout -> auto-provisioning, services/signup.py) ---
     # Max requests per client IP per minute across the three /public/* signup routes
     # (signup-intents, checkout-sessions, onboarding-status share ONE bucket — same
@@ -206,6 +212,38 @@ class Settings(BaseSettings):
     # both set; unset disables the forward entirely (metering-only, no billing impact
     # either way).
     STRIPE_METER_EVENT_REMINDERS: str | None = None
+
+    # --- PreCheck billing (precheck-billing round) ---
+    # PreCheck bills FLAT-PRICE-plus-quota, never metered (unlike secretaria_basico above):
+    # each PreCheck plan grants a monthly consultation quota (services/catalog.py's
+    # LIMIT_PRECHECK_CONSULTATIONS), read from these two settings AT CATALOG IMPORT TIME
+    # (services/catalog.py's PLANS construction) rather than hardcoded like every other
+    # plan limit — a deliberate exception so an operator can retune the quota (a promo, a
+    # temporary bump) with an env change + restart, no code deploy. Changing these after
+    # the process has started has NO effect until restart (catalog.py reads them once).
+    PRECHECK_BASIC_CONSULTATIONS_PER_MONTH: int = 100
+    PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH: int = 300
+    # Bounds on ONE avulso purchase of PreCheck consultations (POST /billing/precheck/topup,
+    # a one-off mode=payment Checkout Session — services/billing.py::
+    # create_precheck_topup_checkout_session). The top-up Price is per-UNIT (one
+    # consultation), so the doctor names the quantity in the BRAIN UI and we bill
+    # `quantity x unit price` — there is no fixed pack size. The minimum makes a purchase
+    # worth processing; the maximum is only a typo/abuse guard, not a business rule.
+    # Both are enforced server-side regardless of what the frontend sends, and the
+    # RESULTING quantity is stamped into the Checkout Session's `metadata.quantity` AT
+    # PURCHASE TIME — the webhook grant reads it back from the event's own metadata, never
+    # from live settings, so retuning these can never alter a purchase already paid for.
+    PRECHECK_TOPUP_MIN_QUANTITY: int = 5
+    PRECHECK_TOPUP_MAX_QUANTITY: int = 1000
+    # Shared secret PAIR for PreCheck's OWN inbound `/internal/precheck/*` surface
+    # (api/internal_precheck.py: X-Internal-Api-Key, secrets.compare_digest, fail CLOSED
+    # when unset). A SEPARATE service identity from SECRETARIA_API_KEY above — PreCheck
+    # must never be able to call brain-api using secretarIA's key or vice versa (each mesh
+    # caller gets its own credential, auth-jwt-multitenant skill). NEVER logged.
+    PRECHECK_API_KEY: str = ""
+    # Rotation window ONLY: the previous key, accepted for VERIFICATION ONLY while both
+    # services flip to the new value (docs/key-rotation.md). Leave empty otherwise.
+    PRECHECK_API_KEY_PREVIOUS: str = ""
 
     # --- Onboarding / multi-professional (CONTRACT_onboarding_v1.md) ---
     # Meta Graph API app credentials for the WhatsApp Embedded Signup authorization-code

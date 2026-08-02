@@ -8,6 +8,11 @@ Status: **BUILT + tested locally (2026-07-21)**, UNPUSHED, not deployed. No migr
 > round"** section at the bottom of THIS file: a new `PATCH /public/signup-intents/{id}`
 > add-on-update route + `GET /public/checkout-config`'s new `addons` field, both additive
 > on top of the split below.
+>
+> See `docs/CHECKPOINT_launch_waitlist.md` (2026-08-01): this whole funnel is currently
+> UNREACHABLE from the site — brain-frontend's `PRODUCT_LAUNCHED` flag gates every buy
+> CTA (and `/cadastro` itself) behind a waitlist modal until launch. Nothing below
+> changed; it simply receives no traffic until that flag flips.
 
 ## Why
 

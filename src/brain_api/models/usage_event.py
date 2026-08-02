@@ -12,7 +12,7 @@ single `session.get`, mirroring `ProcessedStripeEvent`'s natural-key dedupe patt
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from brain_api.core.database import Base
@@ -22,6 +22,13 @@ class UsageEvent(Base):
     """A single applied usage event. PK = the caller's idempotency key (natural dedupe)."""
 
     __tablename__ = "usage_events"
+    __table_args__ = (
+        # Backs services/precheck_billing.py::usage_summary's window SUM query (tenant +
+        # feature + a created_at RANGE scan) — the exact access pattern every PreCheck
+        # quota check performs, potentially on every consultation attempt (precheck-
+        # billing round; migration 0010_precheck_billing).
+        Index("ix_usage_events_tenant_feature_created", "tenant_id", "feature", "created_at"),
+    )
 
     # Caller-supplied idempotency key, e.g. "reminder:24h:<appointment_id>".
     id: Mapped[str] = mapped_column(String(128), primary_key=True)

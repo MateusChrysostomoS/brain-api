@@ -63,12 +63,16 @@ def test_plan_secretaria_tier_valid_and_implies_secretaria_flag():
 def test_assignable_plan_ids_has_no_reserved_slots():
     """The reserved-slot concept (`available=False`, formerly excluding
     secretaria_bronze_2) is gone entirely as of the 2026-07-22 tier-ladder retirement —
-    every catalog plan is currently assignable."""
+    every catalog plan is currently assignable. PLAN_PRECHECK ("precheck") is no longer a
+    `PLANS` member as of the 2026-08-01 PreCheck-billing split — it lives on only as a
+    LEGACY_PLAN_ALIASES key (see test_get_plan_resolves_precheck_alias_to_basic below),
+    replaced here by the two real tiers."""
     assert catalog.ASSIGNABLE_PLAN_IDS == catalog.PLAN_IDS
     assert catalog.ASSIGNABLE_PLAN_IDS == frozenset(
         {
             catalog.PLAN_FREE,
-            catalog.PLAN_PRECHECK,
+            catalog.PLAN_PRECHECK_BASIC,
+            catalog.PLAN_PRECHECK_ADVANCED,
             catalog.PLAN_SECRETARIA_BASICO,
             catalog.PLAN_COMPLETE_CLINIC_COMBO,
         }
@@ -79,6 +83,54 @@ def test_get_plan_resolves_legacy_alias_and_fails_closed():
     assert catalog.get_plan("brain-completo").id == catalog.PLAN_COMPLETE_CLINIC_COMBO
     assert catalog.get_plan("nonsense") is None
     assert catalog.get_plan(None) is None
+
+
+def test_get_plan_resolves_precheck_alias_to_basic():
+    """The legacy bare "precheck" id (pre-2026-08-01 PreCheck-billing split) resolves to
+    the new PreCheck Basic tier — protects already-seeded/demo rows (e.g. the client
+    fixture's Clinic A, plan="precheck") without a data migration."""
+    plan = catalog.get_plan(catalog.PLAN_PRECHECK)
+    assert plan is not None
+    assert plan.id == catalog.PLAN_PRECHECK_BASIC
+    assert plan.precheck is True
+    assert plan.secretaria is False
+
+
+def test_precheck_plans_carry_env_default_quotas():
+    """The two PreCheck plans' LIMIT_PRECHECK_CONSULTATIONS base_limit is read from
+    Settings (PRECHECK_BASIC_CONSULTATIONS_PER_MONTH / PRECHECK_ADVANCED_CONSULTATIONS_
+    PER_MONTH) at catalog import time; hermetic tests set neither env var, so the code
+    defaults (100 / 300) apply."""
+    from brain_api.config import get_settings
+
+    settings = get_settings()
+    basic = catalog.get_plan(catalog.PLAN_PRECHECK_BASIC)
+    advanced = catalog.get_plan(catalog.PLAN_PRECHECK_ADVANCED)
+    assert basic.base_limits[catalog.LIMIT_PRECHECK_CONSULTATIONS] == (
+        settings.PRECHECK_BASIC_CONSULTATIONS_PER_MONTH
+    )
+    assert advanced.base_limits[catalog.LIMIT_PRECHECK_CONSULTATIONS] == (
+        settings.PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH
+    )
+    # Env defaults, asserted as literals too so a silent default change is caught here.
+    assert settings.PRECHECK_BASIC_CONSULTATIONS_PER_MONTH == 100
+    assert settings.PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH == 300
+
+
+def test_combo_carries_the_advanced_precheck_quota():
+    """The premium combo (precheck=True) must not leave PreCheck unenforced (limit 0) —
+    it carries the SAME quota as the standalone Advanced tier."""
+    from brain_api.config import get_settings
+
+    settings = get_settings()
+    combo = catalog.get_plan(catalog.PLAN_COMPLETE_CLINIC_COMBO)
+    assert combo.base_limits[catalog.LIMIT_PRECHECK_CONSULTATIONS] == (
+        settings.PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH
+    )
+    limits = catalog.compute_limits(catalog.PLAN_COMPLETE_CLINIC_COMBO)
+    assert limits[catalog.LIMIT_PRECHECK_CONSULTATIONS] == (
+        settings.PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +248,12 @@ def test_is_entitled_unknown_key_raises():
 
 
 async def test_get_entitlements_owner_a_precheck_plan(client):
+    """Clinic A is seeded with the LEGACY plan string "precheck" (test_rbac.py), which
+    resolves through LEGACY_PLAN_ALIASES to PLAN_PRECHECK_BASIC. Since the 2026-08-01
+    PreCheck-billing split, that plan carries a real (env-default) LIMIT_PRECHECK_
+    CONSULTATIONS quota — every OTHER limit key still reads 0."""
+    from brain_api.config import get_settings
+
     token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
     resp = await client.get("/entitlements", headers=_bearer(token))
     assert resp.status_code == 200, resp.text
@@ -205,7 +263,12 @@ async def test_get_entitlements_owner_a_precheck_plan(client):
     assert set(body["addons"]) == catalog.ADDON_IDS
     assert all(v is False for v in body["addons"].values())
     assert set(body["limits"]) == catalog.LIMIT_KEYS
-    assert all(v == 0 for v in body["limits"].values())
+    expected_quota = get_settings().PRECHECK_BASIC_CONSULTATIONS_PER_MONTH
+    for key, value in body["limits"].items():
+        if key == catalog.LIMIT_PRECHECK_CONSULTATIONS:
+            assert value == expected_quota
+        else:
+            assert value == 0
     assert body["products"]["precheck"] is True
 
 

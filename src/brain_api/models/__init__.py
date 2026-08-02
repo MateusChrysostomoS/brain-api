@@ -7,6 +7,7 @@ autogenerate and the migrations env rely on.
 from brain_api.models.demo_request import DemoRequest
 from brain_api.models.entitlement import Entitlement
 from brain_api.models.precheck_link import PrecheckAccountLink
+from brain_api.models.precheck_topup_credit import PrecheckTopupCredit
 from brain_api.models.privacy_request import PrivacyRequest
 from brain_api.models.processed_stripe_event import ProcessedStripeEvent
 from brain_api.models.refresh_token import RefreshToken
@@ -15,11 +16,13 @@ from brain_api.models.signup_intent import SignupIntent
 from brain_api.models.tenant import Tenant
 from brain_api.models.usage_event import UsageEvent
 from brain_api.models.user import User
+from brain_api.models.waitlist_lead import WaitlistLead
 
 __all__ = [
     "DemoRequest",
     "Entitlement",
     "PrecheckAccountLink",
+    "PrecheckTopupCredit",
     "PrivacyRequest",
     "ProcessedStripeEvent",
     "RefreshToken",
@@ -28,4 +31,5 @@ __all__ = [
     "Tenant",
     "UsageEvent",
     "User",
+    "WaitlistLead",
 ]

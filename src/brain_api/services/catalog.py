@@ -14,6 +14,8 @@ module's prices.
 
 from dataclasses import dataclass, field
 
+from brain_api.config import get_settings
+
 # --- secretarIA tier (single value since the 2026-07-22 tier-ladder retirement) -------
 #
 # ferro/bronze_1/bronze_2 used to be separate sellable plans; only ferro's fully-metered
@@ -77,6 +79,17 @@ LIMIT_BILLABLE_PATIENTS = "billable_patients"
 #: calendar, a plan/add-on grant); this one is the BILLED COUNT ("active_professionals" =
 #: how many were active this month, what Stripe actually charges for).
 LIMIT_ACTIVE_PROFESSIONALS = "active_professionals"
+#: Monthly QUOTA of PreCheck consultations (patient pre-consultation flows completed).
+#: Unlike the secretarIA metering limits above (which stay 0 = unenforced-by-quota on
+#: every plan today), this one carries a REAL per-plan base_limit — see the two PreCheck
+#: PlanDefs and PRECHECK_BASIC_CONSULTATIONS_PER_MONTH / PRECHECK_ADVANCED_CONSULTATIONS_
+#: PER_MONTH below. PreCheck billing is flat-price-plus-quota, not metered, so this LIMIT
+#: is the enforcement mechanism itself (services/precheck_billing.py), not just a display
+#: number. Recorded through the SAME POST /internal/usage-events -> services/usage.py::
+#: record_usage ledger every other feature uses; deliberately absent from that module's
+#: `_METER_EVENT_SETTINGS` because there is no Stripe Meter for it — PreCheck never bills
+#: by usage, only a flat plan price plus one-off top-up packs.
+LIMIT_PRECHECK_CONSULTATIONS = "precheck_consultations"
 
 LIMIT_KEYS: frozenset[str] = frozenset(
     (
@@ -87,15 +100,31 @@ LIMIT_KEYS: frozenset[str] = frozenset(
         LIMIT_HSM_PROACTIVE,
         LIMIT_BILLABLE_PATIENTS,
         LIMIT_ACTIVE_PROFESSIONALS,
+        LIMIT_PRECHECK_CONSULTATIONS,
     )
 )
 
 # --- plan ids --------------------------------------------------------------------------
 
 PLAN_FREE = "free"
+#: Legacy id (pre-2026-08-01 PreCheck-billing split). No longer a `PLANS` member — see
+#: LEGACY_PLAN_ALIASES below, which resolves it to PLAN_PRECHECK_BASIC — but kept as a
+#: constant because already-seeded/demo rows and not-yet-migrated STRIPE_PRICE_MAP
+#: entries may still spell the plan this way.
 PLAN_PRECHECK = "precheck"
+PLAN_PRECHECK_BASIC = "precheck_basic"
+PLAN_PRECHECK_ADVANCED = "precheck_advanced"
 PLAN_SECRETARIA_BASICO = "secretaria_basico"
 PLAN_COMPLETE_CLINIC_COMBO = "complete_clinic_combo"
+
+#: STRIPE_PRICE_MAP key for the avulso PreCheck consultation's one-off Stripe Price —
+#: PER UNIT (standard pricing, one consultation), charged as `quantity x unit price` on a
+#: `mode=payment` Checkout Session (services/billing.py::
+#: create_precheck_topup_checkout_session). NOT a plan or add-on id: it never appears in
+#: `PLAN_IDS`/`ADDON_IDS`/`ASSIGNABLE_PLAN_IDS`, exactly like billing.py's
+#: `{plan_id}_metered_*` companion-price keys — `_parse_price_map` there is taught to
+#: accept it explicitly.
+PRECHECK_TOPUP_PRICE_KEY = "precheck_topup"
 
 #: Plan strings written before a catalog change, resolved to their current catalog plan
 #: so already-provisioned rows (e.g. the seeded demo clinic's "brain-completo") keep
@@ -104,10 +133,13 @@ PLAN_COMPLETE_CLINIC_COMBO = "complete_clinic_combo"
 #: PLAN_SECRETARIA_BASICO) — ferro's pricing model (no flat/anchor price, metered
 #: companions) carries forward unchanged under the new id, so the alias is safe.
 #: bronze_1's flat-fee shape does NOT carry forward (retired outright — confirmed no
-#: live subscribers to preserve) and is deliberately NOT aliased.
+#: live subscribers to preserve) and is deliberately NOT aliased. "precheck" covers the
+#: 2026-08-01 PreCheck-billing split (one PLAN_PRECHECK -> PLAN_PRECHECK_BASIC/ADVANCED):
+#: every already-seeded/demo "precheck" row keeps working, resolving to the Basic tier.
 LEGACY_PLAN_ALIASES: dict[str, str] = {
     "brain-completo": PLAN_COMPLETE_CLINIC_COMBO,
     "secretaria_ferro": PLAN_SECRETARIA_BASICO,
+    "precheck": PLAN_PRECHECK_BASIC,
 }
 
 
@@ -232,6 +264,17 @@ ADDONS: dict[str, AddonDef] = {
 #: The formal `entitlements.addons` keyset. Every materialized row carries ALL of these.
 ADDON_IDS: frozenset[str] = frozenset(ADDONS)
 
+# PreCheck billing round (2026-08-01): these two quotas are read from Settings ONCE, at
+# catalog import time, rather than hardcoded like every other base_limit in this module.
+# Deliberate, spec-mandated deviation from "the catalog is all hardcoded": the PreCheck
+# consultation quota is a commercial knob operators may need to retune (a promo, a
+# temporary bump for one plan) WITHOUT a code deploy — an env var change + process
+# restart is enough (get_settings() is lru_cached, so this module only ever reads them
+# once per process). Every OTHER plan/add-on limit in this file stays a literal
+# precisely because it should NOT be tunable without a reviewed code change.
+_PRECHECK_BASIC_QUOTA = get_settings().PRECHECK_BASIC_CONSULTATIONS_PER_MONTH
+_PRECHECK_ADVANCED_QUOTA = get_settings().PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH
+
 PLANS: dict[str, PlanDef] = {
     p.id: p
     for p in (
@@ -243,11 +286,20 @@ PLANS: dict[str, PlanDef] = {
             secretaria_tier=None,
         ),
         PlanDef(
-            id=PLAN_PRECHECK,
-            name="PreCheck",
+            id=PLAN_PRECHECK_BASIC,
+            name="PreCheck Basic",
             precheck=True,
             secretaria=False,
             secretaria_tier=None,
+            base_limits={LIMIT_PRECHECK_CONSULTATIONS: _PRECHECK_BASIC_QUOTA},
+        ),
+        PlanDef(
+            id=PLAN_PRECHECK_ADVANCED,
+            name="PreCheck Advanced",
+            precheck=True,
+            secretaria=False,
+            secretaria_tier=None,
+            base_limits={LIMIT_PRECHECK_CONSULTATIONS: _PRECHECK_ADVANCED_QUOTA},
         ),
         PlanDef(
             id=PLAN_SECRETARIA_BASICO,
@@ -270,7 +322,17 @@ PLANS: dict[str, PlanDef] = {
             secretaria=True,
             secretaria_tier=TIER_BASICO,
             included_addons=(ADDON_REACTIVATION_PACK, ADDON_VERIFIED_IDENTITY),
-            base_limits={LIMIT_PROFESSIONALS: 1, LIMIT_UNITS: 1, LIMIT_MESSAGES: 400},
+            # The premium combo carries PreCheck's ADVANCED quota (not Basic) — it is the
+            # top-of-line bundle, and leaving this at the implicit 0 would mean an
+            # unenforced (unlimited) PreCheck side for the most expensive plan, which is
+            # backwards. LIMIT_PRECHECK_CONSULTATIONS is 0 (unenforced) on every OTHER
+            # plan below this that doesn't grant it explicitly.
+            base_limits={
+                LIMIT_PROFESSIONALS: 1,
+                LIMIT_UNITS: 1,
+                LIMIT_MESSAGES: 400,
+                LIMIT_PRECHECK_CONSULTATIONS: _PRECHECK_ADVANCED_QUOTA,
+            },
             # ~15% off the sum of the parts; the actual discounted amount lives on the
             # Stripe price (billing round), this is display/derivation metadata only.
             discount_pct=15,

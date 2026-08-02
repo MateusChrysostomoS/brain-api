@@ -21,6 +21,10 @@ os.environ.setdefault("AUTH_RATE_LIMIT_PER_MIN", "0")
 # all three routes, sharing ONE bucket, many times per run); the dedicated rate-limit
 # test monkeypatches its own limiter instance instead of relying on this setting.
 os.environ.setdefault("SIGNUP_RATE_LIMIT_PER_MIN", "0")
+# Same reasoning for the launch-waitlist limiter (tests/test_launch_waitlist.py posts the
+# same route many times from one fake IP); its rate-limit test monkeypatches the limiter
+# instance directly instead of relying on this setting.
+os.environ.setdefault("WAITLIST_RATE_LIMIT_PER_MIN", "0")
 
 # Mesh upstreams are UNSET in tests: the proxy / internal-data clients then degrade to an
 # empty page with no network. Force-empty here (real env beats the .env file in
@@ -48,8 +52,14 @@ os.environ.setdefault(
         # ferro/bronze_1/bronze_2 tier ladder (2026-07-22) — see catalog.py's
         # LEGACY_PLAN_ALIASES. "secretaria_bronze_1" is retired outright (no alias) and
         # deliberately absent here: it would now be rejected as an unknown catalog id.
+        # "precheck" is the LEGACY alias for precheck_basic (precheck-billing round,
+        # 2026-08-01) — kept spelled this way here deliberately so tests exercise the
+        # alias-normalization path (_parse_price_map); "precheck_advanced" and
+        # "precheck_topup" (the avulso consultation's one-off PER-UNIT price) are spelled
+        # canonically.
         '{"complete_clinic_combo": "price_combo", "secretaria_basico": "price_ferro", '
-        '"precheck": "price_precheck", '
+        '"precheck": "price_precheck", "precheck_advanced": "price_precheck_advanced", '
+        '"precheck_topup": "price_precheck_topup", '
         '"multi_professional": "price_multipro", "reactivation_pack": "price_react", '
         '"ehr": "price_ehr"}'
     ),

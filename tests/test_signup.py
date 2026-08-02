@@ -800,11 +800,15 @@ async def test_patch_intent_not_pending_conflict(client, monkeypatch):
 
 
 async def test_patch_intent_plan_change_not_allowed(client):
+    """Target plan must be a REAL, currently-assignable catalog plan for this to exercise
+    `plan_change_not_allowed` (rather than 422 unknown_catalog_ids) -- "precheck_basic",
+    not the legacy bare "precheck" alias, which `_validate_catalog_ids` no longer
+    recognizes as a plan id since the 2026-08-01 PreCheck-billing split."""
     intent_id = await _register(
         client, email="patch.planchange@example.com", catalog_ids=["secretaria_basico"]
     )
     resp = await client.patch(
-        f"/public/signup-intents/{intent_id}", json={"catalog_ids": ["precheck"]}
+        f"/public/signup-intents/{intent_id}", json={"catalog_ids": ["precheck_basic"]}
     )
     assert resp.status_code == 409
     assert resp.json()["detail"] == "plan_change_not_allowed"
@@ -1242,6 +1246,104 @@ async def test_provision_missing_tenant_fails_gracefully(db_session):
     )
     assert intent.status == "failed"
     assert intent.failure_reason == "tenant_missing"
+
+
+# --- Webhook: the secretaria-provisioning bridge is gated on secretaria_enabled -------
+#
+# precheck-billing round fix: services.billing.apply_stripe_event's signup-intent branch
+# used to ping onboarding_sync.ensure_secretaria_provisioned unconditionally after ANY
+# activation. A PreCheck-only signup has no WhatsApp/secretaria component at all and must
+# never trigger it. Exercised directly against `billing_service.apply_stripe_event` (a
+# `subscription` id riding the event object takes the "legacy subscription-mode" branch
+# inside `_apply_signup_intent_checkout`, so no Stripe call happens at all here) rather
+# than through the full checkout HTTP round-trip, mirroring tests/test_billing_phase1.py's
+# direct-service-layer style for webhook internals.
+
+
+async def test_precheck_only_signup_does_not_provision_secretaria(db_session, monkeypatch):
+    from brain_api.models import Entitlement
+    from brain_api.services import onboarding_sync
+
+    calls: list = []
+
+    async def fake_ensure(session, tenant):
+        calls.append(tenant.id)
+
+    monkeypatch.setattr(onboarding_sync, "ensure_secretaria_provisioned", fake_ensure)
+
+    reg = await signup_service.register_signup(
+        db_session,
+        SignupIntentCreate(
+            name="Dr. Precheck",
+            clinic_name="Precheck Only Gate Clinic",
+            email="precheck.only.gate@example.com",
+            whatsapp_phone="+5511999990000",
+            password=SIGNUP_PASSWORD,
+            catalog_ids=["precheck_basic"],
+        ),
+    )
+
+    applied = await billing_service.apply_stripe_event(
+        db_session,
+        "evt_precheck_only_gate",
+        "checkout.session.completed",
+        {
+            "customer": "cus_precheck_only_gate",
+            "subscription": "sub_precheck_only_gate",
+            "metadata": {"kind": "signup_intent", "signup_intent_id": str(reg.intent.id)},
+        },
+    )
+    assert applied is True
+    assert reg.intent.status == "completed"
+
+    ent = await db_session.get(Entitlement, reg.intent.tenant_id)
+    assert ent.precheck_enabled is True
+    assert ent.secretaria_enabled is False
+
+    assert calls == []  # never pinged
+
+
+async def test_secretaria_signup_still_provisions_secretaria(db_session, monkeypatch):
+    """Contrast case: a secretarIA-enabling signup still fires the provisioning bridge —
+    proves the fix is a GATE, not an accidental blanket removal of the call."""
+    from brain_api.models import Entitlement
+    from brain_api.services import onboarding_sync
+
+    calls: list = []
+
+    async def fake_ensure(session, tenant):
+        calls.append(tenant.id)
+
+    monkeypatch.setattr(onboarding_sync, "ensure_secretaria_provisioned", fake_ensure)
+
+    reg = await signup_service.register_signup(
+        db_session,
+        SignupIntentCreate(
+            name="Dr. Secretaria",
+            clinic_name="Secretaria Gate Clinic",
+            email="secretaria.gate@example.com",
+            whatsapp_phone="+5511999990000",
+            password=SIGNUP_PASSWORD,
+            catalog_ids=["secretaria_basico"],
+        ),
+    )
+
+    applied = await billing_service.apply_stripe_event(
+        db_session,
+        "evt_secretaria_gate",
+        "checkout.session.completed",
+        {
+            "customer": "cus_secretaria_gate",
+            "subscription": "sub_secretaria_gate",
+            "metadata": {"kind": "signup_intent", "signup_intent_id": str(reg.intent.id)},
+        },
+    )
+    assert applied is True
+
+    ent = await db_session.get(Entitlement, reg.intent.tenant_id)
+    assert ent.secretaria_enabled is True
+
+    assert calls == [reg.intent.tenant_id]
 
 
 # --- Public checkout-funnel config -------------------------------------------------------

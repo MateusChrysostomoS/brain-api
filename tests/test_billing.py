@@ -16,6 +16,8 @@ import os
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from brain_api.services import billing as billing_service
 from tests.test_rbac import (
     ADMIN_EMAIL,
@@ -89,7 +91,13 @@ class _FakeResponse:
 
 
 def _install_fake_stripe_httpx(
-    monkeypatch, captured: dict, response_body: dict, *, trial_period_days: int = 0
+    monkeypatch,
+    captured: dict,
+    response_body: dict,
+    *,
+    trial_period_days: int = 0,
+    precheck_topup_min_quantity: int = 5,
+    precheck_topup_max_quantity: int = 1000,
 ) -> None:
     """Point services.billing at fake Stripe settings + a recording fake httpx client.
 
@@ -97,6 +105,11 @@ def _install_fake_stripe_httpx(
     off, the historical behavior every existing caller relies on) — the cold-signup
     setup-mode checkout only emits `custom_text[submit][message]` when it is > 0
     (services.billing._apply_setup_custom_text), same gate as `_apply_trial`.
+
+    `precheck_topup_min_quantity` / `precheck_topup_max_quantity` override the avulso
+    purchase bounds (defaults 5 / 1000, matching Settings' own) —
+    services.billing.create_precheck_topup_checkout_session bounds-checks the requested
+    quantity against them before creating the session (precheck-billing round).
     """
 
     class _FakeClient:
@@ -133,6 +146,8 @@ def _install_fake_stripe_httpx(
         # AttributeError. tests/test_billing_phase1.py exercises the non-zero case with
         # its own extended fake settings.
         STRIPE_TRIAL_PERIOD_DAYS=trial_period_days,
+        PRECHECK_TOPUP_MIN_QUANTITY=precheck_topup_min_quantity,
+        PRECHECK_TOPUP_MAX_QUANTITY=precheck_topup_max_quantity,
     )
     monkeypatch.setattr(billing_service, "get_settings", lambda: fake_settings)
     monkeypatch.setattr(billing_service.httpx, "AsyncClient", _FakeClient)
@@ -518,14 +533,34 @@ async def test_checkout_requires_tenant_scoped_token(client):
 
 def test_price_map_accepts_secretaria_ferro_alias():
     """A not-yet-migrated deployed STRIPE_PRICE_MAP may still key the secretarIA price as
-    "secretaria_ferro" (its id before the 2026-07-22 tier-ladder retirement); parsing
-    must normalize it to secretaria_basico so both lookup directions (price_id_for at
-    checkout, catalog_id_for_price in the webhook recompute) resolve to the current
-    catalog plan."""
+    "secretaria_ferro" (its id before the 2026-07-22 tier-ladder retirement), and/or the
+    PreCheck price as bare "precheck" (its id before the 2026-08-01 PreCheck-billing
+    split); parsing must normalize BOTH to their current catalog plan (secretaria_basico /
+    precheck_basic) so both lookup directions (price_id_for at checkout,
+    catalog_id_for_price in the webhook recompute) resolve to the current catalog plan."""
     parsed = billing_service._parse_price_map(
         '{"secretaria_ferro": "price_alias_test", "precheck": "price_pc_test"}'
     )
     assert parsed == {
         "secretaria_basico": "price_alias_test",
-        "precheck": "price_pc_test",
+        "precheck_basic": "price_pc_test",
     }
+
+
+def test_price_map_accepts_precheck_billing_keys_and_rejects_garbage():
+    """The three precheck-billing-round STRIPE_PRICE_MAP keys (the two PreCheck tiers,
+    spelled canonically, plus the top-up pack's one-off price) all parse through
+    untouched — none of them is a legacy alias — while a genuinely unknown id is still
+    rejected loudly (a typo'd map must not silently unsell a product)."""
+    parsed = billing_service._parse_price_map(
+        '{"precheck_basic": "price_basic", "precheck_advanced": "price_advanced", '
+        '"precheck_topup": "price_topup"}'
+    )
+    assert parsed == {
+        "precheck_basic": "price_basic",
+        "precheck_advanced": "price_advanced",
+        "precheck_topup": "price_topup",
+    }
+
+    with pytest.raises(ValueError):
+        billing_service._parse_price_map('{"precheck_totally_bogus": "price_x"}')

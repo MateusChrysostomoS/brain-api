@@ -345,6 +345,22 @@ row to `demo_requests` and returns a confirmation payload. Public, unauthenticat
 **Persistence:** one row in `demo_requests` (status defaults to `new`). No tenant
 creation, no entitlement writes, no Stripe, no async jobs.
 
+### 4.2 `POST /public/launch-waitlist` — pre-launch waiting list (public)
+
+Backs the pre-launch buy gate: while brain-frontend's `PRODUCT_LAUNCHED` flag
+(`app/(site)/_lib/launch.ts`) is false, every pricing CTA opens an "Estamos quase lá"
+modal instead of `/cadastro` or Stripe Checkout, and that modal posts here. Same isolated
+shape as §4.1 (honeypot `website`, per-IP limiter, no tenant/entitlement/Stripe/async).
+
+Body `{name, email, plan_hint?}` → `201 {id, message}`. **IDEMPOTENT per e-mail**
+(lowercased; `waitlist_leads.email` is UNIQUE): a repeat submission refreshes `name` /
+`plan_hint`, never `created_at`, and returns the SAME `id` with identical copy — the
+response never reveals whether the address was already on the list.
+
+`plan_hint` is a free-form sales hint (the clicked card's catalog ids joined by `,`),
+deliberately NOT validated against `services/catalog.py`. See
+`docs/CHECKPOINT_launch_waitlist.md`.
+
 ---
 
 ## 5. Anti-spam / rate limiting (basic)
@@ -355,6 +371,10 @@ creation, no entitlement writes, no Stripe, no async jobs.
 - `POST /auth/token` + `POST /auth/refresh`: **implemented** — shared per-IP sliding
   window (`AUTH_RATE_LIMIT_PER_MIN`, default 10/min, `core/ratelimit.py`) to blunt
   credential stuffing / token brute force. `0` disables (hermetic tests).
+- `POST /public/launch-waitlist` (§4.2): its OWN bucket
+  (`WAITLIST_RATE_LIMIT_PER_MIN`, default 5/min) — deliberately NOT the `/public/*` signup
+  bucket, so a pre-launch marketing form can never eat the budget the real checkout funnel
+  depends on. One limiter instance per protected surface is the rule here.
 
 These are best-effort and must never 500 if the limiter backend is unavailable
 (fail-open for availability, since no Redis is in play).
@@ -477,6 +497,18 @@ task requires.
 | `status` | String(32) | not null, server_default `'new'`; `new` \| `contacted` \| `converted` \| `dismissed` |
 | `created_at` | DateTime(tz) | server_default now(), indexed |
 
+### 6.4a `waitlist_leads` (pre-launch buy gate — added in migration `0011`)
+| column | type | notes |
+|---|---|---|
+| `id` | UUID | PK |
+| `name` | String(255) | not null |
+| `email` | String(320) | not null, **UNIQUE**, indexed (stored lowercased — this is what makes §4.2 idempotent) |
+| `plan_hint` | String(255) | nullable; catalog ids joined by `,`, free-form (never enum-validated) |
+| `created_at` | DateTime(tz) | server_default now(), indexed; means FIRST asked — never rewritten on a repeat submission |
+
+No FKs: like `demo_requests`, this is isolated lead capture and references no
+tenant/user/entitlement.
+
 ### 6.5 `precheck_account_links` (SSO identity map — added in migration `0002`)
 Maps a brain user (UUID) to their PreCheck user (integer). One row per brain user; it is
 the only thing that authorizes minting a PreCheck token for a brain login (§10).
@@ -565,6 +597,7 @@ Migration **`0001`** creates `tenants`/`users`/`entitlements`/`demo_requests`; m
 | `PRECHECK_TOKEN_EXPIRE_MINUTES` | `60` | TTL of the minted PreCheck SSO token (§10); matches PreCheck's own session length |
 | `CORS_ALLOW_ORIGINS` | `http://localhost:3000` | comma-separated portal origins |
 | `DEMO_RATE_LIMIT_PER_MIN` | `5` | basic demo-request anti-spam |
+| `WAITLIST_RATE_LIMIT_PER_MIN` | `5` | pre-launch waitlist anti-spam (§4.2); own bucket, not the signup one |
 | `ADMIN_EMAIL` | `""` | platform admin bootstrap (`scripts/seed_admin.py`); env-only, never in code |
 | `ADMIN_PASSWORD` | `""` | platform admin bootstrap; bcrypt-hashed on insert, never logged |
 | `IMPERSONATION_DEMO_EMAIL` | `dra.demo@clinica.com.br` | tenant (clinic) owner the admin "Modo médico" switch enters (§11.4). Must be a `tenant_owner`/`tenant_staff` carrying a `tenant_id`, else `POST /admin/impersonate/token` is `404`. Defaults to the seeded dev clinic; in production point at a real sandbox clinic owner |

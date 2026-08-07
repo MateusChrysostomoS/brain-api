@@ -17,7 +17,7 @@ from brain_api.core.database import async_session_factory
 from brain_api.core.logging import get_logger, setup_logging
 from brain_api.core.security import hash_password
 from brain_api.models import Entitlement, PrecheckAccountLink, Tenant, User
-from brain_api.models.user import ROLE_TENANT_OWNER
+from brain_api.models.user import ROLE_DOCTOR
 from brain_api.services import catalog
 
 setup_logging()
@@ -45,7 +45,9 @@ async def seed() -> None:
                 email=DEMO_EMAIL,
                 name="Dra. Demo",
                 password_hash=hash_password(DEMO_PASSWORD),
-                role=ROLE_TENANT_OWNER,
+                role=ROLE_DOCTOR,
+                is_owner=True,
+                is_manager=True,
             )
         )
         # Seed on the catalog's combo plan with materialized addons/limits — the same

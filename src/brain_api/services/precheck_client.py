@@ -69,17 +69,6 @@ async def _proxy_get(path: str, authorization: str, params: dict[str, Any] | Non
     return resp.json()
 
 
-async def get_inbound(authorization: str, skip: int, limit: int) -> Any:
-    """Admin inbound (demo leads) from PreCheck — `GET /api/v1/admin/inbound`.
-
-    Returns an empty page if PreCheck is not configured locally (keeps the admin portal
-    rendering); any configured-but-failing upstream still raises.
-    """
-    if not get_settings().PRECHECK_BASE_URL:
-        return _empty_page(skip, limit)
-    return await _proxy_get("/api/v1/admin/inbound", authorization, {"skip": skip, "limit": limit})
-
-
 async def list_anamneses(authorization: str, skip: int, limit: int) -> Any:
     """Doctor anamneses list from PreCheck — `GET /api/v1/doctor/anamneses`."""
     if not get_settings().PRECHECK_BASE_URL:
@@ -92,3 +81,36 @@ async def list_anamneses(authorization: str, skip: int, limit: int) -> Any:
 async def get_anamnesis(authorization: str, anamnesis_id: int) -> Any:
     """Single anamnesis detail from PreCheck — `GET /api/v1/doctor/anamneses/{id}`."""
     return await _proxy_get(f"/api/v1/doctor/anamneses/{anamnesis_id}", authorization)
+
+
+async def list_admin_anamneses(authorization: str, skip: int, limit: int) -> Any:
+    """Admin anamneses list from PreCheck — `GET /api/v1/admin/anamneses` (cross-tenant).
+
+    Returns an empty page if PreCheck is not configured locally (keeps the admin portal
+    rendering); any configured-but-failing upstream still raises.
+    """
+    if not get_settings().PRECHECK_BASE_URL:
+        return _empty_page(skip, limit)
+    return await _proxy_get(
+        "/api/v1/admin/anamneses", authorization, {"skip": skip, "limit": limit}
+    )
+
+
+async def get_admin_anamnesis(authorization: str, anamnesis_id: int) -> Any:
+    """Single admin anamnesis detail from PreCheck — `GET /api/v1/admin/anamneses/{id}`."""
+    return await _proxy_get(f"/api/v1/admin/anamneses/{anamnesis_id}", authorization)
+
+
+async def get_admin_metrics(authorization: str, days: int, all_time: bool) -> Any:
+    """Admin metrics overview from PreCheck — `GET /api/v1/admin/metrics`.
+
+    When PreCheck is not configured locally, degrades to a stub payload (not a list, so
+    `_empty_page`'s pagination shape does not apply) rather than erroring, so the portal
+    still renders. `all_time` is forwarded as the `all` query param; httpx serializes a
+    Python bool to the "true"/"false" strings the upstream FastAPI query parser expects.
+    """
+    if not get_settings().PRECHECK_BASE_URL:
+        return {"stub": True}
+    return await _proxy_get(
+        "/api/v1/admin/metrics", authorization, {"days": days, "all": all_time}
+    )

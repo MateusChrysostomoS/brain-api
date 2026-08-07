@@ -61,15 +61,19 @@ async def test_impersonate_mints_working_doctor_token(
     assert body["token_type"] == "bearer"
     assert body["clinic_name"] == CLINIC_A
     assert body["email"] == OWNER_A_EMAIL
-    assert body["role"] == "tenant_owner"
+    assert body["role"] == "doctor"
     assert body["expires_in"] == get_settings().ACCESS_TOKEN_EXPIRE_MINUTES * 60
     assert "password_hash" not in str(body)
 
-    # The minted token carries the DOCTOR's identity + tenant + role (not the admin's).
+    # The minted token carries the DOCTOR's identity + tenant + role (not the admin's),
+    # including the is_owner/is_manager claims (role-taxonomy round) — Owner A is seeded
+    # as a real owner (both true).
     claims = decode_token(body["access_token"])
     assert claims is not None
     assert claims["tenant_id"] == body["tenant_id"]
-    assert claims["role"] == "tenant_owner"
+    assert claims["role"] == "doctor"
+    assert claims["is_owner"] is True
+    assert claims["is_manager"] is True
 
     minted = _bearer(body["access_token"])
 

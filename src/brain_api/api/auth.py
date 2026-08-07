@@ -77,6 +77,8 @@ def build_session_response(user: User, refresh_token: str) -> TokenResponse:
             tenant_id=str(user.tenant_id) if user.tenant_id else None,
             role=user.role,
             professional_id=str(user.professional_id) if user.professional_id else None,
+            is_owner=user.is_owner,
+            is_manager=user.is_manager,
         ),
         refresh_token=refresh_token,
         expires_in=get_settings().ACCESS_TOKEN_EXPIRE_MINUTES * 60,

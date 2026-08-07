@@ -108,7 +108,9 @@ Exchange email + password for a brain-api access token.
 |---|---|
 | `sub` | brain user id, UUID **string** |
 | `tenant_id` | tenant UUID **string**, or `null` for a platform `admin` |
-| `role` | `"admin"` \| `"tenant_owner"` \| `"tenant_staff"` |
+| `role` | `"admin"` \| `"doctor"` \| `"manager"` (role-taxonomy round; **legacy** `"tenant_owner"` \| `"tenant_staff"` still validates on an already-issued pre-taxonomy token through its ~30min TTL, §12) |
+| `is_owner` | bool, role-taxonomy round. The clinic OWNER. **Always present** (default `false`), unlike `professional_id` — a legacy token simply has no claim, which parses as `false`, never a `401` |
+| `is_manager` | bool, role-taxonomy round. "Also a manager" — no gate of its own yet. Same always-present convention as `is_owner` |
 | `iat` | issued-at (UTC) |
 | `exp` | `iat + ACCESS_TOKEN_EXPIRE_MINUTES` (default **30**) |
 
@@ -155,7 +157,7 @@ no entitlements (`tenant-secrets-encryption` never-leak rule; whitelisted `*Out`
     "id": "8f1c…uuid",
     "email": "dra.demo@clinica.com.br",
     "name": "Dra. Demo",
-    "role": "tenant_owner"
+    "role": "doctor"
   },
   "tenant": {
     "id": "2b9a…uuid",
@@ -421,7 +423,9 @@ for `updated_at`). Conventions exactly mirror `secretarIA` models.
 | `email` | String(320) | **unique**, indexed, not null (store lower-cased) |
 | `name` | String(255) | not null |
 | `password_hash` | String(255) | not null; **bcrypt** (never serialized/logged) |
-| `role` | String(32) | not null; `admin` \| `tenant_owner` \| `tenant_staff` |
+| `role` | String(32) | not null; `admin` \| `doctor` \| `manager` (role-taxonomy round; legacy `tenant_owner`/`tenant_staff` rows are backfilled to `doctor` by migration `0012_role_taxonomy`, §12) |
+| `is_manager` | Boolean | not null, `server_default false`; role-taxonomy round — "also a manager", no gate of its own yet |
+| `is_owner` | Boolean | not null, `server_default false`; role-taxonomy round — the clinic OWNER (`onboarding_sync.get_owner`, §16); exactly one per tenant in the steady state, not DB-enforced |
 | `created_at` | DateTime(tz) | server_default now() |
 | `updated_at` | DateTime(tz) | server_default now(), onupdate now() |
 | `professional_id` | UUID | nullable, **no FK** — cross-service value reference to `secretaria.professionals.id` (same convention as `tenant_id`-style refs elsewhere, §0 of the onboarding contract). Carried into the JWT (§16.4) |
@@ -600,7 +604,7 @@ Migration **`0001`** creates `tenants`/`users`/`entitlements`/`demo_requests`; m
 | `WAITLIST_RATE_LIMIT_PER_MIN` | `5` | pre-launch waitlist anti-spam (§4.2); own bucket, not the signup one |
 | `ADMIN_EMAIL` | `""` | platform admin bootstrap (`scripts/seed_admin.py`); env-only, never in code |
 | `ADMIN_PASSWORD` | `""` | platform admin bootstrap; bcrypt-hashed on insert, never logged |
-| `IMPERSONATION_DEMO_EMAIL` | `dra.demo@clinica.com.br` | tenant (clinic) owner the admin "Modo médico" switch enters (§11.4). Must be a `tenant_owner`/`tenant_staff` carrying a `tenant_id`, else `POST /admin/impersonate/token` is `404`. Defaults to the seeded dev clinic; in production point at a real sandbox clinic owner |
+| `IMPERSONATION_DEMO_EMAIL` | `dra.demo@clinica.com.br` | tenant (clinic) owner the admin "Modo médico" switch enters (§11.4). Must be a `doctor`/`manager` (legacy: `tenant_owner`/`tenant_staff`) carrying a `tenant_id`, else `POST /admin/impersonate/token` is `404`. Defaults to the seeded dev clinic; in production point at a real sandbox clinic owner |
 | `PRECHECK_BASE_URL` | `""` | PreCheck backend base URL for the BFF read proxy (§11.1). Empty → list proxies return an empty page locally |
 | `PRECHECK_TIMEOUT_SECONDS` | `10` | timeout for the precheck proxy httpx client |
 | `PRECHECK_INTERNAL_TOKEN` | `""` | PreCheck's internal/n8n token (`X-Internal-Token`) — a service credential, distinct from the forwarded-brain-JWT proxy above. Used for the LGPD privacy orchestration (§14; empty → the precheck leg of an erasure/export reports `skipped_unconfigured`, the rest still runs) **and** the secretarIA→PreCheck patient handoff (§12.3; empty **or** `PRECHECK_BASE_URL` empty → `503 precheck_handoff_not_configured`, fails LOUD — no degrade) |
@@ -783,14 +787,23 @@ whitelisted `*Out` schemas (never `password_hash` / `*_encrypted`). List endpoin
 | `GET` | `/admin/tenants/{tenant_id}` | detail `{id, clinic_name, created_at, updated_at, users_count, entitlements{…}}`; `404` if unknown. **No credentials fields** |
 | `GET` | `/admin/tenants/{tenant_id}/entitlements` | entitlement record (coherent defaults if no row); `404` unknown tenant |
 | `PATCH` | `/admin/tenants/{tenant_id}/entitlements` | partial `{precheck_enabled?, secretaria_enabled?, plan?, status?, addons?, limits?}`; **upserts** the row; `404` unknown tenant; **catalog-validated** (§3.2): `plan` must be an assignable catalog plan (legacy aliases normalize to the canonical id; reserved slots rejected), `addons` keys must be known add-on ids, `limits` keys known limit keys with values ≥ 0 — else `422`. **Materialization order:** `plan` first rewrites products+`addons`+`limits` from the catalog (`compute_entitlement_state`); explicit fields in the same patch override it; a patched `addons` normalizes to the full keyset and recomputes `limits`; an explicit `limits` merges on top as a manual override. How a product is manually switched on pre-Stripe |
-| `GET` | `/admin/users` | `Page` of `{id, tenant_id, clinic_name|null, email, name, role, created_at}`. **Never** `password_hash` |
-| `POST` | `/admin/users` | `201` create in any tenant/role. Body `{email, name, password, role, tenant_id?}`. **Password policy: 8–72 chars, at least one letter and one digit** (bcrypt's 72-byte ceiling; `422` otherwise). `admin` ⇒ `tenant_id` must be null; tenant roles ⇒ `tenant_id` required+existing. `409` dup email, `404` unknown tenant, `422` bad combo / policy violation |
+| `GET` | `/admin/users` | `Page` of `{id, tenant_id, clinic_name|null, email, name, role, is_manager, is_owner, created_at}`. **Never** `password_hash` |
+| `POST` | `/admin/users` | `201` create in any tenant/role. Body `{email, name, password, role, tenant_id?, is_manager?, is_owner?}` — `role: "admin"\|"doctor"\|"manager"`; `is_manager`/`is_owner` (role-taxonomy round) default `false`, explicit opt-in (the admin UI does not send `is_owner` today, so an admin-created user always reads as a non-owner unless a caller sets it by hand); for role `manager` the service forces `is_manager=true` regardless of the payload. **Password policy: 8–72 chars, at least one letter and one digit** (bcrypt's 72-byte ceiling; `422` otherwise). `admin` ⇒ `tenant_id` must be null AND `is_manager`/`is_owner` must be false; tenant roles ⇒ `tenant_id` required+existing. `409` dup email, `404` unknown tenant, `422` bad combo / policy violation |
 | `GET` | `/admin/demo_requests` | `Page` of brain's own demo leads, newest first |
 | `PATCH` | `/admin/demo_requests/{id}` | set `status ∈ {contacted, converted, dismissed}`; `404` unknown, `422` other value. (Portal actions "Marcar como contatado" / "Converter em tenant" / "Descartar") |
-| `GET` | `/admin/inbound` | **proxy** → PreCheck `GET /api/v1/admin/inbound` (§11.1); returns PreCheck's payload verbatim |
+| `GET` | `/admin/anamneses` | **proxy** → PreCheck `GET /api/v1/admin/anamneses` (§11.1), cross-tenant. Query `skip>=0`, `1<=limit<=100`. Unconfigured `PRECHECK_BASE_URL` ⇒ empty page `{items:[], total:0, skip, limit, "stub":true}` |
+| `GET` | `/admin/anamneses/{id}` | **proxy** → PreCheck `GET /api/v1/admin/anamneses/{id}` (§11.1); returns PreCheck's payload verbatim. **No fallback**: unconfigured `PRECHECK_BASE_URL` ⇒ `503 precheck_not_configured` |
+| `GET` | `/admin/metrics` | **proxy** → PreCheck `GET /api/v1/admin/metrics` (§11.1). Query `days` (default 30, `1<=days<=3650`), `all` (bool, default false). Unconfigured `PRECHECK_BASE_URL` ⇒ stub `{"stub": true}` (not a `Page` — this endpoint isn't a list) |
 | `GET` | `/admin/secretaria/tenants` | **proxy** → secretaria `GET /admin/tenants` (§11.2); clinics + calendar health, verbatim |
 | `POST` | `/admin/secretaria/reset` | **proxy** → secretaria `POST /admin/reset` (§11.2). **DESTRUCTIVE.** Body `{confirm: true, include_tenants?: false}`; `400` if `confirm` not true |
 | `POST` | `/admin/impersonate/token` | mint a tenant-scoped **doctor** token for the admin "Modo médico" switch (§11.4). No body; targets `IMPERSONATION_DEMO_EMAIL`. `404 impersonation_target_unavailable` if that clinic is not seeded/configured |
+
+> **Admin tabs update (2026-08-07, `docs/CHECKPOINT_role_taxonomy_admin_tabs.md`).** The old
+> `GET /admin/inbound` proxy (PreCheck's own inbound-leads view) is **REMOVED** — the portal's
+> "Inbound" admin tab is now 100% native, backed entirely by `GET /admin/demo_requests` above
+> (brain's own `demo_requests` table, no PreCheck round-trip). In its place, three NEW
+> cross-tenant PreCheck proxies power an "Anamneses" + "Métricas" admin view: `GET
+> /admin/anamneses[/{id}]` and `GET /admin/metrics`, documented in §11.1 below.
 
 ### 11.1 brain-api → PreCheck read proxy (supersedes §0's "not called")
 
@@ -801,8 +814,12 @@ authorized the brain-api route authorizes the upstream call. `PRECHECK_BASE_URL`
 upstream; **unset** ⇒ list proxies return an empty page `{items:[], total:0, …, "stub":true}`
 (keeps the portal rendering locally) and detail ⇒ `503 precheck_not_configured`. An upstream
 `4xx` (e.g. PreCheck's own `403` for a non-admin) is surfaced verbatim; `5xx`/network ⇒ `502`.
-The forwarded `Authorization` header is never logged. Proxy routes: `GET /admin/inbound`,
-`GET /doctor/anamneses[/{id}]`.
+The forwarded `Authorization` header is never logged. Proxy routes: `GET
+/doctor/anamneses[/{id}]` (§12, tenant-scoped) and, cross-tenant, `GET
+/admin/anamneses[/{id}]` + `GET /admin/metrics` (§11, admin-only — `services/precheck_client.py`
+`list_admin_anamneses` / `get_admin_anamnesis` / `get_admin_metrics`). The admin metrics route
+degrades differently from the list proxies when unconfigured: `{"stub": true}` rather than an
+empty `Page`, since it is not itself paginated.
 
 ### 11.2 brain-api → secretaria admin connection (service-to-service)
 
@@ -849,12 +866,13 @@ the sole authorization (a non-admin gets `403`). **No request body.**
 
 **Flow (`services/admin.issue_impersonation_token`):**
 1. Resolve `IMPERSONATION_DEMO_EMAIL` (the configured demo/sandbox clinic owner) to a user.
-   If absent, tenant-less, or not a `tenant_owner`/`tenant_staff` → **`404
-   {"detail": "impersonation_target_unavailable"}`** (an admin must never become a "doctor
-   with no tenant", which would violate `require_doctor`'s invariant).
-2. Mint a **normal** access token via `create_access_token(sub=<doctor user>, tenant_id, role)`
-   — byte-identical in shape to that user's own `/auth/token` login (§2.1). No extra claim, no
-   secret. The admin's own token is untouched and not embedded.
+   If absent, tenant-less, or not a `doctor`/`manager` (legacy: `tenant_owner`/`tenant_staff`)
+   → **`404 {"detail": "impersonation_target_unavailable"}`** (an admin must never become a
+   "doctor with no tenant", which would violate `require_doctor`'s invariant).
+2. Mint a **normal** access token via `create_access_token(sub=<doctor user>, tenant_id, role,
+   is_owner, is_manager)` — byte-identical in shape to that user's own `/auth/token` login
+   (§2.1), including the role-taxonomy booleans read straight off the target's row. No extra
+   claim, no secret. The admin's own token is untouched and not embedded.
 
 **Response `200`**
 ```json
@@ -864,7 +882,7 @@ the sole authorization (a non-admin gets `403`). **No request body.**
   "tenant_id": "2b9a…uuid",
   "clinic_name": "Consultório Dr. Aurélio Lima",
   "email": "dra.demo@clinica.com.br",
-  "role": "tenant_owner",
+  "role": "doctor",
   "expires_in": 3600
 }
 ```
@@ -884,13 +902,29 @@ calls + the PreCheck SSO all work unchanged. (Logging out clears the marker + st
 
 ---
 
-## 12. Doctor (tenant) API (RBAC round) — roles `tenant_owner` / `tenant_staff`
+## 12. Doctor (tenant) API (RBAC round) — roles `doctor` / `manager`
+
+> **Role-taxonomy update (2026-08-07, `docs/CHECKPOINT_role_taxonomy_admin_tabs.md`).**
+> `tenant_owner`/`tenant_staff` collapsed into a single `doctor` role; `manager` is a NEW role
+> that gets every gate `doctor` gets (product decision: full doctor access, semantically the
+> clinic's gestor). What the old role string used to carry is now two independent booleans on
+> `User`/the JWT (§2.1): `is_owner` (the clinic OWNER — preserves every owner-only gate, e.g.
+> onboarding pause, via `require_owner`) and `is_manager` ("also a manager", no gate of its own
+> yet). `admin` is untouched. **Legacy tokens**: an already-issued `tenant_owner`/`tenant_staff`
+> token (no `is_owner`/`is_manager` claims) keeps authenticating through its ~30min TTL — every
+> gate below accepts the legacy role strings alongside the new ones (`api/deps.py`'s
+> `_LEGACY_DOCTOR_ROLES`); `require_owner` additionally falls back to `role == "tenant_owner"`
+> when the claim is absent. Migration `0012_role_taxonomy` backfills every existing row
+> (`tenant_owner` → `doctor` + `is_owner=is_manager=true`; `tenant_staff` → `doctor`).
 
 Every `/doctor/*` route is gated by `require_doctor` at the router level: a valid brain JWT
-whose `role ∈ {tenant_owner, tenant_staff}` **and** that carries a `tenant_id`. A platform
-`admin` token gets `403` (wrong portal — admins use `/admin/*`). The acting tenant is ALWAYS
-`principal.tenant_id` from the validated token; **`tenant_id` is never accepted as a query or
-body param**, so a doctor cannot read another tenant's data by forging an id.
+whose `role ∈ {doctor, manager}` (legacy: `tenant_owner`/`tenant_staff`, §2.1) **and** that
+carries a `tenant_id`. A platform `admin` token gets `403` (wrong portal — admins use
+`/admin/*`). The acting tenant is ALWAYS `principal.tenant_id` from the validated token;
+**`tenant_id` is never accepted as a query or body param**, so a doctor cannot read another
+tenant's data by forging an id. Owner-only routes additionally require `require_owner`, which
+gates on `principal.is_owner` (legacy fallback: `role == "tenant_owner"`) rather than a role
+string.
 
 | method | path | notes |
 |---|---|---|
@@ -1437,7 +1471,7 @@ writes an *inert* row, never a paid one).
 | `POST` | `/public/checkout-sessions` | public | Body `{intent_id}`. Creates a **`mode=setup`** Checkout Session (card capture ONLY — no line items, no subscription, no trial) for a `pending_payment` intent; `404` unknown intent, `409` already left `pending_payment`. Setup mode is deliberate: Stripe's hosted page renders an unsuppressable "X-day free trial" banner for any subscription-mode session carrying a trial, and that framing is the one this product does not want. The real subscription (same `STRIPE_TRIAL_PERIOD_DAYS`) is created server-side at webhook time (§15.2 step 0). Setup-mode specifics, all verified against the live Stripe API: `currency` (`STRIPE_SETUP_CURRENCY`, §7) is REQUIRED — there are no prices to infer it from; `customer_creation=always` is REQUIRED — Stripe otherwise defaults to `if_required`, `customer_email` alone does not make one required, and a completed session comes back `customer: null`, leaving nothing to subscribe; `phone_number_collection` is REJECTED (payment/subscription mode only — the number already rides `SignupIntent.whatsapp_phone` anyway). `client_reference_id`/`metadata[signup_intent_id]` carry the INTENT id (never a tenant id — the routing invariant), tagged `metadata[kind]=signup_intent` so the webhook (§13.1/15.2) routes it here instead of the tenant-linking path. `billing.validate_selection` (§13.3) still runs, purely to FAIL FAST (422/503) before a checkout URL is handed to the buyer; the selection is re-derived at webhook time, where it actually builds the subscription items. `billing._apply_setup_custom_text` supplies the only billing wording on the page. `200 {checkout_url}`; `503`/`502` as §13's checkout errors. Nothing marks an intent as "checkout started", so a buyer who abandons and retries simply gets a second session (the intent keeps only the LATEST `stripe_session_id`) |
 | `GET` | `/public/onboarding-status?session_id=` | public | Resolves a Checkout Session id back to its intent: `{status: "pending"\|"ready"\|"failed", products, onboarding_token}`. `ready` = the webhook ACTIVATED the entitlement. While `ready` and unredeemed, MINTS (and rotates on every poll) the one-time onboarding token — now a FALLBACK for resuming in a browser that never got the registration session; only this synchronous poll can hand the plaintext to the browser, and only its sha256 (§6.6) is ever persisted. `404` unknown session id |
 | `POST` | `/auth/exchange-onboarding-token` | public | Body `{token}`. Redeems the token from the poll above; `401 invalid_onboarding_token` if unknown/expired/already-used/unprovisioned. Success mints the SAME session pair a password login would (§2.1 `TokenResponse` shape, access+refresh) for the tenant's owner user. Rate-limited on the shared `/auth` budget (§5, `AUTH_RATE_LIMIT_PER_MIN`) |
-| `POST` | `/auth/set-password` | Bearer | Body `{new_password}`. Lets the authenticated caller replace THEIR OWN password. Cold-signup OWNERS no longer need it (they set a real password at registration above); it remains the **second step of the professional-invite flow** (§16.3), where an invited `tenant_staff` user starts on a random, never-communicated password. `204`; `401` missing/invalid/expired token |
+| `POST` | `/auth/set-password` | Bearer | Body `{new_password}`. Lets the authenticated caller replace THEIR OWN password. Cold-signup OWNERS no longer need it (they set a real password at registration above); it remains the **second step of the professional-invite flow** (§16.3), where an invited `doctor` (legacy: `tenant_staff`) user starts on a random, never-communicated password. `204`; `401` missing/invalid/expired token |
 | `GET` | `/public/checkout-config` | public | `200 {trial_period_days: <STRIPE_TRIAL_PERIOD_DAYS>, addons: [{id, available}]}` — static, non-secret checkout-funnel config so the pre-checkout disclosure copy can quote the REAL deployed trial length instead of a hardcoded second source of truth. `addons` **(corrections round, 2026-07-22)**: one entry per `catalog.ADDON_IDS` id, stable alphabetical order, `available` = `billing.price_id_for(id)` is configured in this environment (same lookup the PATCH route's `addon_not_available` guard above uses). Deliberately NOT part of the shared `_limiter` bucket above (no rate limit, no DB touch) — a pricing-page view must never eat the per-IP signup budget |
 
 #### 15.1a Pre-checkout intake (`IntakeIn`)
@@ -1569,9 +1603,9 @@ row, no second transition).
 
 ### 16.2 Doctor onboarding endpoints (`api/onboarding.py`, prefix `/doctor`)
 
-Router-level `require_doctor` (valid JWT, `tenant_owner`/`tenant_staff`, carries
-`tenant_id` — a platform `admin` gets `403`, same convention as §12). `pause` additionally
-requires `require_tenant_owner`.
+Router-level `require_doctor` (valid JWT, `doctor`/`manager` — legacy: `tenant_owner`/
+`tenant_staff` — carries `tenant_id` — a platform `admin` gets `403`, same convention as §12).
+`pause` additionally requires `require_owner` (gates on `principal.is_owner`, §12).
 
 | method | path | notes |
 |---|---|---|
@@ -1584,16 +1618,17 @@ requires `require_tenant_owner`.
 ### 16.3 Professionals & invites (`api/onboarding.py`, prefix `/doctor`)
 
 Router-level `require_doctor` (as §16.2). **Corrections round, 2026-07-22: neither route
-below requires the OWNER role specifically anymore** — both moved from
-`require_tenant_owner` to plain `require_doctor`, so any doctor (owner OR staff) may
+below requires the OWNER role specifically anymore** — both moved from the owner-only
+dependency (named `require_tenant_owner` at the time; renamed `require_owner` in the
+role-taxonomy round, §12) to plain `require_doctor`, so any doctor (owner OR staff) may
 invite or self-bind a professional (`docs/CHECKPOINT_onboarding_multiprofessional.md`'s
 own "Update 2026-07-22" section). `POST /doctor/onboarding/pause` (§16.2) is unaffected
-and stays owner-only.
+and stays owner-only (`require_owner`).
 
 | method | path | notes |
 |---|---|---|
 | `GET` | `/doctor/professionals` | Proxies secretaria's config-status `professionals[]` (§16.5), joined with the LOCAL `users.professional_id` linkage (email + whether an invite is still pending, i.e. `invite_token_hash is not null`). Runs `refresh_config_status` first. `200 {items: [{id, name, is_active, has_calendar, has_hours, has_services, complete, linked_user_email, invite_pending}]}` |
-| `POST` | `/doctor/professionals/invites` | Body `{name, email, specialty?}`. `409 email_already_registered`. Creates-or-attaches the secretaria professional (`secretaria_provisioning.create_professional` — `None`/error ⇒ `502 secretaria_unavailable`, a foreground write the doctor is waiting on), then a local `tenant_staff` `User` bound to it (`professional_id` set), mints a single-use invite token (`INVITE_TOKEN_EXPIRE_HOURS`, §7), sends the fail-soft `professional_invite` email. `201 {professional_id, user_id, invite_link}` — `invite_link` is ALWAYS present (even if the email failed) so the caller can share it manually |
+| `POST` | `/doctor/professionals/invites` | Body `{name, email, specialty?}`. `409 email_already_registered`. Creates-or-attaches the secretaria professional (`secretaria_provisioning.create_professional` — `None`/error ⇒ `502 secretaria_unavailable`, a foreground write the doctor is waiting on), then a local `doctor` `User` bound to it (`professional_id` set; `is_owner`/`is_manager` left at their `false` default — an invited professional is neither), mints a single-use invite token (`INVITE_TOKEN_EXPIRE_HOURS`, §7), sends the fail-soft `professional_invite` email. `201 {professional_id, user_id, invite_link}` — `invite_link` is ALWAYS present (even if the email failed) so the caller can share it manually |
 | `POST` | `/doctor/professionals/self` | Body `{name?, specialty?}` (`name` defaults to the caller's own user name, then the clinic name). `409 already_bound` if the caller already has a `professional_id`. Same secretaria create-or-attach as above (`502` on failure); sets `professional_id` on the CALLER'S OWN user row (owner or staff). `200 {professional_id, created}` |
 
 Invite redemption: `POST /auth/exchange-invite-token` (`api/auth.py`) — body `{token}`,

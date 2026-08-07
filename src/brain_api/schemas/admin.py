@@ -168,7 +168,9 @@ class AdminUserOut(BaseModel):
     """A user row for the admin users table. NEVER declares `password_hash`.
 
     `clinic_name` is `None` for a platform admin (no tenant); the portal renders that as
-    "Platform Admin". Built by the service (joins the tenant name).
+    "Platform Admin". Built by the service (joins the tenant name). `is_manager`/
+    `is_owner` are role-taxonomy round booleans (always present, default False for admin
+    rows and for a plain `doctor` that is neither).
     """
 
     id: UUID
@@ -177,6 +179,8 @@ class AdminUserOut(BaseModel):
     email: str
     name: str
     role: str
+    is_manager: bool
+    is_owner: bool
     created_at: datetime
 
 
@@ -185,15 +189,24 @@ class AdminUserCreateIn(BaseModel):
 
     Password is bcrypt-hashed by the service and never echoed back. bcrypt truncates at
     72 bytes, so a longer password is rejected (422) rather than silently truncated.
+
+    `is_manager`/`is_owner` (role-taxonomy round): explicit opt-in flags, both default
+    False. `is_owner` via admin tooling is a deliberate, explicit act — the admin UI does
+    not send it today, so every admin-created user reads as a non-owner unless a caller
+    sets it by hand. `is_manager` is likewise explicit for a `doctor`; for role `manager`
+    the service forces it True regardless (a pure manager role is trivially "a manager" —
+    same idiom as PreCheck's role/flag handling).
     """
 
     email: EmailStr = Field(max_length=320)
     name: str = Field(min_length=1, max_length=255)
     # Policy: 8–72 chars (bcrypt's 72-byte ceiling), at least one letter and one digit.
     password: str = Field(min_length=8, max_length=72)
-    role: Literal["admin", "tenant_owner", "tenant_staff"]
+    role: Literal["admin", "doctor", "manager"]
     # Required for tenant roles; must be absent for a platform admin (validated below).
     tenant_id: UUID | None = None
+    is_manager: bool = False
+    is_owner: bool = False
 
     @field_validator("password")
     @classmethod
@@ -206,12 +219,15 @@ class AdminUserCreateIn(BaseModel):
 
     @model_validator(mode="after")
     def _check_role_tenant_consistency(self) -> "AdminUserCreateIn":
-        """A platform admin has no tenant; a tenant user must name one."""
+        """A platform admin has no tenant, and cannot also be marked owner/manager (those
+        are tenant-scoped clinic concepts); a doctor/manager user must name a tenant."""
         if self.role == "admin":
             if self.tenant_id is not None:
                 raise ValueError("admin users are platform-level and take no tenant_id")
+            if self.is_manager or self.is_owner:
+                raise ValueError("admin users cannot be marked is_manager/is_owner")
         elif self.tenant_id is None:
-            raise ValueError("tenant_owner/tenant_staff users require a tenant_id")
+            raise ValueError("doctor/manager users require a tenant_id")
         return self
 
 

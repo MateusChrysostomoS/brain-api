@@ -144,7 +144,7 @@ async def test_login_rate_limited(client, monkeypatch):
 async def test_password_policy_admin_create_user(client):
     admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
     tenant_a_id = (await _tenant_ids(client, admin_token))[CLINIC_A]
-    base = {"name": "Pw Test", "role": "tenant_staff", "tenant_id": tenant_a_id}
+    base = {"name": "Pw Test", "role": "doctor", "tenant_id": tenant_a_id}
 
     for bad_password, email in (
         ("12345678", "pw-digits-only@a.com"),

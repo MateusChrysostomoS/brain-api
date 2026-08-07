@@ -41,9 +41,13 @@ portal origin. Run `alembic upgrade head` on release.
 ## Architecture notes / boundaries
 
 - **brain-api is its own identity authority.** Its JWT carries `sub` (user UUID),
-  `tenant_id`, `role` (+ an optional `professional_id`, CONTRACTS.md §16.4). Product access
+  `tenant_id`, `role` (`admin`/`doctor`/`manager` — legacy `tenant_owner`/`tenant_staff`
+  still accepted through their transition window, CONTRACTS.md §2.1/§12), `is_owner`/
+  `is_manager` (+ an optional `professional_id`, CONTRACTS.md §16.4). Product access
   is resolved server-side via `GET /entitlements`, never carried in the token (see
-  `auth-jwt-multitenant`, `stripe-billing-entitlements`).
+  `auth-jwt-multitenant`, `stripe-billing-entitlements`). See
+  `docs/CHECKPOINT_role_taxonomy_admin_tabs.md` for the role-taxonomy round + the admin
+  portal's PreCheck anamneses/metrics tabs (which replaced the old `/admin/inbound` proxy).
 - **SSO into PreCheck is implemented.** brain-api mints a separate, PreCheck-shaped token
   (`POST /sso/precheck/token`) for a brain user linked via `precheck_account_links`;
   PreCheck validates it with its existing, unchanged auth — see CONTRACTS.md §10.

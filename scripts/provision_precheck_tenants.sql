@@ -38,7 +38,8 @@ WHERE brain_tenant_id IS NULL
   AND is_active;
 
 -- 1d. GERA o SQL da brain. Copie o conteúdo da coluna "brain_sql" e rode na FASE 2.
---     Pega UM admin por clínica (o de menor id) como tenant_owner.
+--     Pega UM admin por clínica (o de menor id) como doctor com is_owner/is_manager=true
+--     (role-taxonomy: tenant_owner virou doctor + is_owner, ver migrations/0012).
 --     Senha temporária = 'CHANGE_ME_123' (veja a nota sobre senha no fim do arquivo).
 SELECT string_agg(stmt, E'\n\n') AS brain_sql
 FROM (
@@ -49,8 +50,8 @@ FROM (
       )
       || E'\n' ||
       format(
-        'INSERT INTO users (id, tenant_id, email, name, password_hash, role) '
-        'VALUES (gen_random_uuid(), %L::uuid, %L, %L, crypt(''CHANGE_ME_123'', gen_salt(''bf'', 12)), ''tenant_owner'') '
+        'INSERT INTO users (id, tenant_id, email, name, password_hash, role, is_owner, is_manager) '
+        'VALUES (gen_random_uuid(), %L::uuid, %L, %L, crypt(''CHANGE_ME_123'', gen_salt(''bf'', 12)), ''doctor'', true, true) '
         'ON CONFLICT (email) DO NOTHING;',
         c.brain_tenant_id, lower(u.email), COALESCE(u.name, c.name)
       )
@@ -96,9 +97,9 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- ============================================================================
 
 -- Na BRAIN: confirmar tenants + owners + produtos ativos.
---   SELECT t.id, t.clinic_name, u.email, u.role, e.precheck_enabled, e.status
+--   SELECT t.id, t.clinic_name, u.email, u.role, u.is_owner, e.precheck_enabled, e.status
 --   FROM tenants t
---   LEFT JOIN users u ON u.tenant_id = t.id AND u.role = 'tenant_owner'
+--   LEFT JOIN users u ON u.tenant_id = t.id AND u.role = 'doctor' AND u.is_owner
 --   LEFT JOIN entitlements e ON e.tenant_id = t.id
 --   ORDER BY t.created_at;
 

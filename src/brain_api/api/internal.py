@@ -30,7 +30,6 @@ from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.core.security import decode_hub_token
 from brain_api.models import Entitlement, Tenant, User
-from brain_api.models.user import ROLE_TENANT_OWNER
 from brain_api.schemas.internal import (
     HubTokenVerifyIn,
     HubTokenVerifyOut,
@@ -257,7 +256,7 @@ async def list_onboarding_tenants(
         u.tenant_id: u
         for u in (
             await session.scalars(
-                select(User).where(User.tenant_id.in_(ids), User.role == ROLE_TENANT_OWNER)
+                select(User).where(User.tenant_id.in_(ids), User.is_owner.is_(True))
             )
         ).all()
     }

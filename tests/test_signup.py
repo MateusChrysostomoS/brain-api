@@ -1150,9 +1150,12 @@ async def test_register_signup_creates_tenant_user_and_inert_entitlement(db_sess
         ),
     )
     assert reg.intent.tenant_id is not None
-    # Owner user created with a REAL password hash (verifiable), role tenant_owner.
+    # Owner user created with a REAL password hash (verifiable), role doctor +
+    # is_owner/is_manager both true (role-taxonomy round).
     user = await db_session.get(User, reg.user.id)
-    assert user is not None and user.role == "tenant_owner"
+    assert user is not None and user.role == "doctor"
+    assert user.is_owner is True
+    assert user.is_manager is True
     from brain_api.core.security import verify_password
 
     assert verify_password(SIGNUP_PASSWORD, user.password_hash)

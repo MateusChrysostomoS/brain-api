@@ -46,7 +46,13 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(
-    *, sub: str, tenant_id: str | None, role: str, professional_id: str | None = None
+    *,
+    sub: str,
+    tenant_id: str | None,
+    role: str,
+    professional_id: str | None = None,
+    is_owner: bool = False,
+    is_manager: bool = False,
 ) -> str:
     """Mint a short-lived access token. `sub` is the brain user id (UUID string).
 
@@ -54,13 +60,19 @@ def create_access_token(
     carried BY VALUE — CONTRACT_onboarding_v1.md §0) is included as a claim ONLY when the
     user row actually has one; omitted otherwise, so an old/professional-less token shape
     is unchanged.
+
+    `is_owner`/`is_manager` (role-taxonomy round) are ALWAYS present, defaulting false —
+    unlike `professional_id` they are never omitted, so `api/deps.py`'s claim parsing can
+    treat a missing claim (an old/legacy token) and an explicit false identically.
     """
     settings = get_settings()
     now = datetime.now(UTC)
     claims: dict[str, Any] = {
         "sub": sub,  # user id — stable server-side identity
         "tenant_id": tenant_id,  # which tenant the user acts for (None for admin)
-        "role": role,  # admin | tenant_owner | tenant_staff
+        "role": role,  # admin | doctor | manager (legacy: tenant_owner | tenant_staff)
+        "is_owner": is_owner,  # the clinic owner (role-taxonomy round)
+        "is_manager": is_manager,  # "also a manager" (role-taxonomy round)
         "iat": now,
         "exp": now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
     }

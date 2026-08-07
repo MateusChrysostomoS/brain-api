@@ -254,23 +254,54 @@ async def impersonate_token(
     return result.out
 
 
-# --- Inbound (proxied from PreCheck) ---------------------------------------
+# --- PreCheck admin proxies (anamneses + metrics) ---------------------------
+# The admin's own brain JWT is forwarded verbatim (never logged); PreCheck re-validates it
+# and re-checks the `admin` role on its side. Cross-tenant: unlike the doctor-portal
+# anamneses proxy (`/doctor/anamneses`, scoped to the caller's own tenant), these admin
+# routes see every tenant's data, gated only by the caller's brain `admin` role.
 
 
-@router.get("/inbound", summary="PreCheck inbound leads (proxied)")
-async def get_inbound(
+@router.get("/anamneses", summary="PreCheck anamneses, cross-tenant (proxied)")
+async def list_admin_anamneses(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     authorization: str | None = Header(default=None),
     principal: Principal = Depends(get_current_principal),
 ) -> object:
-    """Proxy the PreCheck admin inbound page (brain-api -> precheck `/api/v1/admin/inbound`).
-
-    The admin's own brain JWT is forwarded; PreCheck re-validates it and re-checks the
-    `admin` role on its side. Returns PreCheck's payload verbatim.
+    """Proxy PreCheck's admin anamneses list (brain-api -> precheck
+    `/api/v1/admin/anamneses`). Returns PreCheck's payload verbatim.
     """
-    logger.info("admin_inbound_proxy", actor_user_id=principal.user_id)
-    return await precheck_client.get_inbound(authorization or "", skip, limit)
+    logger.info("admin_anamneses_proxy", actor_user_id=principal.user_id)
+    return await precheck_client.list_admin_anamneses(authorization or "", skip, limit)
+
+
+@router.get("/anamneses/{anamnesis_id}", summary="PreCheck anamnesis detail (proxied)")
+async def get_admin_anamnesis(
+    anamnesis_id: int,
+    authorization: str | None = Header(default=None),
+    principal: Principal = Depends(get_current_principal),
+) -> object:
+    """Proxy a single PreCheck anamnesis detail (brain-api -> precheck
+    `/api/v1/admin/anamneses/{id}`). Returns PreCheck's payload verbatim.
+    """
+    logger.info(
+        "admin_anamnesis_detail_proxy", actor_user_id=principal.user_id, anamnesis_id=anamnesis_id
+    )
+    return await precheck_client.get_admin_anamnesis(authorization or "", anamnesis_id)
+
+
+@router.get("/metrics", summary="PreCheck metrics overview (proxied)")
+async def get_admin_metrics(
+    days: int = Query(30, ge=1, le=3650),
+    all_time: bool = Query(False, alias="all"),
+    authorization: str | None = Header(default=None),
+    principal: Principal = Depends(get_current_principal),
+) -> object:
+    """Proxy PreCheck's admin metrics overview (brain-api -> precheck
+    `/api/v1/admin/metrics`). Returns PreCheck's payload verbatim.
+    """
+    logger.info("admin_metrics_proxy", actor_user_id=principal.user_id)
+    return await precheck_client.get_admin_metrics(authorization or "", days, all_time)
 
 
 # --- secretaria (service-to-service admin connection) ----------------------

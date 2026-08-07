@@ -30,7 +30,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from brain_api.config import Settings, get_settings
 from brain_api.core.logging import get_logger
 from brain_api.models import Entitlement, SignupAttempt, Tenant, User
-from brain_api.models.user import ROLE_TENANT_OWNER
 from brain_api.services import catalog, onboarding, secretaria_provisioning
 
 if TYPE_CHECKING:
@@ -40,11 +39,11 @@ logger = get_logger(__name__)
 
 
 async def get_owner(session: AsyncSession, tenant_id: UUID) -> User | None:
-    """The tenant's owner user row (`role=tenant_owner`), or `None`. Shared by the
+    """The tenant's owner user row (`is_owner=true`), or `None`. Shared by the
     secretaria-provisioning bridge (needs an email to hand secretaria) and
     `api/onboarding.py` (needs an email for the connection-success notification)."""
     return await session.scalar(
-        select(User).where(User.tenant_id == tenant_id, User.role == ROLE_TENANT_OWNER)
+        select(User).where(User.tenant_id == tenant_id, User.is_owner.is_(True))
     )
 
 

@@ -61,6 +61,9 @@ async def _tenant_ids(client, admin_token: str) -> dict[str, str]:
 
 
 async def _create_staff(client, admin_token: str, tenant_id: str, email: str) -> None:
+    """A plain (non-owner, non-manager) doctor — the role-taxonomy successor of the old
+    `tenant_staff` role. `is_owner`/`is_manager` default False, so `require_owner`-gated
+    routes (the pause switch) still reject this user, same as the old `tenant_staff`."""
     resp = await client.post(
         "/admin/users",
         headers=_bearer(admin_token),
@@ -68,7 +71,7 @@ async def _create_staff(client, admin_token: str, tenant_id: str, email: str) ->
             "email": email,
             "name": "Staff Member",
             "password": "staffpass1",
-            "role": "tenant_staff",
+            "role": "doctor",
             "tenant_id": tenant_id,
         },
     )
@@ -948,7 +951,7 @@ async def test_invite_professional_secretaria_failure_returns_502(client, monkey
 async def test_invite_professional_allows_staff(client, monkeypatch):
     """Corrections round (2026-07-22): invites are no longer owner-only — any doctor
     (owner or staff) may invite a professional now that the endpoint depends on
-    `require_doctor` instead of `require_tenant_owner`."""
+    `require_doctor` instead of `require_owner`."""
     monkeypatch.setattr(
         secretaria_provisioning,
         "create_professional",

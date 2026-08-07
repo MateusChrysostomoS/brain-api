@@ -2,28 +2,36 @@
 
 Covers the three required cases plus the role-gate matrix:
 - `test_admin_role_required`: every /admin/* route returns 403 for a non-admin JWT.
-- `test_tenant_isolation`: a tenant_owner of tenant A cannot reach tenant B's data.
+- `test_tenant_isolation`: a doctor/owner of tenant A cannot reach tenant B's data.
 - `test_admin_seed_idempotent`: running the admin seed twice creates no duplicate / error.
 
 Runs the real FastAPI app against in-memory aiosqlite (no Postgres). PRECHECK_BASE_URL is
 unset in tests, so the precheck proxy routes return an empty page (no network).
+
+Role taxonomy (role-taxonomy round): `tenant_owner`/`tenant_staff` collapsed into
+`doctor` (+ `manager`, which gets every `doctor` gate) plus two booleans, `is_owner`/
+`is_manager`. Owner A/B below are seeded exactly as `services/signup.register_signup`
+provisions a real cold-signup owner: `role=doctor`, `is_owner=True`, `is_manager=True`.
 """
 
 import importlib.util
 import pathlib
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from jose import jwt as jose_jwt
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from brain_api.config import get_settings
 from brain_api.core.database import Base, get_session
 from brain_api.core.security import hash_password
 from brain_api.main import app
 from brain_api.models import DemoRequest, Entitlement, Tenant, User
-from brain_api.models.user import ROLE_ADMIN, ROLE_TENANT_OWNER
+from brain_api.models.user import ROLE_ADMIN, ROLE_DOCTOR
 
 # `scripts/` is not part of the installed wheel, so load seed_admin from its file path.
 _SEED_PATH = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "seed_admin.py"
@@ -54,7 +62,8 @@ ADMIN_GET_ROUTES = [
     "/admin/tenants",
     "/admin/users",
     "/admin/demo_requests",
-    "/admin/inbound",
+    "/admin/anamneses",
+    "/admin/metrics",
     f"/admin/tenants/{MISSING_ID}",
     f"/admin/tenants/{MISSING_ID}/entitlements",
 ]
@@ -101,7 +110,9 @@ async def client():
                 email=OWNER_A_EMAIL,
                 name="Owner A",
                 password_hash=hash_password(OWNER_A_PASSWORD),
-                role=ROLE_TENANT_OWNER,
+                role=ROLE_DOCTOR,
+                is_owner=True,
+                is_manager=True,
                 professional_id=OWNER_A_PROFESSIONAL_ID,
             )
         )
@@ -124,7 +135,9 @@ async def client():
                 email=OWNER_B_EMAIL,
                 name="Owner B",
                 password_hash=hash_password(OWNER_B_PASSWORD),
-                role=ROLE_TENANT_OWNER,
+                role=ROLE_DOCTOR,
+                is_owner=True,
+                is_manager=True,
             )
         )
         # One inbound lead for the demo-request PATCH test.
@@ -174,7 +187,7 @@ async def test_admin_role_required(client):
                 "email": "x@y.com",
                 "name": "X",
                 "password": "pw123456",
-                "role": "tenant_staff",
+                "role": "doctor",
                 "tenant_id": MISSING_ID,
             },
         )
@@ -283,7 +296,7 @@ async def test_admin_create_user_validation(client):
     tenants = (await client.get("/admin/tenants", headers=_bearer(admin_token))).json()["items"]
     tenant_a_id = next(t["id"] for t in tenants if t["clinic_name"] == CLINIC_A)
 
-    # Happy path: create a tenant_staff in tenant A.
+    # Happy path: create a plain (non-owner, non-manager) doctor in tenant A.
     resp = await client.post(
         "/admin/users",
         headers=_bearer(admin_token),
@@ -291,14 +304,16 @@ async def test_admin_create_user_validation(client):
             "email": "staff@a.com",
             "name": "Staff A",
             "password": "staffpass1",
-            "role": "tenant_staff",
+            "role": "doctor",
             "tenant_id": tenant_a_id,
         },
     )
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert body["role"] == "tenant_staff"
+    assert body["role"] == "doctor"
     assert body["tenant_id"] == tenant_a_id
+    assert body["is_manager"] is False
+    assert body["is_owner"] is False
     assert "password_hash" not in body and "password_hash" not in str(body)
 
     # The new user can authenticate.
@@ -306,12 +321,50 @@ async def test_admin_create_user_validation(client):
         await client.post("/auth/token", json={"email": "staff@a.com", "password": "staffpass1"})
     ).status_code == 200
 
+    # role="manager" forces is_manager=True regardless of the payload's own flag (a pure
+    # manager role is trivially "a manager" — PreCheck idiom, services/admin.create_user).
+    manager_resp = await client.post(
+        "/admin/users",
+        headers=_bearer(admin_token),
+        json={
+            "email": "manager@a.com",
+            "name": "Manager A",
+            "password": "managerpass1",
+            "role": "manager",
+            "tenant_id": tenant_a_id,
+            "is_manager": False,
+        },
+    )
+    assert manager_resp.status_code == 201, manager_resp.text
+    manager_body = manager_resp.json()
+    assert manager_body["role"] == "manager"
+    assert manager_body["is_manager"] is True
+    assert manager_body["is_owner"] is False
+
+    # Explicit is_owner=True is honored verbatim (admin-tooling owner grant).
+    owner_resp = await client.post(
+        "/admin/users",
+        headers=_bearer(admin_token),
+        json={
+            "email": "explicit-owner@a.com",
+            "name": "Explicit Owner",
+            "password": "ownerpass1",
+            "role": "doctor",
+            "tenant_id": tenant_a_id,
+            "is_owner": True,
+            "is_manager": True,
+        },
+    )
+    assert owner_resp.status_code == 201, owner_resp.text
+    assert owner_resp.json()["is_owner"] is True
+    assert owner_resp.json()["is_manager"] is True
+
     # Tenant role without tenant_id -> 422.
     assert (
         await client.post(
             "/admin/users",
             headers=_bearer(admin_token),
-            json={"email": "n1@a.com", "name": "N", "password": "pw123456", "role": "tenant_owner"},
+            json={"email": "n1@a.com", "name": "N", "password": "pw123456", "role": "doctor"},
         )
     ).status_code == 422
 
@@ -330,6 +383,21 @@ async def test_admin_create_user_validation(client):
         )
     ).status_code == 422
 
+    # Admin role WITH is_owner/is_manager set -> 422 (those are tenant-scoped concepts).
+    assert (
+        await client.post(
+            "/admin/users",
+            headers=_bearer(admin_token),
+            json={
+                "email": "n3@a.com",
+                "name": "N",
+                "password": "pw123456",
+                "role": "admin",
+                "is_owner": True,
+            },
+        )
+    ).status_code == 422
+
     # Duplicate email -> 409.
     assert (
         await client.post(
@@ -339,11 +407,36 @@ async def test_admin_create_user_validation(client):
                 "email": "staff@a.com",
                 "name": "Dup",
                 "password": "pw123456",
-                "role": "tenant_staff",
+                "role": "doctor",
                 "tenant_id": tenant_a_id,
             },
         )
     ).status_code == 409
+
+
+async def test_admin_created_manager_passes_doctor_routes(client):
+    """A `manager` token gets every `/doctor/*` gate a `doctor` token gets."""
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    tenants = (await client.get("/admin/tenants", headers=_bearer(admin_token))).json()["items"]
+    tenant_a_id = next(t["id"] for t in tenants if t["clinic_name"] == CLINIC_A)
+
+    resp = await client.post(
+        "/admin/users",
+        headers=_bearer(admin_token),
+        json={
+            "email": "manager.doctorgate@a.com",
+            "name": "Manager Gate",
+            "password": "managerpass1",
+            "role": "manager",
+            "tenant_id": tenant_a_id,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+    manager_token = await _token(client, "manager.doctorgate@a.com", "managerpass1")
+    for route in DOCTOR_GET_ROUTES:
+        resp = await client.get(route, headers=_bearer(manager_token))
+        assert resp.status_code == 200, f"{route} should accept a manager token: {resp.text}"
 
 
 async def test_admin_users_listing_never_leaks_hash(client):
@@ -468,9 +561,84 @@ async def test_doctor_anamneses_empty_when_precheck_unconfigured(client):
     assert body["stub"] is True
 
 
-async def test_admin_inbound_empty_when_precheck_unconfigured(client):
-    """With no PRECHECK_BASE_URL, the admin inbound proxy returns an empty page."""
+async def test_admin_anamneses_empty_when_precheck_unconfigured(client):
+    """With no PRECHECK_BASE_URL, the admin anamneses proxy returns an empty page."""
     admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
-    resp = await client.get("/admin/inbound", headers=_bearer(admin_token))
+    resp = await client.get("/admin/anamneses", headers=_bearer(admin_token))
     assert resp.status_code == 200, resp.text
-    assert resp.json()["items"] == []
+    body = resp.json()
+    assert body["items"] == []
+    assert body["stub"] is True
+
+
+async def test_admin_metrics_stub_when_precheck_unconfigured(client):
+    """With no PRECHECK_BASE_URL, the admin metrics proxy returns a bare stub payload."""
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    resp = await client.get("/admin/metrics", headers=_bearer(admin_token))
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"stub": True}
+
+
+# --- Role-taxonomy round: legacy-token transition ---------------------------
+
+
+async def test_legacy_tenant_owner_token_passes_doctor_and_owner_gates(client):
+    """A pre-taxonomy token (role=tenant_owner, no is_owner/is_manager claims — the exact
+    shape a token minted moments before this deploy still carries) must keep
+    authenticating through the ~30min post-deploy transition window, on BOTH
+    `require_doctor` and the owner-only `require_owner` (pause)."""
+    real_token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
+    me = (await client.get("/auth/me", headers=_bearer(real_token))).json()
+    user_id = me["user"]["id"]
+    tenant_id = me["tenant"]["id"]
+
+    settings = get_settings()
+    legacy_claims = {
+        "sub": user_id,
+        "tenant_id": tenant_id,
+        "role": "tenant_owner",  # LEGACY role string, no is_owner/is_manager claims at all
+        "exp": datetime.now(UTC) + timedelta(minutes=5),
+    }
+    legacy_token = jose_jwt.encode(legacy_claims, settings.SECRET_KEY, algorithm="HS256")
+
+    doctor_resp = await client.get("/doctor/me", headers=_bearer(legacy_token))
+    assert doctor_resp.status_code == 200, doctor_resp.text
+
+    pause_resp = await client.post(
+        "/doctor/onboarding/pause", headers=_bearer(legacy_token), json={"retries": True}
+    )
+    assert pause_resp.status_code == 200, pause_resp.text
+
+
+async def test_legacy_tenant_staff_token_passes_doctor_not_owner_gate(client):
+    """A legacy `tenant_staff` token passes `require_doctor` but stays 403 on the
+    owner-only pause route — `require_owner` denies before touching the DB, so an
+    unresolvable tenant/user id is fine here."""
+    settings = get_settings()
+    legacy_claims = {
+        "sub": str(uuid4()),
+        "tenant_id": str(uuid4()),
+        "role": "tenant_staff",
+        "exp": datetime.now(UTC) + timedelta(minutes=5),
+    }
+    legacy_token = jose_jwt.encode(legacy_claims, settings.SECRET_KEY, algorithm="HS256")
+
+    pause_resp = await client.post(
+        "/doctor/onboarding/pause", headers=_bearer(legacy_token), json={"retries": True}
+    )
+    assert pause_resp.status_code == 403
+
+
+async def test_login_response_claims_carry_is_owner_and_is_manager(client):
+    """The access token minted by a normal login carries `is_owner`/`is_manager` — Owner A
+    is seeded exactly as a real cold-signup owner (both true)."""
+    from brain_api.core.security import decode_token
+
+    resp = await client.post(
+        "/auth/token", json={"email": OWNER_A_EMAIL, "password": OWNER_A_PASSWORD}
+    )
+    assert resp.status_code == 200, resp.text
+    claims = decode_token(resp.json()["access_token"])
+    assert claims is not None
+    assert claims["is_owner"] is True
+    assert claims["is_manager"] is True

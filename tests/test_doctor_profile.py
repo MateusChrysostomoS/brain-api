@@ -28,7 +28,7 @@ async def test_update_name_ok(client) -> None:
     body = resp.json()
     assert body["user"]["name"] == "Nova Doutora"
     assert body["user"]["email"] == OWNER_A_EMAIL
-    assert body["user"]["role"] == "tenant_owner"
+    assert body["user"]["role"] == "doctor"
     assert body["tenant"]["clinic_name"] == CLINIC_A
 
     # Persisted — a fresh GET (a separate request) reflects it too.
@@ -91,7 +91,7 @@ async def test_update_rejects_email_and_role(client) -> None:
     # None of the rejected attempts changed anything server-side.
     me = await client.get("/doctor/me", headers=_bearer(token))
     assert me.json()["user"]["email"] == OWNER_A_EMAIL
-    assert me.json()["user"]["role"] == "tenant_owner"
+    assert me.json()["user"]["role"] == "doctor"
     assert me.json()["user"]["name"] == "Owner A"
 
 

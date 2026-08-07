@@ -1,7 +1,8 @@
 """Doctor (tenant) endpoints (RBAC task, Part 1B) — `auth-jwt-multitenant` skill.
 
 EVERY route here is gated by `require_doctor` at the router level: the JWT must be valid,
-carry a `tenant_id`, and have role `tenant_owner` or `tenant_staff`. A platform `admin`
+carry a `tenant_id`, and have role `doctor` or `manager` (LEGACY: `tenant_owner`/
+`tenant_staff` on a not-yet-expired pre-taxonomy token). A platform `admin`
 token gets `403` (wrong portal). The tenant is ALWAYS taken from the token
 (`principal.tenant_id`) — `tenant_id` is never accepted as a query/body param, so a doctor
 cannot read another tenant's data by forging an id.
@@ -27,7 +28,7 @@ from brain_api.services.entitlements import ACTIVE_STATUSES, resolve_entitlement
 
 logger = get_logger(__name__)
 
-# Router-level gate: all /doctor/* require a tenant_owner/tenant_staff token (403 else).
+# Router-level gate: all /doctor/* require a doctor/manager token (403 else).
 router = APIRouter(prefix="/doctor", dependencies=[Depends(require_doctor)])
 
 

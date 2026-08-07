@@ -55,7 +55,7 @@ from brain_api.config import get_settings
 from brain_api.core.logging import get_logger
 from brain_api.core.security import hash_password, hash_refresh_token
 from brain_api.models import Entitlement, SignupIntent, Tenant, User
-from brain_api.models.user import ROLE_TENANT_OWNER
+from brain_api.models.user import ROLE_DOCTOR
 from brain_api.schemas.signup import IntakeIn, OnboardingStatusOut, SignupIntentCreate
 from brain_api.services import billing, catalog, onboarding
 
@@ -88,13 +88,13 @@ class Registration:
 async def register_signup(session: AsyncSession, payload: SignupIntentCreate) -> Registration:
     """Register a cold-signup lead at the FIRST card, atomically.
 
-    Creates, in one transaction: the Tenant (clinic_name), the owner User (role
-    tenant_owner) with a REAL password hash from the password the visitor just chose (NOT
-    a random unknown one — that was the old bug: the owner could use the dashboard right
-    after paying but could never log back in), an INERT Entitlement (status="inactive",
-    plan="free", both products OFF — "nothing purchased yet"), and the SignupIntent already
-    linked to the tenant (`intent.tenant_id`). Mirrors `scripts/seed_dev.py`'s bootstrap
-    order (Tenant -> flush -> User -> Entitlement).
+    Creates, in one transaction: the Tenant (clinic_name), the owner User (role doctor,
+    `is_owner`/`is_manager` both true) with a REAL password hash from the password the
+    visitor just chose (NOT a random unknown one — that was the old bug: the owner could
+    use the dashboard right after paying but could never log back in), an INERT
+    Entitlement (status="inactive", plan="free", both products OFF — "nothing purchased
+    yet"), and the SignupIntent already linked to the tenant (`intent.tenant_id`). Mirrors
+    `scripts/seed_dev.py`'s bootstrap order (Tenant -> flush -> User -> Entitlement).
 
     409 `email_already_registered` if a user with this email already exists
     (case-insensitive), checked up front AND enforced again by the DB unique constraint (a
@@ -115,7 +115,9 @@ async def register_signup(session: AsyncSession, payload: SignupIntentCreate) ->
         email=email,
         name=payload.name,
         password_hash=hash_password(payload.password),
-        role=ROLE_TENANT_OWNER,
+        role=ROLE_DOCTOR,
+        is_owner=True,
+        is_manager=True,
         tenant_id=tenant.id,
     )
     session.add(user)
@@ -519,7 +521,7 @@ async def exchange_onboarding_token(
         return None
 
     user = await session.scalar(
-        select(User).where(User.tenant_id == intent.tenant_id, User.role == ROLE_TENANT_OWNER)
+        select(User).where(User.tenant_id == intent.tenant_id, User.is_owner.is_(True))
     )
     if user is None:
         return None

@@ -1,9 +1,10 @@
 """Doctor onboarding + multi-professional endpoints (CONTRACT_onboarding_v1.md §7).
 
 EVERY route here is gated by `require_doctor` at the router level (same convention as
-`api/doctor.py`): the JWT must be valid, carry a `tenant_id`, and have role
-`tenant_owner`/`tenant_staff`; a platform `admin` token gets 403. ONE route is further
-restricted to the tenant OWNER (`require_tenant_owner`): the onboarding kill-switch pause
+`api/doctor.py`): the JWT must be valid, carry a `tenant_id`, and have role `doctor`/
+`manager` (LEGACY: `tenant_owner`/`tenant_staff` on a not-yet-expired pre-taxonomy
+token); a platform `admin` token gets 403. ONE route is further restricted to the tenant
+OWNER (`require_owner`, gated on `principal.is_owner`): the onboarding kill-switch pause
 — a deliberately owner-only lever, out of the day-to-day "configuracao" surface.
 (Corrections round, 2026-07-22: the professional invite/self-bind actions used to be
 owner-only too; they are now open to any doctor — owner OR staff — since day-to-day
@@ -26,13 +27,13 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_api.api.deps import Principal, require_doctor, require_tenant_owner
+from brain_api.api.deps import Principal, require_doctor, require_owner
 from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.core.security import hash_password, hash_refresh_token
 from brain_api.models import Entitlement, SignupAttempt, Tenant, User
-from brain_api.models.user import ROLE_TENANT_STAFF
+from brain_api.models.user import ROLE_DOCTOR
 from brain_api.schemas.onboarding import (
     AttemptIn,
     AttemptOut,
@@ -64,8 +65,8 @@ from brain_api.services import (
 logger = get_logger(__name__)
 
 # Router-level gate: every /doctor/onboarding* + /doctor/professionals* route requires a
-# tenant_owner/tenant_staff token (403 else). The one remaining owner-only route (pause)
-# additionally depends on require_tenant_owner (corrections round, 2026-07-22: invites/
+# doctor/manager token (403 else). The one remaining owner-only route (pause)
+# additionally depends on require_owner (corrections round, 2026-07-22: invites/
 # self used to be owner-only too — see the module docstring).
 router = APIRouter(prefix="/doctor", dependencies=[Depends(require_doctor)])
 
@@ -306,7 +307,7 @@ async def resolve_blocker(
 )
 async def pause_onboarding(
     payload: PauseIn,
-    principal: Principal = Depends(require_tenant_owner),
+    principal: Principal = Depends(require_owner),
     session: AsyncSession = Depends(get_session),
 ) -> OnboardingActionOut:
     tenant = await _load_tenant(session, principal.tenant_id)
@@ -405,13 +406,13 @@ async def invite_professional(
     principal: Principal = Depends(require_doctor),
     session: AsyncSession = Depends(get_session),
 ) -> ProfessionalInviteOut:
-    """Create-or-attach the secretaria professional, then a local `tenant_staff` user
-    bound to it, then mint a single-use invite token
+    """Create-or-attach the secretaria professional, then a local `doctor` user (not an
+    owner/manager — plain invited staff) bound to it, then mint a single-use invite token
     (`POST /auth/exchange-invite-token`). The `professional_invite` email is fail-soft —
     the response ALWAYS carries `invite_link` so the caller can share it manually.
 
     Open to any doctor (owner OR staff) — corrections round, 2026-07-22; previously
-    owner-only (`require_tenant_owner`).
+    owner-only (`require_owner`).
     """
     tenant = await _load_tenant(session, principal.tenant_id)
     email = payload.email.lower()
@@ -432,7 +433,7 @@ async def invite_professional(
         email=email,
         name=payload.name,
         password_hash=hash_password(secrets.token_urlsafe(32)),
-        role=ROLE_TENANT_STAFF,
+        role=ROLE_DOCTOR,
         professional_id=professional_id,
         invite_token_hash=hash_refresh_token(raw_token),
         invite_token_expires_at=datetime.now(UTC)
@@ -473,7 +474,7 @@ async def bind_self_professional(
     session: AsyncSession = Depends(get_session),
 ) -> ProfessionalSelfOut:
     """Bind the CALLING user (owner or staff) to a professional — open to any doctor
-    since the corrections round, 2026-07-22; previously owner-only (`require_tenant_owner`).
+    since the corrections round, 2026-07-22; previously owner-only (`require_owner`).
     """
     tenant = await _load_tenant(session, principal.tenant_id)
     user = await session.get(User, UUID(principal.user_id))

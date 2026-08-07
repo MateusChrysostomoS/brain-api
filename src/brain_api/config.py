@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     # POST /admin/impersonate/token mints a tenant-scoped doctor token for THIS user, so a
     # platform admin can use the doctor portal + PreCheck/secretarIA with REAL data while
     # developing the website + API — without a second login. The target MUST be a
-    # tenant_owner/tenant_staff that carries a tenant_id (else the endpoint returns 404; an
+    # doctor/manager that carries a tenant_id (else the endpoint returns 404; an
     # admin must never become a "doctor with no tenant"). Defaults to the seeded dev clinic
     # (scripts/seed_dev.py); in production set it to a real sandbox clinic owner's email.
     # This is admin-impersonation — a deliberate exception to "admin SSO is not wired"
@@ -106,8 +106,9 @@ class Settings(BaseSettings):
     # --- Service-to-service (BFF proxy into precheck) ---
     # Base URL of the PreCheck backend, e.g. http://precheck:8000 on the internal
     # network (empty in dev disables the proxy routes' upstream call). brain-api proxies
-    # admin "inbound" and doctor "anamneses" to precheck, FORWARDING the caller's brain
-    # JWT (precheck validates it itself via brain_auth) — no separate internal key here.
+    # admin "anamneses"/"metrics" and doctor "anamneses" to precheck, FORWARDING the
+    # caller's brain JWT (precheck validates it itself via brain_auth) — no separate
+    # internal key here.
     PRECHECK_BASE_URL: str = ""
     # Timeout (seconds) for the precheck proxy httpx client.
     PRECHECK_TIMEOUT_SECONDS: float = 10.0

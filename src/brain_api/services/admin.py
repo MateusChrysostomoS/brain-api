@@ -30,7 +30,12 @@ from brain_api.models import (
     UsageEvent,
     User,
 )
-from brain_api.models.user import ROLE_TENANT_OWNER, ROLE_TENANT_STAFF
+from brain_api.models.user import (
+    ROLE_DOCTOR,
+    ROLE_MANAGER,
+    ROLE_TENANT_OWNER,
+    ROLE_TENANT_STAFF,
+)
 from brain_api.schemas.admin import (
     AdminDemoRequestOut,
     AdminTenantDetailOut,
@@ -44,6 +49,11 @@ from brain_api.schemas.admin import (
 from brain_api.services import catalog, secretaria_client
 
 logger = get_logger(__name__)
+
+# LEGACY (pre role-taxonomy round): still accepted here purely so a pre-existing row that
+# was never backfilled (e.g. a not-yet-migrated environment) is still recognized as a
+# doctor-portal user by impersonation. New rows are never written with these.
+_LEGACY_DOCTOR_ROLES = (ROLE_TENANT_OWNER, ROLE_TENANT_STAFF)
 
 
 def _entitlement_out(tenant_id: UUID, ent: Entitlement | None) -> EntitlementAdminOut:
@@ -348,6 +358,8 @@ async def list_users(
             email=user.email,
             name=user.name,
             role=user.role,
+            is_manager=user.is_manager,
+            is_owner=user.is_owner,
             created_at=user.created_at,
         )
         for user, clinic_name in rows
@@ -360,6 +372,12 @@ async def create_user(session: AsyncSession, payload: AdminUserCreateIn) -> Admi
 
     409 if the email already exists; 404 if a named tenant does not exist. The password
     is bcrypt-hashed here and never returned.
+
+    `is_manager` effective value: a `manager` role IS already a manager (PreCheck-style
+    idiom — a pure manager role doesn't need the flag restated), so it is forced True
+    regardless of what the payload sent; any other role takes the payload's flag verbatim
+    (default False). `is_owner` always takes the payload's flag verbatim — owner via admin
+    tooling is a deliberate, explicit act (the admin UI does not send it today).
     """
     email = payload.email.lower()
     if await session.scalar(select(User).where(User.email == email)) is not None:
@@ -372,12 +390,16 @@ async def create_user(session: AsyncSession, payload: AdminUserCreateIn) -> Admi
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Tenant not found")
         clinic_name = tenant.clinic_name
 
+    is_manager = True if payload.role == ROLE_MANAGER else payload.is_manager
+
     user = User(
         tenant_id=payload.tenant_id,
         email=email,
         name=payload.name,
         password_hash=hash_password(payload.password),
         role=payload.role,
+        is_manager=is_manager,
+        is_owner=payload.is_owner,
     )
     session.add(user)
     await session.commit()
@@ -389,6 +411,8 @@ async def create_user(session: AsyncSession, payload: AdminUserCreateIn) -> Admi
         email=user.email,
         name=user.name,
         role=user.role,
+        is_manager=user.is_manager,
+        is_owner=user.is_owner,
         created_at=user.created_at,
     )
 
@@ -458,7 +482,7 @@ async def issue_impersonation_token(
     if (
         user is None
         or user.tenant_id is None
-        or user.role not in (ROLE_TENANT_OWNER, ROLE_TENANT_STAFF)
+        or user.role not in (ROLE_DOCTOR, ROLE_MANAGER, *_LEGACY_DOCTOR_ROLES)
     ):
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, "impersonation_target_unavailable"
@@ -475,6 +499,8 @@ async def issue_impersonation_token(
         tenant_id=str(user.tenant_id),
         role=user.role,
         professional_id=str(user.professional_id) if user.professional_id else None,
+        is_owner=user.is_owner,
+        is_manager=user.is_manager,
     )
     out = ImpersonationTokenOut(
         access_token=token,

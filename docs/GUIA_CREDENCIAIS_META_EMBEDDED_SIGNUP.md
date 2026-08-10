@@ -60,6 +60,37 @@ ou [Implementation](https://developers.facebook.com/documentation/business-messa
 **Evite** o caminho antigo ("Produtos → WhatsApp → Embedded Signup" direto, sem passar por
 Facebook Login for Business) — esse é o caminho de v2/v3, que a Meta está descontinuando.
 
+### 3. Webhook fields e verify token (necessário para o fluxo de Coexistence)
+
+**Adicionado nesta rodada** ("WhatsApp Coexistence onboarding") — faltava no guia até
+aqui. O fluxo de Coexistence depende de a app estar assinada nos webhook fields corretos
+na WABA do cliente (isso é o que `services/meta_graph.py::subscribe_app_to_waba` faz
+automaticamente via `POST /{waba_id}/subscribed_apps` — ver `CONTRACTS.md` §16.2), mas a
+CONFIGURAÇÃO de quais fields existem/são assinados pela sua APP (não pela WABA do cliente)
+é feita uma vez, manualmente, no painel:
+
+1. No app Meta em [developers.facebook.com](https://developers.facebook.com), vá em
+   **App Dashboard → WhatsApp → Configuration**
+2. Na seção de **Webhooks**, assine (subscribe) os seguintes campos, além dos que a Brain
+   já usa para o fluxo padrão:
+   - `messages` — mensagens recebidas (já necessário no fluxo padrão)
+   - `smb_message_echoes` — ecos das mensagens que o CLIENTE envia pelo próprio app
+     WhatsApp Business (necessário para a secretarIA saber que o dono respondeu
+     manualmente — sinal de "modo humano")
+   - `history` — sincronização histórica na transição de Coexistence
+   - `smb_app_state_sync` — sinal de mudança de estado do app WhatsApp Business do
+     cliente (usado por secretarIA para resolver `mode_resolved`; ver
+     `MODE_RESOLVE_FALLBACK_HOURS` em `CONTRACTS.md` §7)
+3. Configure o **Verify Token** do webhook como o valor de `META_VERIFY_TOKEN` do
+   secretarIA (é secretarIA, não brain-api, quem recebe o webhook Meta diretamente — ver
+   `docs/CHECKPOINT_coexistence.md` para o ponteiro de responsabilidade). Confirme com o
+   time do secretarIA qual é o valor atual antes de configurar.
+
+**Observação:** brain-api nunca recebe o webhook Meta diretamente — apenas chama
+`subscribed_apps` para GARANTIR que a app está assinada na WABA de cada cliente
+individualmente, o que é diferente desta configuração (que é da APP como um todo, feita
+uma vez no painel).
+
 ---
 
 ## Parte B — Aplicação no EasyPanel
@@ -80,6 +111,7 @@ O serviço **brain-api** é responsável por fazer a troca de código por token 
 | `META_APP_SECRET` | `<SEU_APP_SECRET>` | Copie do painel da Meta (Configurações Básicas). **SEGREDO** — nunca exponha em frontend ou logs. |
 | `META_ES_CONFIG_ID` | `<SEU_CONFIGURATION_ID>` | Copie da configuração de Embedded Signup no painel da Meta. |
 | `META_GRAPH_BASE_URL` | `https://graph.facebook.com/v23.0` | Já configurado. Mantenha este valor (é a versão da API Meta que brain-api usa). |
+| `META_ES_COEXISTENCE_FEATURE_TYPE` | `whatsapp_business_app_onboarding` (default no código) | O valor de `extras.featureType` que ativa o fluxo de Coexistence no Embedded Signup (onboarding de clientes que já usam o app WhatsApp Business, em vez de número novo). Echoado read-only via `GET /doctor/onboarding`'s `embedded_signup.coexistence_feature_type`, para o frontend decidir se oferece a opção "já uso este número no WhatsApp Business". Vazio = opção não oferecida no portal. Não é segredo. |
 
 **Após preencher:**
 - Clique em **Salvar** ou **Deploy**
@@ -258,8 +290,57 @@ ponta-a-ponta.
 - https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/implementation
 - https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/overview
 - https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/onboarding-business-app-users/
-  (fluxo de coexistência/"whatsapp_business_app_onboarding" — **não** é o que a Brain usa;
-  referenciado só para comparar o formato do `extras` entre flows)
+  (fluxo de coexistência/"whatsapp_business_app_onboarding" — **a partir desta rodada
+  (rodada "WhatsApp Coexistence onboarding") a Brain OFERECE este fluxo como opção**,
+  junto do fluxo padrão de número novo; ver a seção "Coexistence — Task 0: grafia do
+  feature type" mais abaixo para o detalhe completo)
+
+---
+
+## Coexistence — Task 0: grafia do feature type (pesquisa fechada, rodada "WhatsApp Coexistence onboarding")
+
+**Dúvida:** qual é a grafia exata do parâmetro que ativa o fluxo de Coexistence no
+Embedded Signup — `featureType` (camelCase) ou `feature_type` (snake_case) — e em qual
+objeto ele vive (`extras` direto ou aninhado)? Fechada com fontes oficiais, sem teste ao
+vivo (nenhuma credencial configurada em produção ainda — ver "Pendência" acima).
+
+**Citações (verbatim, já pesquisadas nesta rodada):**
+
+- Página v4 (`.../embedded-signup/version-4`): em prosa, **"Onboarding WhatsApp Business
+  app users continues to be supported through the `feature_type` parameter"** — mas essa
+  página não mostra nenhum snippet JS com o parâmetro.
+- Página Implementation (`.../embedded-signup/implementation`): o snippet de código
+  mostra `extras: { setup: {} }`, sem feature type nenhum. A mesma página lista os
+  eventos de conclusão possíveis: `FINISH`, `FINISH_ONLY_WABA`,
+  `FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING`, `FINISH_OBO_MIGRATION`,
+  `FINISH_GRANT_ONLY_API_ACCESS` — com payload `phone_number_id`, `waba_id`,
+  `business_id`.
+- Doc legada de Coexistence
+  (`.../embedded-signup/custom-flows/onboarding-business-app-users/`): a chave JS
+  correta é **`extras.featureType`** (camelCase), com valor
+  **`whatsapp_business_app_onboarding`** — o valor antigo `coexistence` **deixou de ser
+  válido**. O evento de conclusão correspondente é
+  `FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING`. Esta mesma doc exige assinar os webhook
+  fields `history`, `smb_app_state_sync`, `smb_message_echoes` (ver Parte A, seção 3,
+  acima).
+
+**Conclusão adotada:** a chave JS é `featureType` (camelCase) DENTRO de `extras` —
+`extras.featureType = "whatsapp_business_app_onboarding"`. A prosa da página v4 usa
+`feature_type` (snake_case) para se REFERIR ao mesmo parâmetro em texto corrido, não como
+grafia literal de código — não há contradição real, apenas duas convenções de nomenclatura
+(uma de prosa, uma de código) apontando para o mesmo campo. `whatsapp_business_app_onboarding`
+substitui o valor legado `coexistence`, que não é mais aceito.
+
+O frontend loga em debug (fora de produção) todo evento `WA_EMBEDDED_SIGNUP` recebido via
+`window.postMessage`, o que permite confirmar ao vivo — quando houver credenciais reais —
+qual evento de conclusão (`FINISH` vs. `FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING`) o SDK da
+Meta efetivamente dispara para cada fluxo.
+
+**No brain-api**, esta pesquisa se reflete apenas na nova setting
+`META_ES_COEXISTENCE_FEATURE_TYPE` (default `"whatsapp_business_app_onboarding"`, Parte B
+acima) — o backend não faz nenhuma chamada JS, apenas ecoa esse valor read-only via
+`GET /doctor/onboarding`. A implementação do `FB.login()`/`extras.featureType` em si é
+responsabilidade do brain-frontend (fora deste repo).
 
 ---
 
@@ -289,12 +370,17 @@ ponta-a-ponta.
 ---
 
 **Data da escrita:** 2026-07-31  
-**Data da última atualização:** 2026-08-01 — (1) correção: frontend obtém config em runtime
-via GET /doctor/onboarding, sem variáveis ambientais; (2) seção "Versão do Embedded Signup"
-adicionada — fechamento da dúvida v2 vs v4, código do frontend migrado para o formato
-`extras` da v4, instruções de criação do Configuration ID (Parte A §2) corrigidas para o
-caminho v4  
-**Versão:** 1.2  
+**Data da última atualização:** 2026-08-09 — rodada "WhatsApp Coexistence onboarding"
+(brain-api): (1) corrigido "Fontes oficiais consultadas" — a Brain agora OFERECE o fluxo
+de coexistência como opção; (2) `META_ES_COEXISTENCE_FEATURE_TYPE` documentada na tabela
+da Parte B; (3) Parte A ganhou a seção 3 (webhook fields `messages`/
+`smb_message_echoes`/`history`/`smb_app_state_sync` + verify token do secretarIA); (4)
+seção "Coexistence — Task 0" adicionada com as citações exatas que fecham a grafia do
+feature type (`extras.featureType`, camelCase). Ver `docs/CHECKPOINT_coexistence.md` para
+o detalhe completo desta rodada.  
+**Versão:** 1.3  
 **Status:** Guia completo — pronto para aplicação em produção e dev/staging. Migração de
 código para v4 feita e validada (tsc/build); config_id real ainda não existe (Tech Provider
-Program pendente) — ver seção "Versão do Embedded Signup" para a pendência.
+Program pendente) — ver seção "Versão do Embedded Signup" para a pendência. Fluxo de
+Coexistence agora documentado end-to-end (Parte A §2-3, Task 0) mas ainda sem validação ao
+vivo com número real elegível.

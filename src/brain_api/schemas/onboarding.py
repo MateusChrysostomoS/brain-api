@@ -28,12 +28,16 @@ class EmbeddedSignupOut(BaseModel):
 
     `configured` requires BOTH `app_id` and `config_id` to be set — the frontend uses it
     to decide whether "Tentar ativar agora" launches Embedded Signup or renders
-    disabled-with-a-note (CONTRACT_onboarding_v1.md §13).
+    disabled-with-a-note (CONTRACT_onboarding_v1.md §13). `coexistence_feature_type` is
+    independent of `configured` — the frontend uses it to decide whether to offer "já uso
+    este número no WhatsApp Business" (the Coexistence flow) alongside the standard
+    new-number flow; `None` means that option should not be offered.
     """
 
     configured: bool
     app_id: str | None
     config_id: str | None
+    coexistence_feature_type: str | None
 
 
 class OnboardingStateOut(BaseModel):

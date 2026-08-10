@@ -25,9 +25,9 @@
     "semantic_hash": "1b55e01eb888da00ff43a4bbb40ea073"
   },
   "scripts/provision_precheck_tenants.sql": {
-    "mtime": 1786115180.6157458,
-    "ast_hash": "0092c2fa6fcae0288e19fdab064ac549",
-    "semantic_hash": ""
+    "mtime": 1784235214.7958825,
+    "ast_hash": "4ff7137f8513a0a739b0144802f7709f",
+    "semantic_hash": "4ff7137f8513a0a739b0144802f7709f"
   },
   "scripts/seed_admin.py": {
     "mtime": 1781880572.102523,
@@ -35,13 +35,13 @@
     "semantic_hash": "711f9f360042c461f15e3a6167bc91d3"
   },
   "scripts/seed_dev.py": {
-    "mtime": 1786115159.6083252,
-    "ast_hash": "8f423e2c5997090e6719ea23e6285538",
-    "semantic_hash": ""
+    "mtime": 1784235214.7958825,
+    "ast_hash": "1b0094337eb6789c16d8fcfe1cc856e7",
+    "semantic_hash": "1b0094337eb6789c16d8fcfe1cc856e7"
   },
   "src/brain_api/config.py": {
-    "mtime": 1786320845.0117097,
-    "ast_hash": "7e57d31c06b805736733216451dd175b",
+    "mtime": 1785611403.1819184,
+    "ast_hash": "fad41445284554ca1ab39345f8b1a19b",
     "semantic_hash": ""
   },
   "src/brain_api/main.py": {
@@ -55,13 +55,13 @@
     "semantic_hash": "9f240855a02f7fae8b6ecd1eca026cf9"
   },
   "src/brain_api/api/admin.py": {
-    "mtime": 1786067685.4549086,
-    "ast_hash": "63e227f9d2fdb94f12f3bd1b64cd5e97",
+    "mtime": 1784729554.914176,
+    "ast_hash": "d8b595c26abb87d77410571426390e8a",
     "semantic_hash": ""
   },
   "src/brain_api/api/auth.py": {
-    "mtime": 1786115010.9959486,
-    "ast_hash": "6b9c0ffb6e8537140365f01e3e8545b2",
+    "mtime": 1784657452.8569949,
+    "ast_hash": "2d69cfc0aa5d82dcec459b229baee1d9",
     "semantic_hash": ""
   },
   "src/brain_api/api/demo.py": {
@@ -70,13 +70,13 @@
     "semantic_hash": ""
   },
   "src/brain_api/api/deps.py": {
-    "mtime": 1786114940.8378594,
-    "ast_hash": "bb372c2468987844865f4f92f8b0049b",
+    "mtime": 1784354875.8664882,
+    "ast_hash": "227bcb19299c81259c64fdf33d054abc",
     "semantic_hash": ""
   },
   "src/brain_api/api/doctor.py": {
-    "mtime": 1786115006.7128334,
-    "ast_hash": "3852fe66720ac8082774f549305a0c38",
+    "mtime": 1785553930.9426432,
+    "ast_hash": "6c71242ff8445ed33b666a941a344504",
     "semantic_hash": ""
   },
   "src/brain_api/api/entitlements.py": {
@@ -110,8 +110,8 @@
     "semantic_hash": "266d8ed0ba672268d3ede4675a20d9eb"
   },
   "src/brain_api/core/security.py": {
-    "mtime": 1786114912.9362104,
-    "ast_hash": "68cb4769843997dbd7f6dc55b42b2b31",
+    "mtime": 1784352282.9840708,
+    "ast_hash": "5db940b8fbaa0541e2030d5d935df747",
     "semantic_hash": ""
   },
   "src/brain_api/core/__init__.py": {
@@ -140,8 +140,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/models/user.py": {
-    "mtime": 1786114879.022353,
-    "ast_hash": "0dccee9e1332984195f462f6c8ad8a4e",
+    "mtime": 1784352237.7098765,
+    "ast_hash": "62997773e3ecdda8d26ee4bac6e39f2c",
     "semantic_hash": ""
   },
   "src/brain_api/models/__init__.py": {
@@ -150,13 +150,13 @@
     "semantic_hash": ""
   },
   "src/brain_api/schemas/admin.py": {
-    "mtime": 1786115055.6327522,
-    "ast_hash": "d61c1b736badc06be075ffd986b1d26f",
+    "mtime": 1784735307.5763102,
+    "ast_hash": "bc27c659c5cfa0bf6de06c80a089a4c8",
     "semantic_hash": ""
   },
   "src/brain_api/schemas/auth.py": {
-    "mtime": 1786115150.6862538,
-    "ast_hash": "952fa514cb6ea65900e820716fa6811f",
+    "mtime": 1784657839.1093037,
+    "ast_hash": "a5e5f275b48dd1708a2d8422ce38f1f6",
     "semantic_hash": ""
   },
   "src/brain_api/schemas/demo.py": {
@@ -190,8 +190,8 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "src/brain_api/services/admin.py": {
-    "mtime": 1786115448.2236683,
-    "ast_hash": "808d0f9046a9eb41c24b1ae4810ea45f",
+    "mtime": 1784729527.3271763,
+    "ast_hash": "e03e638cfcfc011b37b2d159f5728d8b",
     "semantic_hash": ""
   },
   "src/brain_api/services/auth.py": {
@@ -220,9 +220,9 @@
     "semantic_hash": ""
   },
   "src/brain_api/services/precheck_client.py": {
-    "mtime": 1786067674.566879,
-    "ast_hash": "d83ca49732351dad373785f0c436d8ed",
-    "semantic_hash": ""
+    "mtime": 1781880554.8794708,
+    "ast_hash": "14a5bbc97316f48e88df25fead5338e6",
+    "semantic_hash": "14a5bbc97316f48e88df25fead5338e6"
   },
   "src/brain_api/services/secretaria_client.py": {
     "mtime": 1784729461.0661733,
@@ -260,13 +260,13 @@
     "semantic_hash": "6a5226047335e77dd97ac55ffd668f2a"
   },
   "tests/test_impersonation.py": {
-    "mtime": 1786115377.5458076,
-    "ast_hash": "e182a2ea1e938a1c163114c632f4897d",
-    "semantic_hash": ""
+    "mtime": 1782485017.06602,
+    "ast_hash": "f8896b35a8e9df682299384f2cde5ddc",
+    "semantic_hash": "f8896b35a8e9df682299384f2cde5ddc"
   },
   "tests/test_rbac.py": {
-    "mtime": 1786115314.2547202,
-    "ast_hash": "e7596da52ce24c819ea5e7ad9c5fea73",
+    "mtime": 1784352898.0724726,
+    "ast_hash": "ee5be6439d8f83cf44cfbd958e257474",
     "semantic_hash": ""
   },
   "tests/test_smoke.py": {
@@ -280,8 +280,8 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "CONTRACTS.md": {
-    "mtime": 1786322463.8997414,
-    "ast_hash": "894ab050a81f18c902796395fe8a8f3d",
+    "mtime": 1785612923.4857624,
+    "ast_hash": "1f1cc540b6b30c4f6e18f8b2eb4ca3ed",
     "semantic_hash": ""
   },
   "docker-compose.yml": {
@@ -290,8 +290,8 @@
     "semantic_hash": "07a7b668a227c6011dca7ccb03ef91d5"
   },
   "README.md": {
-    "mtime": 1786117946.515607,
-    "ast_hash": "5693f8ccaf6e7531816e680f4eaa2e29",
+    "mtime": 1784393319.4520676,
+    "ast_hash": "86be4966ded96031b2aa5517818dc8ab",
     "semantic_hash": ""
   },
   "migrations/versions/0003_billing_and_refresh_tokens.py": {
@@ -305,8 +305,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/api/internal.py": {
-    "mtime": 1786115118.0261996,
-    "ast_hash": "8e9354f0edc7d85dccabfe068f0b6427",
+    "mtime": 1784769199.692194,
+    "ast_hash": "94a48f04b68b472fd3f5a3ba0226887c",
     "semantic_hash": ""
   },
   "src/brain_api/core/ratelimit.py": {
@@ -340,8 +340,8 @@
     "semantic_hash": ""
   },
   "tests/test_auth_hardening.py": {
-    "mtime": 1786115419.0973234,
-    "ast_hash": "939c861fb1ad4644bd2b7d9bdb6325ab",
+    "mtime": 1784734566.6582804,
+    "ast_hash": "8e7b4a60d708c216a91984ecbdbbaccf",
     "semantic_hash": ""
   },
   "tests/test_billing.py": {
@@ -445,13 +445,13 @@
     "semantic_hash": ""
   },
   "src/brain_api/services/signup.py": {
-    "mtime": 1786115100.2304866,
-    "ast_hash": "3045f76a8bf5244ad0f19cea1c86cfda",
+    "mtime": 1785209496.269627,
+    "ast_hash": "83797d67d4d227b1d56532d4d58cc96a",
     "semantic_hash": ""
   },
   "tests/test_signup.py": {
-    "mtime": 1786115369.759114,
-    "ast_hash": "369d6ded2ce7755e31e8fa269c7676a6",
+    "mtime": 1785602624.1324883,
+    "ast_hash": "3ec43156c642ec08c514d2b7f050369e",
     "semantic_hash": ""
   },
   "CLAUDE.md": {
@@ -480,23 +480,23 @@
     "semantic_hash": ""
   },
   "src/brain_api/api/onboarding.py": {
-    "mtime": 1786320885.9240992,
-    "ast_hash": "6f0d7e72b5c1ad2c5307ca8498de38e0",
+    "mtime": 1784771289.2833118,
+    "ast_hash": "ad88771582db56babe088eb872f3ce0f",
     "semantic_hash": ""
   },
   "src/brain_api/schemas/onboarding.py": {
-    "mtime": 1786320851.6741126,
-    "ast_hash": "94588a79f0ae6971f28655891ac4862a",
+    "mtime": 1784771299.2828147,
+    "ast_hash": "58db24ae56e254065fc7bc263f46e25e",
     "semantic_hash": ""
   },
   "src/brain_api/services/meta_graph.py": {
-    "mtime": 1786320873.0337737,
-    "ast_hash": "31276c3d30856d2a2fab9253802c03f1",
+    "mtime": 1784354663.0736475,
+    "ast_hash": "f2e23c75b69c52b658aa537f496580f3",
     "semantic_hash": ""
   },
   "src/brain_api/services/onboarding_sync.py": {
-    "mtime": 1786115108.8962958,
-    "ast_hash": "161fcb9400bc38f561bd9d7fe309c900",
+    "mtime": 1784769160.863276,
+    "ast_hash": "747e9c292137b03c436d0c0b5d9d617e",
     "semantic_hash": ""
   },
   "src/brain_api/services/secretaria_provisioning.py": {
@@ -510,8 +510,8 @@
     "semantic_hash": ""
   },
   "tests/test_onboarding_endpoints.py": {
-    "mtime": 1786321034.4751923,
-    "ast_hash": "00bca44b6f60c947e9854483905b3579",
+    "mtime": 1784771433.9725628,
+    "ast_hash": "4e612346588f4db41dedd665fd2004d3",
     "semantic_hash": ""
   },
   "migrations/versions/0008_billing_meter_pricing.py": {
@@ -520,8 +520,8 @@
     "semantic_hash": ""
   },
   "docs/CHECKPOINT_onboarding_multiprofessional.md": {
-    "mtime": 1786322472.000401,
-    "ast_hash": "61f66db3a385f01fb9fd92ed44957ff0",
+    "mtime": 1784771830.495304,
+    "ast_hash": "ffba56c7512f130c3d66729f84a37ab1",
     "semantic_hash": ""
   },
   "docs/CHECKPOINT_register_at_first_card.md": {
@@ -550,8 +550,8 @@
     "semantic_hash": ""
   },
   "tests/test_doctor_profile.py": {
-    "mtime": 1786115365.1625712,
-    "ast_hash": "0588b6ffca2d57afce265a2f05c2eaa6",
+    "mtime": 1785553930.9426432,
+    "ast_hash": "054ba77b6a63c99b507b196fc90efab3",
     "semantic_hash": ""
   },
   "docs/CHECKPOINT_meu_perfil.md": {
@@ -560,8 +560,8 @@
     "semantic_hash": ""
   },
   "docs/GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md": {
-    "mtime": 1786322424.480018,
-    "ast_hash": "5869a05a6386cf55c9f5f4975cc56580",
+    "mtime": 1785558841.513264,
+    "ast_hash": "19372ca606fa10231623e90f3276a523",
     "semantic_hash": ""
   },
   "migrations/versions/0010_precheck_billing.py": {
@@ -632,21 +632,6 @@
   "docs/CHECKPOINT_launch_waitlist.md": {
     "mtime": 1785612815.613465,
     "ast_hash": "42bb4467d0ec2f4369d0c6420c8c1ea0",
-    "semantic_hash": ""
-  },
-  "migrations/versions/0012_role_taxonomy.py": {
-    "mtime": 1786114902.7562494,
-    "ast_hash": "bbe34af4c5d97ed47bd866b391de0f4a",
-    "semantic_hash": ""
-  },
-  "docs/CHECKPOINT_coexistence.md": {
-    "mtime": 1786322459.032279,
-    "ast_hash": "3b2ff1c53133388d7c43259ba4065964",
-    "semantic_hash": ""
-  },
-  "docs/CHECKPOINT_role_taxonomy_admin_tabs.md": {
-    "mtime": 1786118019.7385962,
-    "ast_hash": "894e7f9eab8a07a3569678a51891c629",
     "semantic_hash": ""
   }
 }

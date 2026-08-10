@@ -9,7 +9,9 @@
 > concept on top of `tenants.onboarding_state`/`entitlements` as tracked here. See the
 > **"Update 2026-07-22 — corrections round"** section further down THIS file for the
 > same-day relaxation of `/doctor/professionals/invites`+`/self` from owner-only to any
-> doctor (pause stays owner-only).
+> doctor (pause stays owner-only). See `docs/CHECKPOINT_coexistence.md` (2026-08-09) for
+> the later "WhatsApp Coexistence onboarding" round that adds a second Meta-side
+> `subscribed_apps` webhook-subscription gate to `POST /doctor/onboarding/attempts`.
 
 Validated 2026-07-18 (`uv run python -m pytest -q` → **289 passed**, 3 pre-existing
 deprecation warnings unrelated to this round, ~3m18s). This is the record of the

@@ -98,6 +98,7 @@ def _embedded_signup_out() -> EmbeddedSignupOut:
         configured=bool(settings.META_APP_ID and settings.META_ES_CONFIG_ID),
         app_id=settings.META_APP_ID or None,
         config_id=settings.META_ES_CONFIG_ID or None,
+        coexistence_feature_type=settings.META_ES_COEXISTENCE_FEATURE_TYPE or None,
     )
 
 
@@ -175,7 +176,10 @@ async def post_attempt(
 
     On `result=='pass'`: optionally exchanges `code` via Meta Graph (skipped when
     absent; a failure here becomes a 'fail' attempt with
-    `error_code='token_exchange_failed'`), then calls secretaria's whatsapp-connection.
+    `error_code='token_exchange_failed'`), then — when both `waba_id` and the exchanged
+    `access_token` are present — subscribes this app to the client's WABA webhooks
+    (`meta_graph.subscribe_app_to_waba`; a failure here becomes a 'fail' attempt with
+    `error_code='waba_subscribe_failed'`), then calls secretaria's whatsapp-connection.
     ONLY a successful connection reaches `record_attempt(result='pass')` — a 409
     (`phone_number_conflict`) or any other failure instead records a 'fail' attempt with
     the matching `error_code`, never a 5xx to the caller. A genuine pass then fires a
@@ -215,6 +219,27 @@ async def post_attempt(
                 onboarding_state=tenant.onboarding_state,
                 blocker_reason=tenant.blocker_reason,
             )
+
+    if payload.waba_id and access_token:
+        subscribed = await meta_graph.subscribe_app_to_waba(payload.waba_id, access_token)
+        if not subscribed:
+            row, is_new = await _record_fail(
+                session, tenant, payload.attempt_id, "waba_subscribe_failed"
+            )
+            return AttemptOut(
+                attempt_id=row.id,
+                replayed=not is_new,
+                onboarding_state=tenant.onboarding_state,
+                blocker_reason=tenant.blocker_reason,
+            )
+    else:
+        # Preserves the "attempt with no code" path (no access_token, so nothing to
+        # subscribe with) — never logs the token itself.
+        logger.info(
+            "meta_waba_subscribe_skipped",
+            has_waba_id=bool(payload.waba_id),
+            has_access_token=bool(access_token),
+        )
 
     outcome = await secretaria_provisioning.connect_whatsapp(
         tenant.id,

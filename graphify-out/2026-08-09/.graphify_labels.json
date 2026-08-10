@@ -206,12 +206,8 @@
   "204": "attach_intake",
   "205": "test_price_map_accepts_secretaria_ferro_alias",
   "206": "test_patch_intent_addon_not_available_409",
-  "207": "list_onboarding_tenants",
   "208": "PrivacyRequest",
-  "209": "0012_role_taxonomy.py",
   "210": "health.py",
   "211": "meta_graph.py",
-  "212": "0011_launch_waitlist.py",
-  "213": "test_price_map_accepts_secretaria_ferro_alias",
-  "214": "test_price_map_accepts_precheck_billing_keys_and_rejects_garbage"
+  "212": "0011_launch_waitlist.py"
 }

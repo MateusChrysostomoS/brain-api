@@ -337,6 +337,82 @@ async def test_meta_exchange_network_error_returns_none(monkeypatch):
 
 
 # ===========================================================================================
+# services/meta_graph.py — subscribe_app_to_waba (Task 3, Coexistence onboarding)
+# ===========================================================================================
+
+
+def _install_fake_waba_subscribe_httpx(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    response: _FakeResponse | None = None,
+    exc: Exception | None = None,
+) -> dict:
+    captured: dict = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured["client_kwargs"] = kwargs
+
+        async def __aenter__(self) -> "_FakeClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+        async def post(self, path: str, headers=None):
+            captured["path"] = path
+            captured["headers"] = headers
+            if exc is not None:
+                raise exc
+            assert response is not None
+            return response
+
+    monkeypatch.setattr(
+        meta_graph,
+        "get_settings",
+        lambda: SimpleNamespace(META_GRAPH_BASE_URL="https://graph.test/v99"),
+    )
+    monkeypatch.setattr(meta_graph.httpx, "AsyncClient", _FakeClient)
+    return captured
+
+
+async def test_subscribe_app_to_waba_success(monkeypatch):
+    """(b) subscribe_app_to_waba success — hits the right path, Bearer header only, no
+    token in a query param."""
+    captured = _install_fake_waba_subscribe_httpx(
+        monkeypatch, response=_FakeResponse(200, {"success": True})
+    )
+    ok = await meta_graph.subscribe_app_to_waba("waba_123", "tok_secret")
+    assert ok is True
+    assert captured["path"] == "/waba_123/subscribed_apps"
+    assert captured["headers"] == {"Authorization": "Bearer tok_secret"}
+
+
+async def test_subscribe_app_to_waba_non_200_returns_false(monkeypatch):
+    """(e) the token never appears in a log call — the warning carries only
+    upstream_status, never the access_token value. structlog's `PrintLoggerFactory`
+    doesn't route through stdlib logging (so `caplog` can't see it) — assert directly on
+    the args/kwargs the logger was called with instead."""
+    _install_fake_waba_subscribe_httpx(monkeypatch, response=_FakeResponse(403, {"error": "no"}))
+
+    logged_calls: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        meta_graph.logger, "warning", lambda *a, **kw: logged_calls.append((a, kw))
+    )
+
+    ok = await meta_graph.subscribe_app_to_waba("waba_123", "tok_secret")
+    assert ok is False
+    assert logged_calls == [(("meta_waba_subscribe_failed",), {"upstream_status": 403})]
+    assert "tok_secret" not in repr(logged_calls)
+
+
+async def test_subscribe_app_to_waba_network_error_returns_false(monkeypatch):
+    _install_fake_waba_subscribe_httpx(monkeypatch, exc=httpx.ConnectError("boom"))
+    ok = await meta_graph.subscribe_app_to_waba("waba_123", "tok_secret")
+    assert ok is False
+
+
+# ===========================================================================================
 # Scope A: provisioning bridge (webhook post-commit) + lazy ensure
 # ===========================================================================================
 
@@ -487,7 +563,14 @@ async def test_get_onboarding_shape_default_state(client, monkeypatch):
         "retry_paused": False,
         "config_reminder_paused": False,
         "last_attempt": None,
-        "embedded_signup": {"configured": False, "app_id": None, "config_id": None},
+        "embedded_signup": {
+            "configured": False,
+            "app_id": None,
+            "config_id": None,
+            # META_ES_COEXISTENCE_FEATURE_TYPE's code default ("whatsapp_business_app_
+            # onboarding") is not overridden anywhere in conftest.py, so it flows through.
+            "coexistence_feature_type": "whatsapp_business_app_onboarding",
+        },
     }
 
 
@@ -498,7 +581,9 @@ async def test_get_onboarding_embedded_signup_configured_when_both_ids_set(clien
     monkeypatch.setattr(
         onboarding_api,
         "get_settings",
-        lambda: SimpleNamespace(META_APP_ID="app1", META_ES_CONFIG_ID="cfg1"),
+        lambda: SimpleNamespace(
+            META_APP_ID="app1", META_ES_CONFIG_ID="cfg1", META_ES_COEXISTENCE_FEATURE_TYPE=""
+        ),
     )
     token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
     resp = await client.get("/doctor/onboarding", headers=_bearer(token))
@@ -507,7 +592,32 @@ async def test_get_onboarding_embedded_signup_configured_when_both_ids_set(clien
         "configured": True,
         "app_id": "app1",
         "config_id": "cfg1",
+        "coexistence_feature_type": None,
     }
+
+
+async def test_get_onboarding_coexistence_feature_type_set(client, monkeypatch):
+    """(a) GET /doctor/onboarding surfaces `coexistence_feature_type` when the setting is
+    non-empty — the setting-vs-schema-vs-endpoint wiring, end to end."""
+    import brain_api.api.onboarding as onboarding_api
+
+    monkeypatch.setattr(secretaria_provisioning, "provision_tenant", _noop_async(True))
+    monkeypatch.setattr(
+        onboarding_api,
+        "get_settings",
+        lambda: SimpleNamespace(
+            META_APP_ID="",
+            META_ES_CONFIG_ID="",
+            META_ES_COEXISTENCE_FEATURE_TYPE="whatsapp_business_app_onboarding",
+        ),
+    )
+    token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
+    resp = await client.get("/doctor/onboarding", headers=_bearer(token))
+    assert resp.status_code == 200, resp.text
+    assert (
+        resp.json()["embedded_signup"]["coexistence_feature_type"]
+        == "whatsapp_business_app_onboarding"
+    )
 
 
 async def test_get_onboarding_rejects_admin_token(client):
@@ -595,6 +705,120 @@ async def test_attempt_pass_connects_and_transitions_to_conectado(client, monkey
 
     onboarding_resp = await client.get("/doctor/onboarding", headers=_bearer(token))
     assert onboarding_resp.json()["connected"] is True
+
+
+async def test_attempt_pass_waba_subscribe_failure_records_fail(client, monkeypatch):
+    """(c) a failed subscribe_app_to_waba call folds into a 'fail' attempt with
+    error_code='waba_subscribe_failed' — and connect_whatsapp is never reached."""
+    import brain_api.api.onboarding as onboarding_api
+
+    monkeypatch.setattr(meta_graph, "exchange_code_for_token", _noop_async("tok_secret_value"))
+    monkeypatch.setattr(meta_graph, "subscribe_app_to_waba", _noop_async(False))
+
+    def _must_not_be_called(*a, **kw):  # pragma: no cover - proves the I/O ordering.
+        raise AssertionError("connect_whatsapp must not be called after a failed subscribe")
+
+    monkeypatch.setattr(secretaria_provisioning, "connect_whatsapp", _must_not_be_called)
+
+    # (e) the access token must never reach a logger call along this path either.
+    logged_calls: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        onboarding_api.logger, "info", lambda *a, **kw: logged_calls.append((a, kw))
+    )
+
+    token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
+    resp = await client.post(
+        "/doctor/onboarding/attempts",
+        headers=_bearer(token),
+        json={
+            "attempt_id": str(uuid4()),
+            "result": "pass",
+            "code": "meta_auth_code",
+            "phone_number_id": "5511999990000",
+            "waba_id": "waba_1",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["onboarding_state"] != "conectado"
+
+    onboarding_resp = await client.get("/doctor/onboarding", headers=_bearer(token))
+    last_attempt = onboarding_resp.json()["last_attempt"]
+    assert last_attempt["result"] == "fail"
+    assert last_attempt["error_code"] == "waba_subscribe_failed"
+
+    assert "tok_secret_value" not in repr(logged_calls)
+
+
+async def test_attempt_pass_subscribe_success_then_connects(client, monkeypatch):
+    """Subscribe succeeds -> connect_whatsapp still runs and the attempt reaches
+    'conectado' normally (subscribe is a gate, not a fail-soft no-op)."""
+    monkeypatch.setattr(meta_graph, "exchange_code_for_token", _noop_async("tok_secret_value"))
+
+    subscribe_calls: list[dict] = []
+
+    async def fake_subscribe(waba_id, access_token):
+        subscribe_calls.append({"waba_id": waba_id, "access_token": access_token})
+        return True
+
+    monkeypatch.setattr(meta_graph, "subscribe_app_to_waba", fake_subscribe)
+    monkeypatch.setattr(secretaria_provisioning, "get_config_status", _noop_async(None))
+    monkeypatch.setattr(secretaria_provisioning, "send_notification_email", _noop_async(True))
+
+    connect_calls: list[dict] = []
+
+    async def fake_connect(tenant_id, *, phone_number_id, waba_id, access_token):
+        connect_calls.append({"phone_number_id": phone_number_id, "waba_id": waba_id})
+        return secretaria_provisioning.CONNECTION_OK
+
+    monkeypatch.setattr(secretaria_provisioning, "connect_whatsapp", fake_connect)
+
+    token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
+    resp = await client.post(
+        "/doctor/onboarding/attempts",
+        headers=_bearer(token),
+        json={
+            "attempt_id": str(uuid4()),
+            "result": "pass",
+            "code": "meta_auth_code",
+            "phone_number_id": "5511999990000",
+            "waba_id": "waba_1",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["onboarding_state"] == "conectado"
+    assert subscribe_calls == [{"waba_id": "waba_1", "access_token": "tok_secret_value"}]
+    assert len(connect_calls) == 1
+
+
+async def test_attempt_pass_missing_waba_id_skips_subscribe(client, monkeypatch):
+    """(d) waba_id absent -> subscribe_app_to_waba is never called, and the attempt
+    proceeds through connect_whatsapp as before (the pre-existing 'attempt without a
+    waba_id' path is preserved)."""
+    monkeypatch.setattr(meta_graph, "exchange_code_for_token", _noop_async("tok_secret_value"))
+
+    def _must_not_be_called(*a, **kw):  # pragma: no cover - proves the skip.
+        raise AssertionError("subscribe_app_to_waba must not be called without a waba_id")
+
+    monkeypatch.setattr(meta_graph, "subscribe_app_to_waba", _must_not_be_called)
+    monkeypatch.setattr(secretaria_provisioning, "get_config_status", _noop_async(None))
+    monkeypatch.setattr(secretaria_provisioning, "send_notification_email", _noop_async(True))
+    monkeypatch.setattr(
+        secretaria_provisioning, "connect_whatsapp", _noop_async(secretaria_provisioning.CONNECTION_OK)
+    )
+
+    token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
+    resp = await client.post(
+        "/doctor/onboarding/attempts",
+        headers=_bearer(token),
+        json={
+            "attempt_id": str(uuid4()),
+            "result": "pass",
+            "code": "meta_auth_code",
+            "phone_number_id": "5511999990000",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["onboarding_state"] == "conectado"
 
 
 async def test_attempt_pass_requires_phone_number_id(client):

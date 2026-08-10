@@ -262,6 +262,15 @@ class Settings(BaseSettings):
     # without hardcoding a second source of truth. Not a secret (Meta's JS SDK takes an
     # equivalent config id client-side too) — unlike META_APP_SECRET, safe to echo back.
     META_ES_CONFIG_ID: str = ""
+    # The Embedded Signup `extras.featureType` value that turns on the Coexistence flow
+    # (onboarding of an existing WhatsApp Business app user, as opposed to a brand-new
+    # number) — echoed read-only via GET /doctor/onboarding's `embedded_signup` block
+    # (schemas/onboarding.py::EmbeddedSignupOut.coexistence_feature_type) so the frontend
+    # can decide whether to offer "já uso este número no WhatsApp Business" alongside the
+    # standard new-number flow. Empty ⇒ the coexistence option is not offered in the
+    # portal. Not a secret (Meta's JS SDK takes the same string client-side) — unlike
+    # META_APP_SECRET, safe to echo back.
+    META_ES_COEXISTENCE_FEATURE_TYPE: str = "whatsapp_business_app_onboarding"
     # Base URL of the brain-frontend portal — used to build the professional-invite link
     # (POST /doctor/professionals/invites -> "{FRONTEND_BASE_URL}/convite?token=...").
     FRONTEND_BASE_URL: str = "http://localhost:3000"

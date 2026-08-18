@@ -2,15 +2,22 @@
 
 EVERY route here is gated by `require_doctor` at the router level (same convention as
 `api/doctor.py`): the JWT must be valid, carry a `tenant_id`, and have role `doctor`/
-`manager` (LEGACY: `tenant_owner`/`tenant_staff` on a not-yet-expired pre-taxonomy
-token); a platform `admin` token gets 403. ONE route is further restricted to the tenant
-OWNER (`require_owner`, gated on `principal.is_owner`): the onboarding kill-switch pause
-— a deliberately owner-only lever, out of the day-to-day "configuracao" surface.
+`manager`/`secretary` (LEGACY: `tenant_owner`/`tenant_staff` on a not-yet-expired
+pre-taxonomy token); a platform `admin` token gets 403. ONE route is further restricted
+to the tenant OWNER (`require_owner`): the onboarding kill-switch pause — a deliberately
+owner-only lever, out of the day-to-day "configuracao" surface.
 (Corrections round, 2026-07-22: the professional invite/self-bind actions used to be
 owner-only too; they are now open to any doctor — owner OR staff — since day-to-day
 professional management belongs on that same configuracao surface. Pause stays owner-only
 on purpose.) The acting tenant is ALWAYS `principal.tenant_id` from the validated token;
 `tenant_id` is never accepted as a query/body param.
+
+Secretary round (2026-08-14): the clinic's human receptionist reaches this whole module,
+pause included (`require_owner` accepts `secretary` as an alternative to `is_owner` — an
+explicit product decision, not an oversight). The ONE route it may not have is
+`POST /professionals/self`, which would hand the caller a `professional_id` and put a
+receptionist in the bookable agenda; `deny_secretary` refuses it there. Inviting
+secretaries is the `/secretaries*` pair at the bottom of this module.
 
 State-machine WRITES route through `services/onboarding.py`'s pure functions (never
 mutate `tenant.onboarding_state`/`blocker_reason` directly here) and
@@ -27,13 +34,13 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_api.api.deps import Principal, require_doctor, require_owner
+from brain_api.api.deps import Principal, deny_secretary, require_doctor, require_owner
 from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.core.security import hash_password, hash_refresh_token
 from brain_api.models import Entitlement, SignupAttempt, Tenant, User
-from brain_api.models.user import ROLE_DOCTOR
+from brain_api.models.user import ROLE_DOCTOR, ROLE_SECRETARY
 from brain_api.schemas.onboarding import (
     AttemptIn,
     AttemptOut,
@@ -48,6 +55,10 @@ from brain_api.schemas.onboarding import (
     ProfessionalSelfIn,
     ProfessionalSelfOut,
     ProfessionalsOut,
+    SecretariesOut,
+    SecretaryInviteIn,
+    SecretaryInviteOut,
+    SecretaryOut,
     TestWindowOut,
     TestWindowRestartOut,
 )
@@ -500,7 +511,13 @@ async def bind_self_professional(
 ) -> ProfessionalSelfOut:
     """Bind the CALLING user (owner or staff) to a professional — open to any doctor
     since the corrections round, 2026-07-22; previously owner-only (`require_owner`).
+
+    Refused for a `secretary` (403 `secretary_cannot_be_professional`): this is the one
+    route that WRITES `user.professional_id`, and a receptionist that acquired one would
+    show up in the clinic's agenda as a bookable professional — exactly what the role is
+    defined not to be (models/user.ROLE_SECRETARY).
     """
+    deny_secretary(principal, "secretary_cannot_be_professional")
     tenant = await _load_tenant(session, principal.tenant_id)
     user = await session.get(User, UUID(principal.user_id))
     if user is None:
@@ -521,6 +538,111 @@ async def bind_self_professional(
     return ProfessionalSelfOut(
         professional_id=user.professional_id, created=bool(professional.get("created"))
     )
+
+
+# --- GET /doctor/secretaries + POST /doctor/secretaries/invites ---------------------------
+
+
+@router.get(
+    "/secretaries",
+    response_model=SecretariesOut,
+    summary="The clinic's human secretaries (receptionists)",
+)
+async def list_secretaries(
+    principal: Principal = Depends(require_doctor),
+    session: AsyncSession = Depends(get_session),
+) -> SecretariesOut:
+    """List this tenant's `secretary` users, invited or active.
+
+    Purely LOCAL, unlike `GET /doctor/professionals`: a secretary has no row in
+    secretaria's `professionals` table, so there is no config-status payload to join and
+    no completeness state to report — the brain-api `users` table is the whole truth.
+    """
+    rows = (
+        await session.scalars(
+            select(User)
+            .where(User.tenant_id == principal.tenant_id, User.role == ROLE_SECRETARY)
+            .order_by(User.created_at)
+        )
+    ).all()
+    return SecretariesOut(
+        items=[
+            SecretaryOut(
+                user_id=u.id,
+                name=u.name,
+                email=u.email,
+                invite_pending=u.invite_token_hash is not None,
+                created_at=u.created_at,
+            )
+            for u in rows
+        ]
+    )
+
+
+@router.post(
+    "/secretaries/invites",
+    response_model=SecretaryInviteOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Invite a secretary (receptionist)",
+    responses={409: {"description": "Email already registered."}},
+)
+async def invite_secretary(
+    payload: SecretaryInviteIn,
+    principal: Principal = Depends(require_doctor),
+    session: AsyncSession = Depends(get_session),
+) -> SecretaryInviteOut:
+    """Create a local `secretary` user and mint a single-use invite token
+    (`POST /auth/exchange-invite-token`, role-agnostic — it resolves the user by token
+    hash and mints that user's normal session, so the new role needs nothing there).
+
+    Mirrors `invite_professional` except for the one thing that defines the role: it does
+    NOT call `secretaria_provisioning.create_professional`. No `professionals` row is
+    created on the secretaria side and `professional_id` stays NULL, so the invitee never
+    becomes bookable. That also means there is no 502 branch here — this endpoint touches
+    no sibling service before committing.
+
+    Open to any portal user (doctor, manager, or another secretary): the router-level
+    `require_doctor` admits all three, matching the decision that a secretary has full
+    team management.
+
+    The invite email REUSES secretaria's `professional_invite` template on purpose — its
+    copy is already team-generic ("Você foi adicionado(a) à equipe da {clinic_name}...",
+    services/email.py), it names no profession, and an unknown template id would be a
+    SILENT no-send (secretaria logs `transactional_email_unknown_template` and returns
+    False). Fail-soft either way: `invite_link` always comes back in the response.
+    """
+    tenant = await _load_tenant(session, principal.tenant_id)
+    email = payload.email.lower()
+
+    if await session.scalar(select(User).where(User.email == email)) is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "email_already_registered")
+
+    raw_token = secrets.token_urlsafe(32)
+    user = User(
+        tenant_id=tenant.id,
+        email=email,
+        name=payload.name,
+        password_hash=hash_password(secrets.token_urlsafe(32)),
+        role=ROLE_SECRETARY,
+        # Never set, by definition of the role — see models/user.ROLE_SECRETARY.
+        professional_id=None,
+        invite_token_hash=hash_refresh_token(raw_token),
+        invite_token_expires_at=datetime.now(UTC)
+        + timedelta(hours=get_settings().INVITE_TOKEN_EXPIRE_HOURS),
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+
+    invite_link = f"{get_settings().FRONTEND_BASE_URL}/convite?token={raw_token}"
+    await secretaria_provisioning.send_notification_email(
+        email,
+        "professional_invite",
+        {"name": payload.name, "clinic_name": tenant.clinic_name, "link": invite_link},
+    )
+
+    logger.info("secretary_invited", tenant_id=str(tenant.id), user_id=str(user.id))
+    return SecretaryInviteOut(user_id=user.id, invite_link=invite_link)
 
 
 # --- GET/POST /doctor/onboarding/test-window (Task 2: Meta/WABA acceptance window) -------

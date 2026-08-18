@@ -172,6 +172,72 @@ no entitlements (`tenant-secrets-encryption` never-leak rule; whitelisted `*Out`
 
 ---
 
+### 2.6 `POST /auth/password-reset/*` — forgotten-password recovery (public, rate-limited)
+
+The **unauthenticated** recovery path, as opposed to `/auth/set-password` (§15.1), which
+requires a live session. Three steps, all sharing the per-IP auth bucket with §2.1/§2.1a.
+
+> **Why this exists (2026-08-14).** brain-api previously had *no* reset capability, and
+> brain-frontend's "Esqueci a senha" screens called **PreCheck's** API instead. For any
+> user that exists only in brain-api — every self-serve `/cadastro` signup — PreCheck
+> found no such email and, by its own correct anti-enumeration rule, returned a generic
+> success and sent nothing. The failure was completely silent. Both frontends now call
+> the endpoints below.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| `POST` | `/auth/password-reset/request` | `{email}` | `200 {detail}` — **always the same body**, registered or not (§2.6.1). `429` rate limited |
+| `POST` | `/auth/password-reset/verify` | `{token}` | `200 {detail}`; `400` unknown/expired/used. Read-only pre-flight — does **not** consume the token |
+| `POST` | `/auth/password-reset/confirm` | `{token, new_password}` | `200 {detail}`; `400` unknown/expired/used; `422` password policy |
+
+Request/response shapes deliberately **mirror PreCheck's** long-standing reset contract,
+so the three `esqueci_senha/*` screens work against either backend unchanged.
+
+**Token mechanics.** `secrets.token_urlsafe(32)`, stored only as sha256 in
+`users.reset_token_hash` (+ `reset_token_expires_at`) — the same hashed-at-rest,
+single-use, burn-on-redemption scheme as the professional-invite token (§16.3), added by
+migration `0014_password_reset`. TTL `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES` (default **30
+min** — the shortest-lived token in the service; it sits in an inbox). Only **one** reset
+can be pending per user: a new request overwrites the hash, invalidating the prior link.
+
+**Emailed link.** `{FRONTEND_BASE_URL}/esqueci_senha/token?token=<raw>`, sent via
+secretaria's `password_reset` template (`services/email.py::_TEMPLATES`) with
+`{name, link, ttl_minutes}`. Fail-soft like every transactional email here — a failed
+send must never become a 500 that reveals the address exists. ⚠️ `FRONTEND_BASE_URL` is
+the **same single setting** the invite link uses, and *both* frontends now serve
+`/esqueci_senha` — which domain it points at is an open deploy decision (see
+`docs/CHECKPOINT_secretary_role.md`); do not fork a second setting for it.
+
+**Password policy on confirm.** Identical to `SignupIntentCreate` / `SetPasswordIn` /
+`AdminUserCreateIn`: 8-72 chars (bcrypt's ceiling), at least one letter **and** one digit.
+Reset is not a back door around the rule the account was created under. A rejected
+password does **not** burn the token — the user can retry without a new email.
+
+#### 2.6.1 Anti-enumeration
+
+`/request` has exactly **one** return path, so status, body and headers are identical
+whether or not the email belongs to an account. Known, accepted limitations:
+
+- **Timing is not constant.** The matched branch does a DB write plus an email dispatch;
+  the unmatched one does neither. Closing that channel needs a dummy write and a padded
+  delay. Recorded rather than papered over — PreCheck's implementation has the same shape.
+- **A malformed address returns `422`, not the generic `200`.** This is *not* a leak:
+  `EmailStr` rejects on format alone, before the handler runs, so the answer depends only
+  on what was typed. A well-formed *unregistered* address still gets the same `200` as a
+  real one. Do not "fix" this by swallowing validation errors — it would hide typos for
+  no security gain. (Pinned by `tests/test_password_reset.py`.)
+
+`/verify` and `/confirm` return the same `400 "Token inválido ou expirado"` for unknown,
+expired and already-used tokens — distinguishing them would reveal whether a token ever
+existed.
+
+**Not done here, deliberately:** confirming a reset does **not** revoke the user's
+existing refresh tokens. Defensible hardening (a reset is often triggered *by* a
+compromise), but there is no revoke-all-for-user helper today and session invalidation
+deserves its own review.
+
+---
+
 ## 3. Entitlements
 
 ### 3.1 `GET /entitlements` — resolved entitlement state (protected)
@@ -423,14 +489,16 @@ for `updated_at`). Conventions exactly mirror `secretarIA` models.
 | `email` | String(320) | **unique**, indexed, not null (store lower-cased) |
 | `name` | String(255) | not null |
 | `password_hash` | String(255) | not null; **bcrypt** (never serialized/logged) |
-| `role` | String(32) | not null; `admin` \| `doctor` \| `manager` (role-taxonomy round; legacy `tenant_owner`/`tenant_staff` rows are backfilled to `doctor` by migration `0012_role_taxonomy`, §12) |
+| `role` | String(32) | not null; `admin` \| `doctor` \| `manager` \| `secretary` (role-taxonomy round; legacy `tenant_owner`/`tenant_staff` rows are backfilled to `doctor` by migration `0012_role_taxonomy`, §12). **Plain string — no native enum, no CHECK constraint**; validated purely at the application layer (`models/user.ROLES`, `api/deps.py`'s role tuples, `schemas/admin.AdminUserCreateIn`'s `Literal`). That is why adding `secretary` needed no DDL (`0013_secretary_role` is a documented no-op); a future round that adds a DB-level constraint must include every value here |
 | `is_manager` | Boolean | not null, `server_default false`; role-taxonomy round — "also a manager", no gate of its own yet |
 | `is_owner` | Boolean | not null, `server_default false`; role-taxonomy round — the clinic OWNER (`onboarding_sync.get_owner`, §16); exactly one per tenant in the steady state, not DB-enforced |
 | `created_at` | DateTime(tz) | server_default now() |
 | `updated_at` | DateTime(tz) | server_default now(), onupdate now() |
-| `professional_id` | UUID | nullable, **no FK** — cross-service value reference to `secretaria.professionals.id` (same convention as `tenant_id`-style refs elsewhere, §0 of the onboarding contract). Carried into the JWT (§16.4) |
-| `invite_token_hash` | String(64) | nullable, indexed; sha256 of a professional-invite token (`hash_refresh_token`), single-use, §16.3 |
+| `professional_id` | UUID | nullable, **no FK** — cross-service value reference to `secretaria.professionals.id` (same convention as `tenant_id`-style refs elsewhere, §0 of the onboarding contract). Carried into the JWT (§16.4). **Always NULL for a `secretary`** — the role is defined by not being bookable (§12) |
+| `invite_token_hash` | String(64) | nullable, indexed; sha256 of a professional- **or secretary**-invite token (`hash_refresh_token`), single-use, §16.3. Redemption (`POST /auth/exchange-invite-token`) is role-agnostic: it resolves the user by token hash and mints that user's normal session, so the secretary invite reuses it unchanged |
 | `invite_token_expires_at` | DateTime(tz) | nullable; `INVITE_TOKEN_EXPIRE_HOURS` from mint, §16.3 |
+| `reset_token_hash` | String(64) | nullable, indexed; sha256 of a password-reset token (`hash_refresh_token`), single-use, §2.6. Deliberately mirrors `invite_token_hash` above — same scheme, no separate table. Added by migration `0014_password_reset` |
+| `reset_token_expires_at` | DateTime(tz) | nullable; `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES` (default 30) from mint, §2.6. Only one reset pending per user: a new request overwrites the hash, invalidating the previous link |
 
 ### 6.3 `entitlements` (one row per tenant)
 Shape from `stripe-billing-entitlements`, extended with the explicit product flags the
@@ -717,8 +785,13 @@ it with its existing, **unchanged** auth.
 | `token_type` | string | `"bearer"` |
 | `expires_in` | int | seconds; `PRECHECK_TOKEN_EXPIRE_MINUTES × 60` |
 
-**Status codes:** `200`; `401` missing/invalid brain token; `403` not entitled to PreCheck;
-`409` no tenant in context **or** account not linked.
+**Status codes:** `200`; `401` missing/invalid brain token; `403` not entitled to PreCheck
+**or `secretary_precheck_not_allowed`**; `409` no tenant in context **or** account not linked.
+
+The `secretary` check runs FIRST, before the entitlement and account-link gates. This route
+is gated only by `require_tenant` (any tenant-scoped role passes), so without that explicit
+line the "secretarIA-only" boundary would not exist in code at all — an entitled, linked
+secretary would mint a perfectly valid PreCheck session. See §12's secretary round note.
 
 ### 10.2 The minted token (how it conforms to PreCheck)
 
@@ -789,7 +862,7 @@ whitelisted `*Out` schemas (never `password_hash` / `*_encrypted`). List endpoin
 | `GET` | `/admin/tenants/{tenant_id}/entitlements` | entitlement record (coherent defaults if no row); `404` unknown tenant |
 | `PATCH` | `/admin/tenants/{tenant_id}/entitlements` | partial `{precheck_enabled?, secretaria_enabled?, plan?, status?, addons?, limits?}`; **upserts** the row; `404` unknown tenant; **catalog-validated** (§3.2): `plan` must be an assignable catalog plan (legacy aliases normalize to the canonical id; reserved slots rejected), `addons` keys must be known add-on ids, `limits` keys known limit keys with values ≥ 0 — else `422`. **Materialization order:** `plan` first rewrites products+`addons`+`limits` from the catalog (`compute_entitlement_state`); explicit fields in the same patch override it; a patched `addons` normalizes to the full keyset and recomputes `limits`; an explicit `limits` merges on top as a manual override. How a product is manually switched on pre-Stripe |
 | `GET` | `/admin/users` | `Page` of `{id, tenant_id, clinic_name|null, email, name, role, is_manager, is_owner, created_at}`. **Never** `password_hash` |
-| `POST` | `/admin/users` | `201` create in any tenant/role. Body `{email, name, password, role, tenant_id?, is_manager?, is_owner?}` — `role: "admin"\|"doctor"\|"manager"`; `is_manager`/`is_owner` (role-taxonomy round) default `false`, explicit opt-in (the admin UI does not send `is_owner` today, so an admin-created user always reads as a non-owner unless a caller sets it by hand); for role `manager` the service forces `is_manager=true` regardless of the payload. **Password policy: 8–72 chars, at least one letter and one digit** (bcrypt's 72-byte ceiling; `422` otherwise). `admin` ⇒ `tenant_id` must be null AND `is_manager`/`is_owner` must be false; tenant roles ⇒ `tenant_id` required+existing. `409` dup email, `404` unknown tenant, `422` bad combo / policy violation |
+| `POST` | `/admin/users` | `201` create in any tenant/role. Body `{email, name, password, role, tenant_id?, is_manager?, is_owner?}` — `role: "admin"\|"doctor"\|"manager"\|"secretary"`; `is_manager`/`is_owner` (role-taxonomy round) default `false`, explicit opt-in (the admin UI does not send `is_owner` today, so an admin-created user always reads as a non-owner unless a caller sets it by hand); for role `manager` the service forces `is_manager=true` regardless of the payload — nothing is forced for `secretary` (a receptionist is neither owner nor manager unless a caller says so). **Password policy: 8–72 chars, at least one letter and one digit** (bcrypt's 72-byte ceiling; `422` otherwise). `admin` ⇒ `tenant_id` must be null AND `is_manager`/`is_owner` must be false; tenant roles ⇒ `tenant_id` required+existing. `409` dup email, `404` unknown tenant, `422` bad combo / policy violation |
 | `GET` | `/admin/demo_requests` | `Page` of brain's own demo leads, newest first |
 | `PATCH` | `/admin/demo_requests/{id}` | set `status ∈ {contacted, converted, dismissed}`; `404` unknown, `422` other value. (Portal actions "Marcar como contatado" / "Converter em tenant" / "Descartar") |
 | `GET` | `/admin/anamneses` | **proxy** → PreCheck `GET /api/v1/admin/anamneses` (§11.1), cross-tenant. Query `skip>=0`, `1<=limit<=100`. Unconfigured `PRECHECK_BASE_URL` ⇒ empty page `{items:[], total:0, skip, limit, "stub":true}` |
@@ -903,7 +976,7 @@ calls + the PreCheck SSO all work unchanged. (Logging out clears the marker + st
 
 ---
 
-## 12. Doctor (tenant) API (RBAC round) — roles `doctor` / `manager`
+## 12. Doctor (tenant) API (RBAC round) — roles `doctor` / `manager` / `secretary`
 
 > **Role-taxonomy update (2026-08-07, `docs/CHECKPOINT_role_taxonomy_admin_tabs.md`).**
 > `tenant_owner`/`tenant_staff` collapsed into a single `doctor` role; `manager` is a NEW role
@@ -918,14 +991,41 @@ calls + the PreCheck SSO all work unchanged. (Logging out clears the marker + st
 > when the claim is absent. Migration `0012_role_taxonomy` backfills every existing row
 > (`tenant_owner` → `doctor` + `is_owner=is_manager=true`; `tenant_staff` → `doctor`).
 
+> **Secretary round (2026-08-14, `docs/CHECKPOINT_secretary_role.md`).** A 4th role,
+> `secretary` — the clinic's HUMAN receptionist, not the secretarIA bot. Product decision:
+> **secretarIA-only** (never PreCheck/clinical) and **full power inside secretarIA** — every
+> professional's agenda, the whole configuracao surface, team management (invites for doctors
+> AND other secretaries), billing, and the onboarding pause. So `secretary` is in
+> `DOCTOR_ROLES` (passes `require_doctor`) and passes `require_owner` as an ALTERNATIVE to
+> `is_owner`. It is NEVER a professional: `professional_id` stays `NULL` forever, so a
+> secretary never appears in the bookable agenda. Migration `0013_secretary_role` is a
+> deliberate **no-op** — `users.role` is a plain `String(32)` with no enum/CHECK, so a new
+> role string needs no DDL and there is nothing to backfill.
+>
+> The role is a widening, so the boundary lives in three explicit `deny_secretary`
+> (`api/deps.py`) call sites — `grep -rn deny_secretary src` enumerates it completely:
+>
+> | route | code | why |
+> |---|---|---|
+> | `POST /sso/precheck/token` (§10.1) | `403 secretary_precheck_not_allowed` | minting a PreCheck session |
+> | `GET /doctor/anamneses` | `403 secretary_precheck_not_allowed` | clinical records, proxied from PreCheck |
+> | `GET /doctor/anamneses/{id}` | `403 secretary_precheck_not_allowed` | idem |
+> | `POST /doctor/professionals/self` (§16.3) | `403 secretary_cannot_be_professional` | the only route that WRITES `professional_id` |
+>
+> PreCheck's own `BRAIN_DOCTOR_ROLES` (`app/core/brain_auth.py`) does not list `secretary`
+> either, so the anamneses proxy is refused twice over — but that second refusal is a remote
+> `403` surfacing as an opaque upstream error, which is why the local gate exists.
+
 Every `/doctor/*` route is gated by `require_doctor` at the router level: a valid brain JWT
-whose `role ∈ {doctor, manager}` (legacy: `tenant_owner`/`tenant_staff`, §2.1) **and** that
-carries a `tenant_id`. A platform `admin` token gets `403` (wrong portal — admins use
+whose `role ∈ {doctor, manager, secretary}` (legacy: `tenant_owner`/`tenant_staff`, §2.1)
+**and** that carries a `tenant_id`. Despite the name, `require_doctor` is the
+"tenant-scoped operational portal" gate, not a clinical one — it gates the `/doctor/*` URL
+space. A platform `admin` token gets `403` (wrong portal — admins use
 `/admin/*`). The acting tenant is ALWAYS `principal.tenant_id` from the validated token;
 **`tenant_id` is never accepted as a query or body param**, so a doctor cannot read another
 tenant's data by forging an id. Owner-only routes additionally require `require_owner`, which
-gates on `principal.is_owner` (legacy fallback: `role == "tenant_owner"`) rather than a role
-string.
+gates on `principal.is_owner` (legacy fallback: `role == "tenant_owner"`; alternative:
+`role == "secretary"`) rather than a role string.
 
 | method | path | notes |
 |---|---|---|
@@ -933,8 +1033,8 @@ string.
 | `PATCH` | `/doctor/me` | self-edit the CALLER'S OWN low-risk fields ("Meu Perfil" foundation round; today: `name` only). Body `{name}` (`DoctorMeUpdateIn`, `extra="forbid"` — `email`/`role`/`tenant_id`/`password` in the body are rejected `422` by the schema itself, never silently dropped). Returns the refreshed `DoctorMeOut` (same shape as `GET /doctor/me`) |
 | `GET` | `/doctor/appointments` | **proxy** → secretaria `GET /internal/tenants/{tenant_id}/appointments` (§12.1), `X-Internal-Api-Key`, scoped to `principal.tenant_id`. `{"data": [...]}`; query `skip>=0`, `1<=limit<=100`. Unconfigured mesh → `{"data": [], "stub": true}` |
 | `GET` | `/doctor/patients` | **proxy** → secretaria `GET /internal/tenants/{tenant_id}/patients` (§12.1) (same auth/scope/fallback as appointments) |
-| `GET` | `/doctor/anamneses` | **proxy** → PreCheck `GET /api/v1/doctor/anamneses` (§11.1); tenant-scoped by the forwarded token |
-| `GET` | `/doctor/anamneses/{id}` | **proxy** → PreCheck `GET /api/v1/doctor/anamneses/{id}`; PreCheck enforces the record belongs to the token's tenant/clinic |
+| `GET` | `/doctor/anamneses` | **proxy** → PreCheck `GET /api/v1/doctor/anamneses` (§11.1); tenant-scoped by the forwarded token. `403 secretary_precheck_not_allowed` for a `secretary` (clinical data — see the secretary round note above) |
+| `GET` | `/doctor/anamneses/{id}` | **proxy** → PreCheck `GET /api/v1/doctor/anamneses/{id}`; PreCheck enforces the record belongs to the token's tenant/clinic. Same `403` for a `secretary` |
 | `POST` | `/doctor/secretaria/hub-token` | mint the tenant-scoped secretarIA **hub token** (§12.2). Entitlement-gated: `403 secretaria_not_entitled` unless status active/trialing AND secretaria enabled. `200 {hub_token, token_type, expires_in}` |
 
 ### 12.1 brain-api → secretaria internal data connection (service-to-service)
@@ -1618,24 +1718,28 @@ Router-level `require_doctor` (valid JWT, `doctor`/`manager` — legacy: `tenant
 | `GET` | `/doctor/onboarding` | `{onboarding_state, blocker_reason, config_status, connected, mode_resolved, secretaria_provisioned, next_retry_at, retry_paused, config_reminder_paused, last_attempt: {attempt_id, result, blocker_reason, error_code, created_at}\|null, embedded_signup: {configured, app_id, config_id, coexistence_feature_type}}`. Side effects, both throttled/fail-soft: lazily retries the secretaria provisioning bridge (§15.2), then `refresh_config_status` (§16.5). `embedded_signup.configured` requires BOTH `META_APP_ID` and `META_ES_CONFIG_ID` set (§7); `coexistence_feature_type` is independent — it mirrors `META_ES_COEXISTENCE_FEATURE_TYPE` (§7), `null` when unset, and tells the frontend whether to offer the Coexistence "já uso este número no WhatsApp Business" option |
 | `POST` | `/doctor/onboarding/attempts` | Body `{attempt_id, result: pass\|fail, code?, phone_number_id?, waba_id?, error_code?}` (`phone_number_id` required when `result=='pass'`, `422` otherwise). **Idempotent on `attempt_id`** — a replay short-circuits before any Meta/secretaria I/O and returns the tenant's current state unchanged. On `pass`: optional Meta Graph code→token exchange (`services/meta_graph.py`; a failure here folds into a `fail` attempt with `error_code="token_exchange_failed"`, never a hard error), then — only when BOTH `waba_id` and the exchanged `access_token` are present — `meta_graph.subscribe_app_to_waba` (a failure folds into a `fail` attempt with `error_code="waba_subscribe_failed"`; missing either input just skips the subscribe step, logged as `meta_waba_subscribe_skipped`, and continues), then `secretaria_provisioning.connect_whatsapp`. Only a genuinely successful connection ever reaches `record_attempt(result="pass")` — a `409 phone_number_conflict` or any other failure instead records a `fail` attempt with the matching `error_code`, never a 5xx to the caller. A genuine pass fires a fire-and-forget `connection_success` email + a `refresh_config_status` pull. `200 {attempt_id, replayed, onboarding_state, blocker_reason}`. **`error_code` vocabulary** (this endpoint, either backend- or frontend-supplied on a `fail` result): `token_exchange_failed`, `waba_subscribe_failed`, `phone_number_conflict`, `secretaria_connection_failed` (all backend-recorded, above) plus `no_phone_number_id` (frontend-supplied — sent when the Meta Embedded Signup flow finishes with no `phone_number_id` in its payload; no backend code change, just a normal `fail` attempt through this same endpoint) |
 | `POST` | `/doctor/onboarding/resolve-blocker` | No body. `200 {onboarding_state, blocker_reason}` |
-| `POST` | `/doctor/onboarding/pause` | owner only. Body `{retries?, config_reminders?}` — each present field sets the matching kill-switch column directly; omitted/`null` leaves it untouched. `200 {onboarding_state, blocker_reason}` |
+| `POST` | `/doctor/onboarding/pause` | owner **or `secretary`** (`require_owner`, §12 — the only route behind that gate). Body `{retries?, config_reminders?}` — each present field sets the matching kill-switch column directly; omitted/`null` leaves it untouched. `200 {onboarding_state, blocker_reason}` |
 | `POST` | `/doctor/onboarding/intake` | Body `IntakeIn` (§15.1a). Attaches the cold-signup wizard's eligibility answers to the caller's own pending signup intent (scoped by the token — `tenant_id` never accepted from the client), which the activation webhook (§15.2) then reads to seed onboarding state. Best-effort/idempotent: always `204`, even with no pending intent to attach to |
 
-### 16.3 Professionals & invites (`api/onboarding.py`, prefix `/doctor`)
+### 16.3 Team: professionals, secretaries & invites (`api/onboarding.py`, prefix `/doctor`)
 
-Router-level `require_doctor` (as §16.2). **Corrections round, 2026-07-22: neither route
-below requires the OWNER role specifically anymore** — both moved from the owner-only
-dependency (named `require_tenant_owner` at the time; renamed `require_owner` in the
-role-taxonomy round, §12) to plain `require_doctor`, so any doctor (owner OR staff) may
-invite or self-bind a professional (`docs/CHECKPOINT_onboarding_multiprofessional.md`'s
-own "Update 2026-07-22" section). `POST /doctor/onboarding/pause` (§16.2) is unaffected
-and stays owner-only (`require_owner`).
+Router-level `require_doctor` (as §16.2). **Corrections round, 2026-07-22: neither
+professional route below requires the OWNER role specifically anymore** — both moved from
+the owner-only dependency (named `require_tenant_owner` at the time; renamed `require_owner`
+in the role-taxonomy round, §12) to plain `require_doctor`, so any doctor (owner OR staff)
+may invite or self-bind a professional (`docs/CHECKPOINT_onboarding_multiprofessional.md`'s
+own "Update 2026-07-22" section). Since the secretary round (§12) a `secretary` may invite
+too — both professionals and other secretaries — but NOT self-bind
+(`403 secretary_cannot_be_professional`). `POST /doctor/onboarding/pause` (§16.2) now
+accepts owner OR secretary.
 
 | method | path | notes |
 |---|---|---|
 | `GET` | `/doctor/professionals` | Proxies secretaria's config-status `professionals[]` (§16.5), joined with the LOCAL `users.professional_id` linkage (email + whether an invite is still pending, i.e. `invite_token_hash is not null`). Runs `refresh_config_status` first. `200 {items: [{id, name, is_active, has_calendar, has_hours, has_services, complete, linked_user_email, invite_pending}]}` |
 | `POST` | `/doctor/professionals/invites` | Body `{name, email, specialty?}`. `409 email_already_registered`. Creates-or-attaches the secretaria professional (`secretaria_provisioning.create_professional` — `None`/error ⇒ `502 secretaria_unavailable`, a foreground write the doctor is waiting on), then a local `doctor` `User` bound to it (`professional_id` set; `is_owner`/`is_manager` left at their `false` default — an invited professional is neither), mints a single-use invite token (`INVITE_TOKEN_EXPIRE_HOURS`, §7), sends the fail-soft `professional_invite` email. `201 {professional_id, user_id, invite_link}` — `invite_link` is ALWAYS present (even if the email failed) so the caller can share it manually |
-| `POST` | `/doctor/professionals/self` | Body `{name?, specialty?}` (`name` defaults to the caller's own user name, then the clinic name). `409 already_bound` if the caller already has a `professional_id`. Same secretaria create-or-attach as above (`502` on failure); sets `professional_id` on the CALLER'S OWN user row (owner or staff). `200 {professional_id, created}` |
+| `POST` | `/doctor/professionals/self` | Body `{name?, specialty?}` (`name` defaults to the caller's own user name, then the clinic name). `409 already_bound` if the caller already has a `professional_id`. `403 secretary_cannot_be_professional` for a `secretary` — the only route that WRITES `professional_id`, so it is the one that would make a receptionist bookable. Same secretaria create-or-attach as above (`502` on failure); sets `professional_id` on the CALLER'S OWN user row (owner or staff). `200 {professional_id, created}` |
+| `GET` | `/doctor/secretaries` | The tenant's `secretary` users. Purely LOCAL — a secretary has no row in secretaria's `professionals`, so there is no config-status join and no completeness state. `200 {items: [{user_id, name, email, invite_pending, created_at}]}` |
+| `POST` | `/doctor/secretaries/invites` | Body `{name, email}` (no `specialty`). `409 email_already_registered`. Creates a local `secretary` `User` with `professional_id=None` and mints the same single-use invite token as the professional invite. **Does NOT call `secretaria_provisioning.create_professional`** — no `professionals` row is created, which is what keeps a receptionist out of the agenda; consequently there is no `502` branch (no sibling service is touched before the commit). Sends the fail-soft `professional_invite` email — the template is REUSED deliberately: its copy is already team-generic ("Você foi adicionado(a) à equipe da {clinic_name}…") and an unknown template id would be a SILENT no-send in secretaria (`transactional_email_unknown_template`). `201 {user_id, invite_link}` — `invite_link` always present |
 
 Invite redemption: `POST /auth/exchange-invite-token` (`api/auth.py`) — body `{token}`,
 mirrors `POST /auth/exchange-onboarding-token` (§15.1) almost exactly (same
@@ -1690,3 +1794,27 @@ mirrors `core/ratelimit.py`'s rationale) that both `GET /doctor/onboarding` and 
 /doctor/professionals` call before reading. `get_cached_config_status`/
 `mode_resolved_hint` read the last successfully-pulled payload without forcing a new
 pull.
+
+
+### 16.6 Internal professional-email surface — who secretarIA may notify
+
+One more endpoint on the same pair-key-gated `api/internal.py` router (§12.1's
+`SECRETARIA_API_KEY` invariant — same secret, same fail-closed-on-mismatch behavior):
+
+| method | path | notes |
+|---|---|---|
+| `GET` | `/internal/tenants/{tenant_id}/professional-emails` | `{items: [{professional_id, email}]}`. The SECRETARIA-side `professional_id` (`users.professional_id`) so the caller can key on it directly. Same join `GET /doctor/professionals` already does to fill `linked_user_email`, minus the secretaria-side roster proxy. Professionals with no linked user are ABSENT (not present-with-null) — the question is "who can we reach", not "who exists"; users with no `professional_id` (a `secretary`, or an owner before linkage) are excluded by the same filter. An unknown tenant answers `200 {items: []}`, never a `404` — a caller that already holds the pair key learns nothing from the difference, and a booking's post-hooks must not have to distinguish them |
+
+**Why an endpoint and not a column on secretaria's `professionals`.** brain-api is the
+single writer of identity (§12.1's premise, and the reason `linked_user_email` is
+resolved here rather than mirrored). A `professionals.email` copy in secretarIA would
+have no propagation path: the day a doctor changes their address through brain-api, the
+copy goes stale silently and the clinic keeps mailing an abandoned inbox. So secretarIA
+ASKS, once per booking, from `services/brain_professionals.py` (the read-side sibling of
+its `services/brain_onboarding.py`).
+
+The accepted consequence is that a `Professional` created WITHOUT an invite has no linked
+user and therefore no address, so secretarIA's booking-notification hook
+(`plugins/professional_notification.py`) is a logged no-op for them. Both frontends'
+professionals screen states this explicitly on the row ("Sem e-mail vinculado — não
+recebe aviso de nova consulta") rather than leaving it blank.

@@ -182,3 +182,29 @@ class InternalOnboardingEventOut(BaseModel):
     """`applied=False` means a one-shot marker was already set — not an error."""
 
     applied: bool
+
+
+class InternalProfessionalEmailOut(BaseModel):
+    """One professional's contact address, as secretarIA needs to reach them.
+
+    `professional_id` is the SECRETARIA-side id (`users.professional_id`),
+    which is what the caller holds — it knows appointments, not brain-api user
+    ids. Serialised as a string so the consumer can compare it against
+    `str(appointment.professional_id)` without a parse step.
+    """
+
+    professional_id: str
+    email: str
+
+
+class InternalProfessionalEmailsOut(BaseModel):
+    """`GET /internal/tenants/{tenant_id}/professional-emails` response.
+
+    A batch over the WHOLE tenant rather than a per-professional lookup: the
+    consumer (secretarIA's post-booking notification hook) asks once per
+    booking, and a per-id endpoint would invite an N+1 the moment anything
+    needs two. Professionals with no linked user are simply absent — this is a
+    "who can we reach" answer, not a roster.
+    """
+
+    items: list[InternalProfessionalEmailOut]

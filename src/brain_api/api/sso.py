@@ -10,7 +10,7 @@ minting happen in the service.
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_api.api.deps import Principal, require_tenant
+from brain_api.api.deps import Principal, deny_secretary, require_tenant
 from brain_api.core.database import get_session
 from brain_api.schemas.sso import PrecheckSsoTokenResponse
 from brain_api.services.sso import issue_precheck_token
@@ -29,6 +29,12 @@ async def precheck_sso_token(
     `require_tenant` rejects platform admin tokens (no tenant) with 409. The service
     returns 403 `precheck_not_entitled` if the tenant does not own PreCheck, or 409
     `precheck_account_not_linked` if the brain user has no PreCheck link.
+
+    A `secretary` is refused BEFORE any of that with 403 `secretary_precheck_not_allowed`.
+    This route is gated only by `require_tenant` (any tenant-scoped role passes), so
+    without this line the secretarIA-only boundary would not exist in code at all — an
+    entitled, linked secretary would mint a perfectly valid PreCheck session.
     """
+    deny_secretary(principal, "secretary_precheck_not_allowed")
     result = await issue_precheck_token(session, principal)
     return PrecheckSsoTokenResponse(token=result.token, expires_in=result.expires_in)

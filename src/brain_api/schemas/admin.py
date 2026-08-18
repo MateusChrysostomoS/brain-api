@@ -196,13 +196,17 @@ class AdminUserCreateIn(BaseModel):
     sets it by hand. `is_manager` is likewise explicit for a `doctor`; for role `manager`
     the service forces it True regardless (a pure manager role is trivially "a manager" —
     same idiom as PreCheck's role/flag handling).
+
+    `secretary` (secretary round, 2026-08-14) is a tenant role like doctor/manager: it
+    requires a `tenant_id` and takes both flags verbatim (nothing is forced — a
+    receptionist is neither the clinic's owner nor its manager unless a caller says so).
     """
 
     email: EmailStr = Field(max_length=320)
     name: str = Field(min_length=1, max_length=255)
     # Policy: 8–72 chars (bcrypt's 72-byte ceiling), at least one letter and one digit.
     password: str = Field(min_length=8, max_length=72)
-    role: Literal["admin", "doctor", "manager"]
+    role: Literal["admin", "doctor", "manager", "secretary"]
     # Required for tenant roles; must be absent for a platform admin (validated below).
     tenant_id: UUID | None = None
     is_manager: bool = False
@@ -220,14 +224,14 @@ class AdminUserCreateIn(BaseModel):
     @model_validator(mode="after")
     def _check_role_tenant_consistency(self) -> "AdminUserCreateIn":
         """A platform admin has no tenant, and cannot also be marked owner/manager (those
-        are tenant-scoped clinic concepts); a doctor/manager user must name a tenant."""
+        are tenant-scoped clinic concepts); every tenant role must name a tenant."""
         if self.role == "admin":
             if self.tenant_id is not None:
                 raise ValueError("admin users are platform-level and take no tenant_id")
             if self.is_manager or self.is_owner:
                 raise ValueError("admin users cannot be marked is_manager/is_owner")
         elif self.tenant_id is None:
-            raise ValueError("doctor/manager users require a tenant_id")
+            raise ValueError("doctor/manager/secretary users require a tenant_id")
         return self
 
 

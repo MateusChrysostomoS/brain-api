@@ -11,7 +11,13 @@ from uuid import UUID
 from fastapi import Depends, Header, HTTPException, status
 
 from brain_api.core.security import decode_token
-from brain_api.models.user import ROLE_DOCTOR, ROLE_MANAGER, ROLE_TENANT_OWNER, ROLE_TENANT_STAFF
+from brain_api.models.user import (
+    ROLE_DOCTOR,
+    ROLE_MANAGER,
+    ROLE_SECRETARY,
+    ROLE_TENANT_OWNER,
+    ROLE_TENANT_STAFF,
+)
 
 # LEGACY (pre role-taxonomy round): a doctor-portal token minted before the deploy that
 # introduced `doctor`/`manager` still carries one of these role strings for up to its
@@ -94,12 +100,23 @@ def require_tenant(p: Principal = Depends(get_current_principal)) -> Principal:
 # `manager` gets every gate `doctor` gets (product decision: a manager has full doctor
 # access, semantically the clinic's gestor) — the two are interchangeable for every
 # tenant-scoped route below; only owner-only actions further gate on `p.is_owner`.
-DOCTOR_ROLES = (ROLE_DOCTOR, ROLE_MANAGER)
+# `secretary` (secretary round, 2026-08-14) joins them at the ROUTER level: the clinic's
+# human receptionist runs the same operational portal. It is NOT a doctor synonym though
+# — the three PreCheck/professional exclusions are enforced per-route by
+# `deny_secretary` below, never by this tuple.
+DOCTOR_ROLES = (ROLE_DOCTOR, ROLE_MANAGER, ROLE_SECRETARY)
 
 
 def require_doctor(p: Principal = Depends(get_current_principal)) -> Principal:
-    """Require a tenant-scoped doctor-portal user (`doctor` or `manager`; LEGACY:
-    `tenant_owner`/`tenant_staff` on a not-yet-expired pre-taxonomy token).
+    """Require a tenant-scoped user of the operational clinic portal (`doctor`,
+    `manager` or `secretary`; LEGACY: `tenant_owner`/`tenant_staff` on a not-yet-expired
+    pre-taxonomy token).
+
+    Despite the name (kept for continuity — it gates the `/doctor/*` URL space, which is
+    the portal's prefix, not a claim about the caller being a physician) this is the
+    "tenant-scoped operational portal" gate, not a clinical one. Since the secretary
+    round it admits the clinic's human receptionist too; the routes that must NOT follow
+    that widening call `deny_secretary` explicitly.
 
     Platform `admin` tokens are rejected with 403 — admins use `/admin/*`, not the doctor
     portal (RBAC task: "/doctor/* routes return 403 for admin tokens, wrong portal"). A
@@ -112,7 +129,7 @@ def require_doctor(p: Principal = Depends(get_current_principal)) -> Principal:
 
 
 def require_owner(p: Principal = Depends(require_doctor)) -> Principal:
-    """Require the doctor-scoped principal to be the tenant OWNER.
+    """Require the doctor-scoped principal to be the tenant OWNER — or a `secretary`.
 
     Layers on top of `require_doctor` (still 403 for admin / tenant-less tokens). Owner is
     now `p.is_owner` (role-taxonomy round) rather than a role string; a LEGACY token
@@ -120,7 +137,40 @@ def require_owner(p: Principal = Depends(require_doctor)) -> Principal:
     already-issued `tenant_owner` token keeps working through the ~30min transition
     window. Used for owner-only actions (onboarding pause switches,
     CONTRACT_onboarding_v1.md §7) that a non-owner should not be able to trigger.
+
+    `secretary` passes as an ALTERNATIVE to `is_owner` (secretary round, 2026-08-14,
+    explicit product decision): the receptionist runs the clinic's day-to-day operation,
+    including the onboarding pause — today the only route behind this gate. NOTE for
+    whoever adds the next owner-only action: it will be open to `secretary` from birth
+    because of this line. If that is wrong for your action, gate on `p.is_owner`
+    directly instead of reaching for `require_owner`.
     """
-    if not (p.is_owner or p.role == ROLE_TENANT_OWNER):  # legacy token transition
+    if not (
+        p.is_owner
+        or p.role == ROLE_SECRETARY
+        or p.role == ROLE_TENANT_OWNER  # legacy token transition
+    ):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Owner access required")
     return p
+
+
+def deny_secretary(p: Principal, error_code: str) -> None:
+    """Raise 403 `error_code` when `p` is a `secretary`; a no-op for every other role.
+
+    The `secretary` role is secretarIA-ONLY by product decision (2026-08-14), but the
+    role reaches the whole `/doctor/*` router through `require_doctor` — so the exclusion
+    only exists where this is called. It is deliberately a plain guard rather than a
+    FastAPI dependency: each call site names its own machine-readable `error_code`, and
+    `grep -rn deny_secretary` enumerates the complete boundary in one shot.
+
+    The three call sites, all "clinical data or becoming a professional":
+      * `api/sso.py`         — `secretary_precheck_not_allowed` (minting a PreCheck session)
+      * `api/doctor.py` (x2) — `secretary_precheck_not_allowed` (anamneses, proxied from
+        PreCheck; PreCheck's own `BRAIN_DOCTOR_ROLES` would reject the forwarded token
+        anyway, but that is a remote 403 surfacing as an opaque upstream error — this
+        makes the boundary local, explicit and testable)
+      * `api/onboarding.py`  — `secretary_cannot_be_professional` (the self-bind that
+        would hand the caller a `professional_id` and put them in the bookable agenda)
+    """
+    if p.role == ROLE_SECRETARY:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, error_code)

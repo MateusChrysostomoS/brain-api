@@ -9,6 +9,7 @@ on every use. A presented token that was already rotated (revoked) is treated as
 — the whole active family for that user is revoked. Raw token values are never logged.
 """
 
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -90,6 +91,79 @@ async def set_password(session: AsyncSession, user_id: UUID, new_password: str) 
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
     user.password_hash = hash_password(new_password)
     await session.commit()
+
+
+# --- Password reset ---------------------------------------------------------
+#
+# Deliberately the SAME single-use, hashed-at-rest scheme as the professional invite
+# (`exchange_invite_token` above): `secrets.token_urlsafe(32)` handed out once, only
+# its sha256 persisted, burned by nulling the hash + expiry on redemption.
+#
+# NOTE ON ENUMERATION: none of these helpers raise or log differently for an unknown
+# email/token — they return `None`, and it is the ROUTER's job to answer identically
+# either way. Do not "improve" them by raising a specific error here.
+
+
+async def issue_password_reset_token(
+    session: AsyncSession, email: str
+) -> tuple[User, str] | None:
+    """Mint a reset token for `email`, persisting only its hash.
+
+    Returns `(user, raw_token)` so the caller can build the emailed link, or `None`
+    when no user matches that email. Issuing OVERWRITES any pending reset for the
+    same user, which invalidates the previous link — one live link at a time.
+    """
+    user = await session.scalar(select(User).where(User.email == email.lower().strip()))
+    if user is None:
+        return None
+    raw_token = secrets.token_urlsafe(32)
+    user.reset_token_hash = hash_refresh_token(raw_token)
+    user.reset_token_expires_at = datetime.now(UTC) + timedelta(
+        minutes=get_settings().PASSWORD_RESET_TOKEN_EXPIRE_MINUTES
+    )
+    await session.commit()
+    return user, raw_token
+
+
+async def find_password_reset_user(session: AsyncSession, raw_token: str) -> User | None:
+    """Resolve a reset token WITHOUT consuming it (the `/verify` pre-flight).
+
+    `None` for unknown, expired, or already-burned — the caller must not distinguish
+    those three, or the response becomes a probe for which tokens once existed.
+    """
+    user = await session.scalar(
+        select(User).where(User.reset_token_hash == hash_refresh_token(raw_token))
+    )
+    if (
+        user is None
+        or user.reset_token_expires_at is None
+        or _as_utc(user.reset_token_expires_at) <= datetime.now(UTC)
+    ):
+        return None
+    return user
+
+
+async def complete_password_reset(
+    session: AsyncSession, raw_token: str, new_password: str
+) -> User | None:
+    """Consume the token and set the new password, in ONE commit.
+
+    Re-validates rather than trusting a prior `/verify` call: the two are separate
+    requests, and the token can expire (or be replaced by a newer reset request)
+    between them. Returns `None` on an invalid/expired token.
+
+    The password itself was already validated by `PasswordResetConfirmIn` (8-72 chars,
+    letter + digit) — the same policy the account was created under.
+    """
+    user = await find_password_reset_user(session, raw_token)
+    if user is None:
+        return None
+    user.password_hash = hash_password(new_password)
+    # Burn: single-use, same as the invite token after exchange.
+    user.reset_token_hash = None
+    user.reset_token_expires_at = None
+    await session.commit()
+    return user
 
 
 # --- Refresh tokens ---------------------------------------------------------

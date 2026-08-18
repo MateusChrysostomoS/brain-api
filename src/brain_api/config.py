@@ -289,6 +289,13 @@ class Settings(BaseSettings):
     # onboarding token (ONBOARDING_TOKEN_EXPIRE_MINUTES) but expressed in hours (a human
     # is expected to check their invite email within days, not minutes).
     INVITE_TOKEN_EXPIRE_HOURS: int = 72
+    # Lifetime of a password-reset token (POST /auth/password-reset/request ->
+    # /confirm). Expressed in MINUTES, not hours like the invite above: a reset link is
+    # a credential-recovery secret sitting in an inbox, so it is deliberately the
+    # shortest-lived token in the service. 30 minutes matches what PreCheck's own reset
+    # flow has used since it shipped (app/services/password_reset.py), so a user who has
+    # accounts in both products sees the same window.
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
 
     @property
     def cors_origins(self) -> list[str]:

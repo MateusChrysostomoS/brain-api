@@ -38,6 +38,8 @@ from brain_api.schemas.internal import (
     InternalOnboardingEventOut,
     InternalOnboardingListOut,
     InternalOnboardingTenantOut,
+    InternalProfessionalEmailOut,
+    InternalProfessionalEmailsOut,
     PrecheckHandoffIn,
     PrecheckHandoffOut,
     UsageEventIn,
@@ -161,6 +163,52 @@ async def internal_entitlements(
         secretaria_tier=ent.secretaria_tier,
         addons=ent.addons,
         limits=ent.limits,
+    )
+
+
+@router.get(
+    "/tenants/{tenant_id}/professional-emails",
+    response_model=InternalProfessionalEmailsOut,
+    summary="Contact email per linked professional (internal)",
+    responses=_INTERNAL_RESPONSES,
+)
+async def internal_professional_emails(
+    tenant_id: Annotated[UUID, Path(description="Tenant UUID — the only scope.")],
+    session: AsyncSession = Depends(get_session),
+) -> InternalProfessionalEmailsOut:
+    """Where to reach each of a tenant's professionals by email.
+
+    brain-api is the single writer of identity, so a professional's address
+    lives HERE (`users.email`, linked by `users.professional_id`) and nowhere
+    else — secretarIA has no email column on `professionals` and deliberately
+    will not get one, because a second copy would drift the moment a doctor
+    changed their address. This is the read that lets secretarIA notify a
+    professional about a new booking without holding that copy.
+
+    Same join `GET /doctor/professionals` already does to fill
+    `linked_user_email`, minus the secretaria-side roster proxy — the caller
+    already knows its own roster and only needs the addresses.
+
+    A professional with no linked user (created without an invite) is simply
+    ABSENT from `items` rather than present with a null: the answer is "who can
+    we reach", not "who exists". Users with no `professional_id` — a
+    `secretary`, or an owner before linkage — are excluded by the same filter.
+    """
+    rows = (
+        await session.execute(
+            select(User.professional_id, User.email).where(
+                User.tenant_id == tenant_id,
+                User.professional_id.is_not(None),
+                User.email.is_not(None),
+            )
+        )
+    ).all()
+    return InternalProfessionalEmailsOut(
+        items=[
+            InternalProfessionalEmailOut(professional_id=str(professional_id), email=email)
+            for professional_id, email in rows
+            if email
+        ]
     )
 
 

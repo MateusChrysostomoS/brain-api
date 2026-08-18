@@ -166,6 +166,51 @@ class ProfessionalSelfOut(BaseModel):
     created: bool
 
 
+# --- Secretaries (the clinic's HUMAN receptionists — secretary round, 2026-08-14) -------
+# Deliberately a schema family of its own rather than a reuse of the Professional* pair:
+# a secretary has no `professional_id`, no specialty and no completeness state, so every
+# field those carry would be a permanent None here. See models/user.ROLE_SECRETARY.
+
+
+class SecretaryOut(BaseModel):
+    """One row of `GET /doctor/secretaries` — a local brain-api user, with none of the
+    secretaria-side professional state (a secretary has no row in `professionals`)."""
+
+    user_id: UUID
+    name: str
+    email: str
+    # True while the single-use invite token is still unredeemed (mirrors
+    # `ProfessionalOut.invite_pending`): the person was invited but has never logged in.
+    invite_pending: bool = False
+    created_at: datetime
+
+
+class SecretariesOut(BaseModel):
+    items: list[SecretaryOut]
+
+
+class SecretaryInviteIn(BaseModel):
+    """`POST /doctor/secretaries/invites` body. Open to any portal user — a doctor, a
+    manager, or another secretary (team management is part of the secretary role).
+
+    No `specialty`: a secretary does not attend patients, so the professional-shaped
+    fields have no meaning here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=255)
+    email: EmailStr = Field(max_length=320)
+
+
+class SecretaryInviteOut(BaseModel):
+    """`invite_link` is ALWAYS present (even when the notification email failed to send —
+    same fail-soft contract as `ProfessionalInviteOut`) so the caller can share it
+    manually. No `professional_id`: a secretary never gets one."""
+
+    user_id: UUID
+    invite_link: str
+
+
 class TestWindowOut(BaseModel):
     """`GET /doctor/onboarding/test-window` — Task 2 (Meta/WABA acceptance test-window
     reframe). `applicable` mirrors the plan/day/subscription gates

@@ -1,8 +1,8 @@
 """Doctor (tenant) endpoints (RBAC task, Part 1B) — `auth-jwt-multitenant` skill.
 
 EVERY route here is gated by `require_doctor` at the router level: the JWT must be valid,
-carry a `tenant_id`, and have role `doctor` or `manager` (LEGACY: `tenant_owner`/
-`tenant_staff` on a not-yet-expired pre-taxonomy token). A platform `admin`
+carry a `tenant_id`, and have role `doctor`, `manager` or `secretary` (LEGACY:
+`tenant_owner`/`tenant_staff` on a not-yet-expired pre-taxonomy token). A platform `admin`
 token gets `403` (wrong portal). The tenant is ALWAYS taken from the token
 (`principal.tenant_id`) — `tenant_id` is never accepted as a query/body param, so a doctor
 cannot read another tenant's data by forging an id.
@@ -11,12 +11,17 @@ cannot read another tenant's data by forging an id.
 surface over `X-Internal-Api-Key` (`services/secretaria_internal.py`), scoped to this
 tenant; they degrade to an empty page when the secretaria mesh is unconfigured locally.
 `/doctor/anamneses` is proxied to PreCheck (which re-validates the forwarded brain JWT).
+
+EXCEPTION to the router-level gate: the two `/doctor/anamneses*` routes are the only
+CLINICAL surface in this module (PreCheck records), so they call `deny_secretary` — the
+`secretary` role is secretarIA-only and must never read patient anamneses, even though
+`require_doctor` lets it into every other route here.
 """
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_api.api.deps import Principal, require_doctor
+from brain_api.api.deps import Principal, deny_secretary, require_doctor
 from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
@@ -138,7 +143,10 @@ async def anamneses(
     The doctor's brain JWT is forwarded; PreCheck re-validates it and scopes records to
     the tenant's clinic. brain-api never sends `tenant_id` — PreCheck derives it from the
     token. Returns PreCheck's payload verbatim.
+
+    Clinical data: refused for a `secretary` (403 `secretary_precheck_not_allowed`).
     """
+    deny_secretary(principal, "secretary_precheck_not_allowed")
     logger.info("doctor_anamneses_proxy", tenant_id=str(principal.tenant_id))
     return await precheck_client.list_anamneses(authorization or "", skip, limit)
 
@@ -153,7 +161,10 @@ async def anamnesis_detail(
 
     PreCheck enforces that the record belongs to the forwarded token's tenant/clinic, so
     a doctor cannot read another tenant's anamnesis by guessing an id.
+
+    Clinical data: refused for a `secretary` (403 `secretary_precheck_not_allowed`).
     """
+    deny_secretary(principal, "secretary_precheck_not_allowed")
     logger.info(
         "doctor_anamnesis_detail_proxy",
         tenant_id=str(principal.tenant_id),

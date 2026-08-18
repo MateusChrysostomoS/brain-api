@@ -127,3 +127,69 @@ class SetPasswordIn(BaseModel):
         if not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
             raise ValueError("password must contain at least one letter and one digit")
         return v
+
+
+# --- Password reset (CONTRACTS.md §2.6) -------------------------------------
+#
+# Request/response shapes mirror PreCheck's long-standing reset endpoints
+# (app/schemas/auth.py there) ON PURPOSE: brain-frontend's three `esqueci_senha/*`
+# screens were already written against that contract while pointed at the wrong
+# backend, so matching it exactly means repointing them is an import swap rather
+# than a UI rewrite.
+
+
+class MessageOut(BaseModel):
+    """Generic `{detail}` envelope, mirroring PreCheck's `MessageResponse`.
+
+    Used where the response must be intentionally indistinguishable between the
+    success and the no-op case (see `PasswordResetRequestIn`), so the body carries
+    no signal a caller could use to probe for registered emails.
+    """
+
+    detail: str
+
+
+class PasswordResetRequestIn(BaseModel):
+    """Body for `POST /auth/password-reset/request`.
+
+    The endpoint ALWAYS answers 200 with the same `MessageOut`, whether or not the
+    email belongs to a user — anything else would turn this route into an account
+    enumeration oracle.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr = Field(max_length=320)
+
+
+class PasswordResetVerifyIn(BaseModel):
+    """Body for `POST /auth/password-reset/verify` — a read-only pre-flight so the UI
+    can reject a broken link before the user types a new password. Does NOT consume
+    the token."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # 32-byte url-safe tokens are ~43 chars; the ceiling tolerates future tweaks.
+    token: str = Field(min_length=16, max_length=256)
+
+
+class PasswordResetConfirmIn(BaseModel):
+    """Body for `POST /auth/password-reset/confirm` — consumes the token and sets the
+    new password.
+
+    Same composition policy as `SetPasswordIn` / `AdminUserCreateIn` /
+    `SignupIntentCreate`: 8-72 chars (bcrypt's ceiling), at least one letter and one
+    digit. Reset is not a back door around the rule the account was created under.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=16, max_length=256)
+    new_password: str = Field(min_length=8, max_length=72)
+
+    @field_validator("new_password")
+    @classmethod
+    def _password_policy(cls, v: str) -> str:
+        if not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
+            raise ValueError("password must contain at least one letter and one digit")
+        return v

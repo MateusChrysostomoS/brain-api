@@ -220,7 +220,5 @@
   "218": "test_price_map_still_accepts_legacy_single_metered_key",
   "219": "_clear_config_status_cache",
   "220": "test_map_error_to_blocker_numero_priority_over_admin",
-  "221": "test_derive_initial_state_priority_prior_api_wins_over_fb_page",
-  "222": "client",
-  "223": "test_secretary_is_a_known_role"
+  "221": "test_derive_initial_state_priority_prior_api_wins_over_fb_page"
 }

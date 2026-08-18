@@ -40,8 +40,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/config.py": {
-    "mtime": 1786752302.8624277,
-    "ast_hash": "081da90cfe5e55469197d36ddcc0cc13",
+    "mtime": 1786320845.0117097,
+    "ast_hash": "7e57d31c06b805736733216451dd175b",
     "semantic_hash": ""
   },
   "src/brain_api/main.py": {
@@ -60,8 +60,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/api/auth.py": {
-    "mtime": 1786752436.3702526,
-    "ast_hash": "20041e419d3444f3fa242004c3ac2102",
+    "mtime": 1786115010.9959486,
+    "ast_hash": "6b9c0ffb6e8537140365f01e3e8545b2",
     "semantic_hash": ""
   },
   "src/brain_api/api/demo.py": {
@@ -140,8 +140,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/models/user.py": {
-    "mtime": 1786752298.642262,
-    "ast_hash": "031b3098f7870bbf6801ea4fbfd2f25f",
+    "mtime": 1786742580.6504128,
+    "ast_hash": "d97373df31c4486b82232617008aac02",
     "semantic_hash": ""
   },
   "src/brain_api/models/__init__.py": {
@@ -155,8 +155,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/schemas/auth.py": {
-    "mtime": 1786752335.229189,
-    "ast_hash": "ad3d03a74ae4fd4423cafaaf8851e01b",
+    "mtime": 1786115150.6862538,
+    "ast_hash": "952fa514cb6ea65900e820716fa6811f",
     "semantic_hash": ""
   },
   "src/brain_api/schemas/demo.py": {
@@ -195,8 +195,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/services/auth.py": {
-    "mtime": 1786752374.3688655,
-    "ast_hash": "a1fbfbc7d37c53a6f9fd5eb7c9e4da29",
+    "mtime": 1784354845.6368055,
+    "ast_hash": "92cfe804b2ad3d61444b554b0b24b927",
     "semantic_hash": ""
   },
   "src/brain_api/services/catalog.py": {
@@ -280,8 +280,8 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "CONTRACTS.md": {
-    "mtime": 1786754233.830756,
-    "ast_hash": "6c849fe54ac16b575148605ca41ed6dd",
+    "mtime": 1786745580.235303,
+    "ast_hash": "4914a738968c3ef83d7c9bda0a643c59",
     "semantic_hash": ""
   },
   "docker-compose.yml": {
@@ -662,21 +662,6 @@
   "docs/CHECKPOINT_secretary_role.md": {
     "mtime": 1786745651.8405313,
     "ast_hash": "99ba1dcbcf98d299667518de881f284c",
-    "semantic_hash": ""
-  },
-  "migrations/versions/0014_password_reset.py": {
-    "mtime": 1786752312.6924262,
-    "ast_hash": "f857f33972384dc7a0c56727eb44c4b8",
-    "semantic_hash": ""
-  },
-  "tests/test_password_reset.py": {
-    "mtime": 1786753798.2153292,
-    "ast_hash": "454756d0b80fb3830d934af3966d9056",
-    "semantic_hash": ""
-  },
-  "docs/CHECKPOINT_password_reset.md": {
-    "mtime": 1786754274.7435553,
-    "ast_hash": "c53c25c275ca8998b76308fca89ccd1b",
     "semantic_hash": ""
   }
 }

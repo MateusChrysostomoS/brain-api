@@ -1,5 +1,6 @@
 """Application configuration loaded from environment variables / .env file."""
 
+import json
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -57,8 +58,10 @@ class Settings(BaseSettings):
     # it is still short and unrevocable, per the auth-jwt-multitenant skill.
     PRECHECK_TOKEN_EXPIRE_MINUTES: int = 60
 
-    # --- CORS (the Next.js Brain portal) ---
-    # Comma-separated list of allowed browser origins for the portal.
+    # --- CORS (the Next.js Brain portal + secretarIA-frontend) ---
+    # Allowed browser origins, one per product frontend. Accepts a JSON array
+    # (`["https://a.com","https://b.com"]`) or the legacy comma-separated form
+    # (`https://a.com,https://b.com`) — see `cors_origins` below for parsing.
     CORS_ALLOW_ORIGINS: str = "http://localhost:3000"
 
     # --- Demo request anti-spam ---
@@ -299,8 +302,41 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins(self) -> list[str]:
-        """Parse CORS_ALLOW_ORIGINS into a clean list of origins."""
-        return [o.strip() for o in self.CORS_ALLOW_ORIGINS.split(",") if o.strip()]
+        """Parse CORS_ALLOW_ORIGINS into a clean list of origins.
+
+        Accepts a JSON array (`["https://a.com","https://b.com"]`) — the value
+        starts with `[` — or falls back to the legacy comma-separated form
+        (`https://a.com,https://b.com`); a malformed JSON array degrades to
+        empty rather than raising, so a typo in EasyPanel fails closed (CORS
+        rejects everyone) instead of crashing every request through this
+        service (`services/entitlements.py` and every DB-touching route sit
+        behind the same process, so `Settings()` must never raise here).
+
+        Trailing slashes are stripped because Starlette's CORSMiddleware
+        matches the request's `Origin` header EXACTLY, and an origin is
+        scheme+host+port by definition — a browser never sends the trailing
+        slash. Configuring `https://app.example.com/` would therefore reject
+        every real browser request with a 400 "Disallowed CORS origin" while
+        looking correct in the panel. Surrounding quotes are stripped for the
+        same reason: some deploy panels persist the value with the quotes
+        included. Mirrors secretarIA's `config.py::cors_origins` hardening
+        (same bug class bit that service's CORS_ALLOW_ORIGINS on 2026-07-29).
+        """
+        raw = self.CORS_ALLOW_ORIGINS.strip()
+        if raw.startswith("["):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = []
+            entries = [str(o) for o in parsed] if isinstance(parsed, list) else []
+        else:
+            entries = raw.split(",")
+        origins: list[str] = []
+        for entry in entries:
+            origin = entry.strip().strip("'\"").rstrip("/")
+            if origin:
+                origins.append(origin)
+        return origins
 
     @property
     def is_production(self) -> bool:

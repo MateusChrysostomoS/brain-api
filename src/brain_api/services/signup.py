@@ -143,6 +143,7 @@ async def register_signup(session: AsyncSession, payload: SignupIntentCreate) ->
         whatsapp_phone=payload.whatsapp_phone,
         catalog_ids=list(payload.catalog_ids),
         intake=payload.intake.model_dump() if payload.intake is not None else None,
+        precheck_template_slug=payload.precheck_template_slug,
         tenant_id=tenant.id,
     )
     session.add(intent)

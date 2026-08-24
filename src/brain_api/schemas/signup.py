@@ -90,6 +90,12 @@ class SignupIntentCreate(BaseModel):
     # Optional eligibility-calibration answers (§7); omitted -> None (back-compat). Usually
     # attached LATER via POST /doctor/onboarding/intake, but accepted here too.
     intake: IntakeIn | None = None
+    #: Slug do template de especialidade do PreCheck escolhido na vitrine (/comecar).
+    #: Opcional: compras sem PreCheck não mandam, e sem ele o bridge cai em
+    #: "clinica-geral" (onboarding_sync.DEFAULT_PRECHECK_TEMPLATE).
+    precheck_template_slug: str | None = Field(
+        default=None, min_length=1, max_length=100, pattern=r"^[a-z0-9-]+$"
+    )
     # HONEYPOT (anti-spam). Never persisted — the API layer accept-and-drops silently.
     website: str | None = None
 

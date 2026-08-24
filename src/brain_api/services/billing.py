@@ -1179,6 +1179,15 @@ async def apply_stripe_event(
             # tenant manually reaching the wizard (see docs/CHECKPOINT_register_at_first_
             # card.md); this webhook call site has no such constraint.
             ent_after_activation = await session.get(Entitlement, provisioned_tenant.id)
+            if ent_after_activation is not None and ent_after_activation.precheck_enabled:
+                # Irmão do bridge do secretaria abaixo, mesmas garantias (best-effort,
+                # pós-commit, nunca levanta). É o que faz "pagou -> clínica no ar" existir:
+                # provisiona a clínica no PreCheck e grava precheck_account_links, sem o
+                # qual POST /sso/precheck/token responde 409 e o comprador não entra em nada.
+                from brain_api.services import onboarding_sync
+
+                await onboarding_sync.ensure_precheck_provisioned(session, provisioned_tenant)
+
             if ent_after_activation is not None and ent_after_activation.secretaria_enabled:
                 # Best-effort, post-commit, fully self-contained try/except (never raises
                 # — see its own docstring): a secretaria outage must never break this

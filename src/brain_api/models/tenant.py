@@ -49,6 +49,11 @@ class Tenant(Base):
     secretaria_provisioned_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Espelho exato do irmão acima, para o bridge do PreCheck (0015): NULL = ainda
+    # não provisionado (retentar), carimbado = no-op.
+    precheck_provisioned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     config_reminder_anchor_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

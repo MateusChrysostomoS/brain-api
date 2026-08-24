@@ -18,7 +18,10 @@ truth and a restart simply forces one extra pull.
 
 from __future__ import annotations
 
+import re
+import secrets
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -29,8 +32,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import Settings, get_settings
 from brain_api.core.logging import get_logger
-from brain_api.models import Entitlement, SignupAttempt, Tenant, User
-from brain_api.services import catalog, onboarding, secretaria_provisioning
+from brain_api.models import (
+    Entitlement,
+    PrecheckAccountLink,
+    SignupAttempt,
+    SignupIntent,
+    Tenant,
+    User,
+)
+from brain_api.services import (
+    catalog,
+    onboarding,
+    precheck_provisioning,
+    secretaria_provisioning,
+)
+from brain_api.services.entitlements import resolve_entitlement
 
 if TYPE_CHECKING:
     from brain_api.schemas.internal import InternalOnboardingEventIn
@@ -80,6 +96,136 @@ async def ensure_secretaria_provisioned(session: AsyncSession, tenant: Tenant) -
     except Exception:  # noqa: BLE001 - fail-soft by contract: never break the caller.
         logger.warning(
             "secretaria_provisioning_bridge_failed", tenant_id=str(tenant.id), exc_info=True
+        )
+
+
+# --- Provisioning bridge: PreCheck (scope A, sibling of the secretaria one above) -------
+
+
+#: Template de especialidade usado quando o intent não carrega escolha — intents
+#: anteriores à 0015, ou uma compra feita fora da vitrine do PreCheck.
+DEFAULT_PRECHECK_TEMPLATE = "clinica-geral"
+
+
+def _precheck_identity(clinic_name: str, tenant_id: UUID) -> tuple[str, str]:
+    """(clinic_slug, trigger_phrase) determinísticos para uma clínica do PreCheck.
+
+    PreCheck exige os dois únicos: o slug é PK natural da clínica e a frase é o que
+    faz o dispatcher rotear o paciente (o match é `frase in mensagem`, então frases
+    curtas colidem). Derivar do nome e desempatar com um sufixo do tenant_id dá
+    unicidade sem precisar de round-trip de consulta — e, sendo determinístico,
+    uma retentativa gera exatamente os mesmos valores da tentativa anterior.
+    """
+    base = re.sub(r"[^a-z0-9]+", "-", unicodedata.normalize("NFKD", clinic_name)
+                  .encode("ascii", "ignore").decode().lower()).strip("-") or "clinica"
+    sufixo = str(tenant_id)[:8]
+    slug = f"{base[:60]}-{sufixo}"
+    return slug, f"precheck {base[:40]} {sufixo}"
+
+
+async def ensure_precheck_provisioned(session: AsyncSession, tenant: Tenant) -> None:
+    """Best-effort `POST /internal/provision` bridge; idempotente e GARANTIDO NUNCA LEVANTAR.
+
+    Irmão de `ensure_secretaria_provisioned`, com a mesma história de retry: no-op depois
+    que `tenant.precheck_provisioned_at` está carimbado, chamado do webhook do Stripe
+    (`services.billing.apply_stripe_event`, pós-commit) e como retry preguiçoso em
+    `GET /doctor/onboarding` — então uma indisponibilidade do PreCheck na hora da compra
+    se cura sozinha no primeiro load do portal.
+
+    Faz DUAS escritas, e as duas importam:
+
+    1. A clínica no PreCheck (via `POST /internal/provision`, idempotente por
+       `brain_tenant_id` do lado de lá).
+    2. A linha em `precheck_account_links` — o mapa `brain_user_id -> precheck_user_id`
+       que `POST /sso/precheck/token` EXIGE. Sem ela o hand-off responde
+       `409 precheck_account_not_linked` e o médico pagante não entra em nada. Era
+       populada à mão por `scripts/link_precheck_account.py`.
+
+    Sai fora, sem carimbar, quando o tenant não tem direito ao PreCheck — um comprador
+    só de outro produto não deve ganhar clínica.
+    """
+    if tenant.precheck_provisioned_at is not None:
+        return
+    try:
+        ent = await resolve_entitlement(session, tenant.id)
+        if not ent.products.precheck:
+            return
+
+        owner = await get_owner(session, tenant.id)
+        if owner is None:
+            logger.warning("precheck_provisioning_no_owner", tenant_id=str(tenant.id))
+            return
+
+        intent = await session.scalar(
+            select(SignupIntent)
+            .where(SignupIntent.tenant_id == tenant.id)
+            .order_by(SignupIntent.created_at.desc())
+        )
+        template = (
+            intent.precheck_template_slug
+            if intent is not None and intent.precheck_template_slug
+            else DEFAULT_PRECHECK_TEMPLATE
+        )
+
+        slug, trigger = _precheck_identity(tenant.clinic_name, tenant.id)
+        # O médico NUNCA usa esta senha: entra por SSO (POST /sso/precheck/token), e o
+        # brain é a autoridade de identidade. O PreCheck exige o campo, então mandamos
+        # um segredo aleatório que ninguém precisa conhecer — mandar a senha real seria
+        # impossível (temos só o hash) e copiá-la para outro serviço seria pior.
+        body = await precheck_provisioning.provision_clinic(
+            tenant.id,
+            template_slug=template,
+            clinic_name=tenant.clinic_name,
+            clinic_slug=slug,
+            trigger_phrase=trigger,
+            doctor_name=owner.name,
+            doctor_email=owner.email,
+            doctor_password=secrets.token_urlsafe(32),
+            # o telefone vive no intent (o Tenant não tem essa coluna)
+            doctor_phone=intent.whatsapp_phone if intent is not None else None,
+        )
+        if body is None:
+            return
+
+        precheck_user_id = body.get("doctor_user_id")
+        if not isinstance(precheck_user_id, int):
+            logger.warning(
+                "precheck_provisioning_no_doctor_user_id", tenant_id=str(tenant.id)
+            )
+            return
+
+        # Upsert do link: a reverse-unique de precheck_user_id (0002) transforma uma
+        # segunda tentativa numa violação de constraint, não num duplicado.
+        link = await session.scalar(
+            select(PrecheckAccountLink).where(
+                PrecheckAccountLink.brain_user_id == owner.id
+            )
+        )
+        if link is None:
+            session.add(
+                PrecheckAccountLink(
+                    brain_user_id=owner.id,
+                    precheck_user_id=precheck_user_id,
+                    tenant_id=tenant.id,
+                )
+            )
+        else:
+            link.precheck_user_id = precheck_user_id
+            link.tenant_id = tenant.id
+
+        tenant.precheck_provisioned_at = datetime.now(UTC)
+        await session.commit()
+        logger.info(
+            "precheck_provisioning_bridge_ok",
+            tenant_id=str(tenant.id),
+            created=bool(body.get("created")),
+            template=template,
+            precheck_user_id=precheck_user_id,
+        )
+    except Exception:  # noqa: BLE001 - fail-soft por contrato: nunca quebrar o chamador.
+        await session.rollback()
+        logger.warning(
+            "precheck_provisioning_bridge_failed", tenant_id=str(tenant.id), exc_info=True
         )
 
 

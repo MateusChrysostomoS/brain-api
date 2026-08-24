@@ -51,6 +51,10 @@ class SignupIntent(Base):
     # Consumed once, at provisioning, by services.onboarding.provision_defaults to derive
     # the tenant's initial onboarding_state/blocker_reason/next_retry_at.
     intake: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    #: Slug do template de especialidade do PreCheck escolhido na vitrine (/comecar).
+    #: NULL em intents anteriores a 0015 e em compras sem PreCheck; o bridge cai em
+    #: "clinica-geral" nesse caso.
+    precheck_template_slug: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # pending_payment | completed | failed
     status: Mapped[str] = mapped_column(

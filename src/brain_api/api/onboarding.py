@@ -132,6 +132,9 @@ async def get_onboarding(
     secretaria's config-status and runs the ativo-transition check."""
     tenant = await _load_tenant(session, principal.tenant_id)
     await onboarding_sync.ensure_secretaria_provisioned(session, tenant)
+    # Mesmo retry preguiçoso para o PreCheck: uma indisponibilidade dele na hora da
+    # compra se cura no primeiro load do portal. No-op depois de provisionado.
+    await onboarding_sync.ensure_precheck_provisioned(session, tenant)
     await onboarding_sync.refresh_config_status(session, tenant)
 
     last_attempt = await onboarding_sync.get_last_attempt(session, tenant.id)

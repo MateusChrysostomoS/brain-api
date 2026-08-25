@@ -182,6 +182,19 @@ class CheckoutSessionOut(BaseModel):
     checkout_url: str
 
 
+class CourtesyRedeemCreate(BaseModel):
+    """Body de `POST /public/courtesy-redemptions` — resgata um cupom de cortesia.
+
+    `code` chega como a pessoa digitou; a normalização (trim + maiúsculas) é do
+    serviço, para o front não precisar saber a forma canônica.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    intent_id: UUID
+    code: str = Field(min_length=1, max_length=64)
+
+
 class AddonAvailabilityOut(BaseModel):
     """One entry of `CheckoutConfigOut.addons` — whether THIS environment has a Stripe
     price configured for the add-on. Every `catalog.ADDON_IDS` entry gets one of these

@@ -56,6 +56,12 @@ class SignupIntent(Base):
     #: "clinica-geral" nesse caso.
     precheck_template_slug: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    #: Código do cupom de cortesia resgatado, quando a clínica foi ativada por
+    #: cupom em vez de pagamento. É a trilha de auditoria: sem ele, um tenant
+    #: ativo e sem `stripe_subscription_id` seria indistinguível de uma falha de
+    #: cobrança que ativou por engano.
+    courtesy_coupon_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # pending_payment | completed | failed
     status: Mapped[str] = mapped_column(
         String(32), server_default="pending_payment", default="pending_payment"

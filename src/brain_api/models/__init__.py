@@ -4,6 +4,7 @@ Importing this package registers every table on `Base.metadata`, which is what A
 autogenerate and the migrations env rely on.
 """
 
+from brain_api.models.courtesy_coupon import CourtesyCoupon
 from brain_api.models.demo_request import DemoRequest
 from brain_api.models.entitlement import Entitlement
 from brain_api.models.precheck_link import PrecheckAccountLink
@@ -19,6 +20,7 @@ from brain_api.models.user import User
 from brain_api.models.waitlist_lead import WaitlistLead
 
 __all__ = [
+    "CourtesyCoupon",
     "DemoRequest",
     "Entitlement",
     "PrecheckAccountLink",

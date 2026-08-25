@@ -45,13 +45,16 @@ from brain_api.schemas.signup import (
     CheckoutConfigOut,
     CheckoutSessionCreate,
     CheckoutSessionOut,
+    CourtesyRedeemCreate,
     OnboardingStatusOut,
     SignupIntentCatalogOut,
     SignupIntentCatalogPatchIn,
     SignupIntentCreate,
     SignupRegisterOut,
 )
-from brain_api.services import billing, catalog, signup as signup_service
+from brain_api.models import Entitlement, Tenant
+from brain_api.services import billing, catalog, courtesy as courtesy_service
+from brain_api.services import signup as signup_service
 from brain_api.services.auth import issue_refresh_token
 
 logger = get_logger(__name__)
@@ -180,6 +183,50 @@ async def create_checkout_session(
     _check_rate_limit(request)
     url = await signup_service.create_checkout_session_for_intent(session, payload.intent_id)
     return CheckoutSessionOut(checkout_url=url)
+
+
+@router.post(
+    "/public/courtesy-redemptions",
+    response_model=OnboardingStatusOut,
+    summary="Resgata um cupom de cortesia e ativa a clínica sem pagamento",
+    description=(
+        "Caminho paralelo ao `/public/checkout-sessions` para acesso de cortesia: "
+        "ativa o entitlement do intent na hora, sem cartão e sem assinatura no "
+        "Stripe, e devolve a MESMA resposta que o polling de onboarding-status "
+        "devolveria — inclusive o token de onboarding, para o navegador seguir "
+        "pelo mesmo caminho de entrada."
+    ),
+    responses={
+        200: {"description": "Resgatado: clínica ativa, token de onboarding emitido."},
+        404: {"description": "Intent desconhecido."},
+        409: {"description": "O intent já saiu de pending_payment (pago ou já resgatado)."},
+        422: {"description": "Cupom inválido, expirado, esgotado ou desativado."},
+        429: {"description": "Rate limited (per-IP anti-spam)."},
+    },
+)
+async def redeem_courtesy_coupon(
+    request: Request,
+    payload: CourtesyRedeemCreate,
+    session: AsyncSession = Depends(get_session),
+) -> OnboardingStatusOut:
+    """Resgate do cupom + a ponte do PreCheck, na ordem em que o webhook as faz."""
+    _check_rate_limit(request)
+    intent = await courtesy_service.redeem(session, payload.intent_id, payload.code)
+
+    # A ponte que provisiona a clínica no PreCheck, igual ao caminho pago
+    # (billing.apply_stripe_event): PÓS-commit, best-effort, gated no entitlement
+    # que acabou de ser ativado. Sem ela, `precheck_account_links` fica vazio e o
+    # handoff `POST /sso/precheck/token` responde 409 — o médico entra em nada.
+    if intent.tenant_id is not None:
+        ent = await session.get(Entitlement, intent.tenant_id)
+        if ent is not None and ent.precheck_enabled:
+            tenant = await session.get(Tenant, intent.tenant_id)
+            if tenant is not None:
+                from brain_api.services import onboarding_sync
+
+                await onboarding_sync.ensure_precheck_provisioned(session, tenant)
+
+    return await signup_service.ready_status(session, intent)
 
 
 @router.get(

@@ -356,6 +356,17 @@ async def get_onboarding_status(
         return OnboardingStatusOut(status="failed", products=None, onboarding_token=None)
 
     # completed
+    return await ready_status(session, intent)
+
+
+async def ready_status(session: AsyncSession, intent: SignupIntent) -> OnboardingStatusOut:
+    """O `ready` de um intent já ativado: produtos liberados + token de onboarding.
+
+    Extraído de `get_onboarding_status` para o resgate de cortesia devolver a
+    MESMA resposta — quem resgata cupom não tem Checkout Session para consultar,
+    mas precisa exatamente do mesmo token para entrar. Duas implementações da
+    emissão do token seriam duas chances de divergir num segredo de sessão.
+    """
     plan = catalog.get_plan(_plan_id_of(intent.catalog_ids))
     products = {
         "secretaria": bool(plan and plan.secretaria),

@@ -284,7 +284,9 @@ async def create_checkout_session_for_intent(session: AsyncSession, intent_id: U
     addon_ids = [cid for cid in intent.catalog_ids if cid in catalog.ADDON_IDS]
     # Fail-fast only (see the docstring): the selection is re-derived from the SAME
     # catalog_ids at webhook time, where it actually builds the subscription items.
-    billing.validate_selection(plan_id, addon_ids)
+    # O retorno passou a ser usado: `_apply_setup_custom_text` decide pelo PLANO se
+    # existe trial a anunciar (planos sem secretarIA cobram na hora, sem texto).
+    selection = billing.validate_selection(plan_id, addon_ids)
 
     settings = get_settings()
     # Signup checkouts get their own return URLs (public onboarding page — the buyer has
@@ -320,7 +322,7 @@ async def create_checkout_session_for_intent(session: AsyncSession, intent_id: U
         # already captured at registration (`SignupIntent.whatsapp_phone`, first card),
         # which is where every downstream consumer reads it from anyway.
     }
-    billing._apply_setup_custom_text(data)
+    billing._apply_setup_custom_text(data, selection)
 
     payload = await billing._stripe_post("/v1/checkout/sessions", data)
     intent.stripe_session_id = payload["id"]

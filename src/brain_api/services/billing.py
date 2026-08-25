@@ -411,7 +411,31 @@ def _apply_trial(data: dict[str, str]) -> None:
     )
 
 
-def _apply_setup_custom_text(data: dict[str, str]) -> None:
+def _trial_days_for(selection: CheckoutSelection) -> int:
+    """Dias de trial que ESTA seleção merece — 0 quando não há razão para trial.
+
+    `STRIPE_TRIAL_PERIOD_DAYS` nunca foi uma cortesia comercial: é a janela em que
+    se espera a Meta aprovar a conexão do número com a API do WhatsApp Coexistence,
+    e por isso `harden_charge` (§13.4) encerra o trial no instante em que o tenant
+    fica `ativo`, e `trial_will_end` (§13.6) cancela a assinatura se a aprovação
+    não vier.
+
+    Um plano SEM secretarIA não tem conexão nenhuma a ser aprovada: não há o que
+    esperar, `harden_charge` nunca dispara para ele (só é chamado do onboarding do
+    secretarIA) e o trial vira desconto puro — 75 dias de IA e WhatsApp sem
+    receita. Pior, a página de pagamento anunciava ao comprador de PreCheck uma
+    espera pela Meta que não existe no produto dele.
+
+    Então: trial só para planos com secretarIA. PreCheck cobra na hora e segue
+    mensal no mesmo dia, que é o comportamento nativo do Stripe sem trial.
+    """
+    plan = catalog.get_plan(selection.plan_id)
+    if plan is None or not plan.secretaria:
+        return 0
+    return get_settings().STRIPE_TRIAL_PERIOD_DAYS
+
+
+def _apply_setup_custom_text(data: dict[str, str], selection: CheckoutSelection) -> None:
     """`custom_text[submit][message]` for a SETUP-mode Checkout Session (the cold-signup
     flow, `services.signup.create_checkout_session_for_intent`) — same settings read and
     same `> 0` day gate as `_apply_trial`, but standalone wording.
@@ -426,8 +450,10 @@ def _apply_setup_custom_text(data: dict[str, str]) -> None:
     card is FOR (the Meta/WhatsApp Coexistence connection-test window) and when it can
     first be billed.
     """
-    days = get_settings().STRIPE_TRIAL_PERIOD_DAYS
+    days = _trial_days_for(selection)
     if days <= 0:
+        # Sem trial: o Stripe já diz na própria página o que será cobrado e quando.
+        # Qualquer texto nosso aqui só teria como acrescentar confusão.
         return
     data["custom_text[submit][message]"] = (
         f"Aqui você apenas salva seu cartão — nada é cobrado agora. Este é o início do "
@@ -788,7 +814,6 @@ async def _create_subscription_for_signup(
     whole test-window mechanism gates on that — see
     `services.signup.provision_tenant_from_intent`'s `subscription_payload` docstring).
     """
-    settings = get_settings()
     setup_intent = await _stripe_get(f"/v1/setup_intents/{setup_intent_id}")
     payment_method = setup_intent.get("payment_method")
     if isinstance(payment_method, dict):  # defensive: only if someone expands the field
@@ -829,8 +854,9 @@ async def _create_subscription_for_signup(
         # defensive about a null `tenant_id` too.)
         data["metadata[tenant_id]"] = str(tenant_id)
     _append_subscription_items(data, selection)
-    if settings.STRIPE_TRIAL_PERIOD_DAYS > 0:
-        data["trial_period_days"] = str(settings.STRIPE_TRIAL_PERIOD_DAYS)
+    trial_days = _trial_days_for(selection)
+    if trial_days > 0:
+        data["trial_period_days"] = str(trial_days)
 
     # DETERMINISTIC idempotency key — the SECOND line of defense, not the first. The
     # PRIMARY guard against minting a second subscription is local: `apply_stripe_event`'s

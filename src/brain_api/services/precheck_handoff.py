@@ -39,9 +39,24 @@ _GENERIC_UNAVAILABLE = "precheck_handoff_unavailable"
 _GENERIC_FAILED = "precheck_handoff_failed"
 
 
-async def request_handoff(tenant_id: UUID, phone_number: str) -> dict[str, Any]:
+async def request_handoff(
+    tenant_id: UUID,
+    phone_number: str,
+    *,
+    patient_name: str | None = None,
+    booked_service: str | None = None,
+) -> dict[str, Any]:
     """POST PreCheck's `/internal/precheck-handoff`; caller has ALREADY confirmed the
     tenant's entitlement (this function does no entitlement check of its own).
+
+    `patient_name`/`booked_service` are optional booking context (FEAT 38), forwarded
+    verbatim and ONLY when not `None` — an omitted field is absent from the JSON, never
+    an explicit `null`, so the payload a caller that doesn't set them produces stays
+    byte-identical to the pre-FEAT-38 one. Keyword-only on purpose: two adjacent
+    same-typed optionals are trivially swapped positionally, and swapping THESE two
+    would put a patient's name into an operational field. Neither value is logged —
+    `patient_name` is PII (§3 of the FEAT 38 brief) and `booked_service` has no
+    operational reason to appear, so both stay out of every line below.
 
     Returns PreCheck's parsed 200 body (`{"status": "seeded" | "already_active"}`) on
     success. Every other outcome raises the mapped `HTTPException` directly, so the
@@ -64,6 +79,16 @@ async def request_handoff(tenant_id: UUID, phone_number: str) -> dict[str, Any]:
             status.HTTP_503_SERVICE_UNAVAILABLE, "precheck_handoff_not_configured"
         )
 
+    # Context keys are added only when present — see the docstring: absent, not null.
+    payload: dict[str, Any] = {
+        "brain_tenant_id": str(tenant_id),
+        "phone_number": phone_number,
+    }
+    if patient_name is not None:
+        payload["patient_name"] = patient_name
+    if booked_service is not None:
+        payload["booked_service"] = booked_service
+
     try:
         async with httpx.AsyncClient(
             base_url=base, timeout=settings.PRECHECK_TIMEOUT_SECONDS
@@ -71,7 +96,7 @@ async def request_handoff(tenant_id: UUID, phone_number: str) -> dict[str, Any]:
             resp = await client.post(
                 _PRECHECK_HANDOFF_PATH,
                 headers={_PRECHECK_TOKEN_HEADER: token},
-                json={"brain_tenant_id": str(tenant_id), "phone_number": phone_number},
+                json=payload,
             )
     except httpx.RequestError as exc:
         logger.warning("precheck_handoff_unreachable", tenant_id=str(tenant_id))

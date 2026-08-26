@@ -271,7 +271,14 @@ async def precheck_handoff(
         )
         raise HTTPException(status.HTTP_403_FORBIDDEN, "precheck_not_entitled")
 
-    result = await request_handoff(payload.tenant_id, payload.phone_number)
+    # Context fields pass straight through — no gate of their own: "may this clinic
+    # receive PreCheck" stays purely ent.status/ent.products.precheck, checked above.
+    result = await request_handoff(
+        payload.tenant_id,
+        payload.phone_number,
+        patient_name=payload.patient_name,
+        booked_service=payload.booked_service,
+    )
     return PrecheckHandoffOut(status=result["status"])
 
 

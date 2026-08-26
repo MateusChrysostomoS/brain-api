@@ -91,12 +91,32 @@ class PrecheckHandoffIn(BaseModel):
     """`POST /internal/precheck-handoff` body — secretarIA identifies a patient by
     tenant + WhatsApp phone; brain-api resolves entitlement and forwards to PreCheck
     (CONTRACTS.md §12.3). `phone_number` is digits only (no `+`/spaces/punctuation),
-    8-15 chars — the same shape PreCheck's own contract expects."""
+    8-15 chars — the same shape PreCheck's own contract expects.
+
+    `patient_name`/`booked_service` are OPTIONAL booking context (FEAT 38) forwarded
+    verbatim to PreCheck; they do not participate in any gate here."""
 
     model_config = ConfigDict(extra="forbid")
 
     tenant_id: UUID
     phone_number: str = Field(min_length=8, max_length=15)
+
+    # --- Optional booking context (FEAT 38) --------------------------------------
+    # This model is the STRICT hop of the mesh (`extra="forbid"` above): until it knows
+    # a field name, a sender using it 422s the WHOLE handoff — including the already
+    # -shipped trigger that needs neither field. So this widening must be live BEFORE
+    # secretarIA starts sending (FEAT 39); see the `frozen-contract-migration` skill.
+    # `extra="forbid"` stays exactly as it was — this enlarges the KNOWN field set, it
+    # does not relax validation.
+    #
+    # Both default to None so this schema deployed ALONE is a no-op: today's two-field
+    # body keeps validating and forwarding byte-identically.
+    #
+    # PII: `patient_name` is patient-identifying free text — it must never reach a log
+    # line on this path, nor an exception rendered into one (services/precheck_handoff.py).
+    patient_name: str | None = Field(default=None, max_length=255)
+    # The clinic's own appointment type, RAW — no normalization (product decision).
+    booked_service: str | None = Field(default=None, max_length=255)
 
     @field_validator("phone_number")
     @classmethod

@@ -306,3 +306,196 @@ async def test_handoff_bad_tenant_id_422(client, monkeypatch):
         json={"tenant_id": "not-a-uuid", "phone_number": PHONE},
     )
     assert resp.status_code == 422, resp.text
+
+
+# --- FEAT 38: optional booking context (patient_name + booked_service) ----------------
+# brain-api is the STRICT hop of the mesh (`PrecheckHandoffIn` is `extra="forbid"`), so
+# these tests pin BOTH halves of that contract: the new field names are now KNOWN, and
+# everything else still isn't. See the `frozen-contract-migration` skill.
+
+NAME = "Maria Aparecida de Souza"
+SERVICE = "Consulta odontologica adulto"
+
+
+def _body_ctx(tenant_id: str, **ctx: object) -> dict:
+    """Today's body plus whichever FEAT 38 context keys the caller names."""
+    return {**_body(tenant_id), **ctx}
+
+
+async def _entitled_tenant(client) -> str:
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    return (await _tenant_ids(client, admin_token))[CLINIC_A]
+
+
+async def test_handoff_forwards_both_context_fields(client, monkeypatch):
+    """Both fields present -> accepted by the strict schema AND forwarded upstream under
+    PreCheck's own field names (`patient_name`/`booked_service`, its FEAT 37)."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    captured = _install_fake_httpx(
+        monkeypatch, response=_FakeResponse(200, {"status": "seeded"})
+    )
+
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json=_body_ctx(tenant_a_id, patient_name=NAME, booked_service=SERVICE),
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["json"] == {
+        "brain_tenant_id": tenant_a_id,
+        "phone_number": PHONE,
+        "patient_name": NAME,
+        "booked_service": SERVICE,
+    }
+
+
+@pytest.mark.parametrize(
+    "sent,absent",
+    [
+        ({"patient_name": NAME}, "booked_service"),
+        ({"booked_service": SERVICE}, "patient_name"),
+    ],
+)
+async def test_handoff_forwards_only_the_field_supplied(client, monkeypatch, sent, absent):
+    """One field set, the other omitted -> only the set one goes on the wire. The absent
+    one's KEY is gone entirely, not sent as an explicit `null`."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    captured = _install_fake_httpx(
+        monkeypatch, response=_FakeResponse(200, {"status": "seeded"})
+    )
+
+    resp = await client.post(
+        ROUTE, headers={"X-Internal-Api-Key": "pair-key"}, json=_body_ctx(tenant_a_id, **sent)
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["json"] == {
+        "brain_tenant_id": tenant_a_id,
+        "phone_number": PHONE,
+        **sent,
+    }
+    assert absent not in captured["json"]
+
+
+async def test_handoff_legacy_two_field_body_unchanged(client, monkeypatch):
+    """REGRESSION -- the body secretarIA sends TODAY (before FEAT 39) must still produce a
+    byte-identical outbound payload: NEITHER new key appears at all. This is the property
+    that makes deploying brain-api alone a no-op instead of a change."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    captured = _install_fake_httpx(
+        monkeypatch, response=_FakeResponse(200, {"status": "already_active"})
+    )
+
+    resp = await client.post(
+        ROUTE, headers={"X-Internal-Api-Key": "pair-key"}, json=_body(tenant_a_id)
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"status": "already_active"}
+    assert captured["json"] == {"brain_tenant_id": tenant_a_id, "phone_number": PHONE}
+
+
+async def test_handoff_explicit_null_context_is_omitted(client, monkeypatch):
+    """An explicit `null` from the caller means "no context" and must NOT be forwarded as
+    a literal null -- `None` is the absence of a value, never a value to write upstream."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    captured = _install_fake_httpx(
+        monkeypatch, response=_FakeResponse(200, {"status": "seeded"})
+    )
+
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json=_body_ctx(tenant_a_id, patient_name=None, booked_service=None),
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["json"] == {"brain_tenant_id": tenant_a_id, "phone_number": PHONE}
+
+
+@pytest.mark.parametrize("unknown", ["patient_nome", "patientName", "service", "nome"])
+async def test_handoff_unknown_field_still_422(client, monkeypatch, unknown: str):
+    """REGRESSION of `extra="forbid"` -- widening the KNOWN field set must not have relaxed
+    the schema. A typo'd / near-miss name still fails the WHOLE request, which is exactly
+    the strictness this hop exists to provide (a silently-dropped field would be worse)."""
+    _set_pair_key(monkeypatch)
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={**_body(str(uuid4())), unknown: "x"},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.parametrize("field", ["patient_name", "booked_service"])
+async def test_handoff_context_over_255_chars_422(client, monkeypatch, field: str):
+    """Both cap at 255 -- the same cap PreCheck's own schema uses, so an over-long value is
+    refused HERE with a truthful 422 instead of collapsing into an opaque 502 when
+    PreCheck 422s it later."""
+    _set_pair_key(monkeypatch)
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={**_body(str(uuid4())), field: "x" * 256},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.parametrize("field", ["patient_name", "booked_service"])
+async def test_handoff_context_at_255_chars_accepted(client, monkeypatch, field: str):
+    """Boundary: exactly 255 is valid and forwarded verbatim (no truncation happens here)."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    captured = _install_fake_httpx(
+        monkeypatch, response=_FakeResponse(200, {"status": "seeded"})
+    )
+    value = "x" * 255
+
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={**_body(tenant_a_id), field: value},
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["json"][field] == value
+
+
+async def test_context_never_reaches_a_log_line(client, monkeypatch):
+    """PII (FEAT 38 brief, section 3): `patient_name` must appear in NO log call this path
+    makes -- not the success line, not an upstream-error warning, not a network-error one
+    -- and `booked_service` is held to the same bar (no operational reason to log it).
+
+    structlog's `PrintLoggerFactory` doesn't route through stdlib logging, so `caplog` is
+    blind to it (same note as test_onboarding_endpoints.py) -- record what the loggers are
+    CALLED with instead, on both modules this request touches: the router and the outbound
+    service."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+
+    logged: list[tuple] = []
+
+    def _record(*args: object, **kwargs: object) -> None:
+        logged.append((args, kwargs))
+
+    for module in (internal_api, precheck_handoff_service):
+        for level in ("debug", "info", "warning", "error"):
+            monkeypatch.setattr(module.logger, level, _record, raising=False)
+
+    body = _body_ctx(tenant_a_id, patient_name=NAME, booked_service=SERVICE)
+    headers = {"X-Internal-Api-Key": "pair-key"}
+
+    # Every outcome that logs on this path, with both context fields populated.
+    _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {"status": "seeded"}))
+    assert (await client.post(ROUTE, headers=headers, json=body)).status_code == 200
+    _install_fake_httpx(monkeypatch, response=_FakeResponse(500, {"detail": "boom"}))
+    assert (await client.post(ROUTE, headers=headers, json=body)).status_code == 502
+    _install_fake_httpx(monkeypatch, response=_FakeResponse(404, {"detail": "nope"}))
+    assert (await client.post(ROUTE, headers=headers, json=body)).status_code == 404
+    _install_fake_httpx(monkeypatch, exc=httpx.ConnectError("down"))
+    assert (await client.post(ROUTE, headers=headers, json=body)).status_code == 502
+
+    # Non-vacuous: we really did capture this path's log calls before asserting absence.
+    assert any("precheck_handoff_ok" in repr(call) for call in logged), logged
+    assert NAME not in repr(logged)
+    assert SERVICE not in repr(logged)

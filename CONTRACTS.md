@@ -1108,7 +1108,7 @@ accepts `SECRETARIA_API_KEY_PREVIOUS` during rotation):
 | `POST` | `/internal/secretaria/hub-token/verify` | introspection above. Always `200` for an authenticated service caller — refusal is `active:false`, not an HTTP error |
 | `GET` | `/internal/tenants/{tenant_id}/entitlements` | entitlement summary `{tenant_id, status, active, secretaria_enabled, plan, secretaria_tier, addons, limits}` — the gate data secretarIA's plugin registry consumes (same `is_entitled` semantics, §3.2) |
 | `POST` | `/internal/usage-events` | metering leg only (`stripe-billing-entitlements`; NO Stripe call — meter forwarding is a later billing round). Body `{tenant_id, feature, amount, event_id}` — `feature` must be a catalog `LIMIT_KEYS` id (422 otherwise), `amount` `1..10000`, `event_id` is the CALLER's own idempotency key (e.g. `"reminder:24h:<appointment_id>"`). Inserts a `usage_events` row (§6.3d) AND increments `entitlements.usage[feature]` in ONE transaction (upserts the entitlement row if missing). Always `200 {recorded: bool}` — `false` means `event_id` was already applied (replay), no double-count, never an HTTP error |
-| `POST` | `/internal/precheck-handoff` | secretarIA → brain-api → PreCheck patient handoff (§12.3). Body `{tenant_id, phone_number}` — `phone_number` digits only, `8..15` chars (422 otherwise). Entitlement-gated: `403 precheck_not_entitled` unless status active/trialing AND `precheck_enabled`. Forwards to PreCheck; full status matrix in §12.3. No DB write |
+| `POST` | `/internal/precheck-handoff` | secretarIA → brain-api → PreCheck patient handoff (§12.3). Body `{tenant_id, phone_number}` plus the OPTIONAL booking context `patient_name?` / `booked_service?` (both `str|null`, ≤255 chars — FEAT 38) — `phone_number` digits only, `8..15` chars (422 otherwise). Entitlement-gated: `403 precheck_not_entitled` unless status active/trialing AND `precheck_enabled`. Forwards to PreCheck; full status matrix in §12.3. No DB write |
 
 ### 12.3 secretarIA → PreCheck patient handoff (`POST /internal/precheck-handoff`)
 
@@ -1140,6 +1140,13 @@ unconfigured / `401` mismatch). Body `{"tenant_id": "<uuid>", "phone_number":
 "<digits>"}`; `phone_number` must match `^\d{8,15}$` and `tenant_id` must parse as a
 UUID, else `422`.
 
+**Optional booking context (FEAT 38):** the body also accepts `patient_name` and
+`booked_service` — both `str | None`, default `None`, `max_length=255`, both forwarded
+verbatim (no normalization, no truncation) and neither participating in ANY gate here.
+`PrecheckHandoffIn` keeps `extra="forbid"`: this widened the KNOWN field set, it did not
+relax validation, so a typo'd or not-yet-known field name still `422`s the WHOLE request
+— which is the deploy-order constraint spelled out in §12.3.1.
+
 **Entitlement gate (brain-api is the authority — checked BEFORE any upstream call):**
 the tenant's local `entitlements` row (`services/entitlements.py::resolve_entitlement`,
 same resolution as every other gate in this file) must have `status` in
@@ -1158,8 +1165,17 @@ secretarIA has no other way to know the patient's session was never seeded. Othe
 ```
 POST {PRECHECK_BASE_URL}/internal/precheck-handoff
 X-Internal-Token: <PRECHECK_INTERNAL_TOKEN>
-{"brain_tenant_id": "<tenant_id as string>", "phone_number": "<phone_number>"}
+{"brain_tenant_id": "<tenant_id as string>", "phone_number": "<phone_number>",
+ "patient_name": "<patient_name>",     <- present ONLY when supplied (FEAT 38)
+ "booked_service": "<booked_service>"} <- present ONLY when supplied (FEAT 38)
 ```
+
+A context field left unset is **absent from the JSON entirely**, never sent as an explicit
+`null`: a caller that supplies neither produces a payload byte-identical to the
+pre-FEAT-38 one, which is what makes deploying this hop on its own a no-op. (Both spellings
+land as `None` in PreCheck's schema, so this is about keeping the wire minimal and the
+pre/post-FEAT-38 payloads identical — not about protecting a stored value; PreCheck's own
+write path already refuses to let a `None` overwrite one.)
 
 Note the upstream path is **`/internal/precheck-handoff`**, NOT under `/api/v1` — a
 different PreCheck router than the `/api/v1/internal/privacy/*` LGPD leg (§14) that
@@ -1172,7 +1188,12 @@ independently)** — for cross-reference only, brain-api does not own this:
 
 - `POST /internal/precheck-handoff`, header `X-Internal-Token` checked against
   PreCheck's own internal token (must equal `PRECHECK_INTERNAL_TOKEN` byte-for-byte).
-- Body `{"brain_tenant_id": "<uuid string>", "phone_number": "<digits>"}`.
+- Body `{"brain_tenant_id": "<uuid string>", "phone_number": "<digits>"}`, plus the
+  optional `patient_name` / `booked_service` (PreCheck's own FEAT 37, commit `293677e`),
+  which it persists into `precheckv2.sessions`. PreCheck's `PrecheckHandoffRequest` is
+  **not** `extra="forbid"` — verified by reading that file, NOT inferred from our
+  same-named sibling — so forwarding either field to a PreCheck that predates FEAT 37 is
+  a silent no-op rather than a break.
 - `200 {"status": "seeded"}` — a fresh session was pre-created.
 - `200 {"status": "already_active"}` — the patient already had a live session; no-op,
   not an error.
@@ -1198,7 +1219,39 @@ body, mirroring `services/secretaria_internal.py`'s no-leak rule):**
 | *(pre-upstream)* mesh unconfigured | `503 {"detail": "precheck_handoff_not_configured"}` |
 
 No DB write on this path (brain-api keeps no new state for the handoff itself). Every
-outcome is logged structured with `tenant_id` + the outcome — **never** the token.
+outcome is logged structured with `tenant_id` + the outcome — **never** the token, and
+— since FEAT 38 — never `patient_name` or `booked_service` either (see §12.3.1).
+
+### 12.3.1 Deploy order for the booking-context fields (FEAT 37–40)
+
+This endpoint is the **strict hop** of the mesh, so extending its body is an ordered
+operation, not a free-form change (skill: `frozen-contract-migration`). The chain and its
+mandatory order:
+
+```
+DDL in precheckv2  ->  PreCheck (FEAT 37: accepts + persists)
+                   ->  brain-api (FEAT 38: accepts + forwards)   <- this repo
+                   ->  secretarIA (FEAT 39: starts SENDING)
+                   ->  n8n (FEAT 40: reads the columns)
+```
+
+**FEAT 39 must never ship before FEAT 38 is live.** `PrecheckHandoffIn` is
+`extra="forbid"`, so a secretarIA that sends `patient_name` to a brain-api that doesn't yet
+know it gets a `422` on the ENTIRE handoff — including the already-shipped trigger that
+needs neither field. secretarIA swallows that into `HandoffOutcome.UNAVAILABLE`, so the
+symptom is a previously-working handoff going silently dead, **indistinguishable from an
+infrastructure outage**. That symptom, on a flow that used to work, means this order was
+violated. FEAT 38 itself may ship at any point in between: both fields are optional and
+nothing forwards them until secretarIA opts in.
+Per-leg status, verification and pending steps: `docs/CHECKPOINT_precheck_handoff_context.md`.
+
+**PII.** `patient_name` is the first patient-identifying free text this path has ever
+carried. It must appear in no log line here — not on success, not in a warning, not inside
+an exception rendered into one. `booked_service` is held to the same bar for lack of any
+operational reason to log it. `services/precheck_handoff.py` logs `tenant_id` + outcome
+only, and `tests/test_precheck_handoff.py::test_context_never_reaches_a_log_line` fails if
+either value reaches a logger call (asserting on the recorded call args — structlog's
+`PrintLoggerFactory` bypasses stdlib logging, so `caplog` cannot see these lines).
 
 ---
 

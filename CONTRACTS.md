@@ -85,15 +85,21 @@ Exchange email + password for a brain-api access token.
 | `email` | string | required, valid email, ≤ 320 chars, compared case-insensitively |
 | `password` | string | required, 1–72 chars (bcrypt truncates at 72 bytes → reject longer with 422) |
 
-**Response `200`**
+**Response `200`** (plus the `__Host-refresh_token` cookie, §2.1c)
 ```json
-{ "access_token": "<jwt>", "token_type": "bearer", "refresh_token": "<opaque>", "expires_in": 1800 }
+{ "access_token": "<jwt>", "token_type": "bearer", "refresh_token": "<opaque>",
+  "expires_in": 1800, "name": "Dra. Demo", "email": "dra.demo@clinica.com.br",
+  "professional_id": "…uuid|null" }
 ```
 > `access_token`/`token_type` intentionally identical to PreCheck's `TokenResponse`
 > and the frontend's existing `LoginResponse` type, so the client stores
 > `data.access_token` unchanged. `refresh_token` (opaque, high-entropy — the revocable
 > long-lived session leg) and `expires_in` (access lifetime, seconds) are **additive**
 > auth-hardening fields; consumers that ignore them keep working (30-min sessions).
+> `name`/`professional_id` are additive identity fields (§16). `email` is additive too
+> (2026-08-31) and now load-bearing: a portal that resumes its session from the cookie
+> never saw a login form, so it has no submitted address to fall back on, and the access
+> token deliberately carries no email claim.
 
 **Status codes**
 - `200` success
@@ -124,12 +130,23 @@ service tokens are not user sessions.
 
 ### 2.1a `POST /auth/refresh` — rotate the session (public, rate-limited)
 
-Body `{"refresh_token": "<opaque>"}` → `200` with a **new** `TokenResponse` pair (same
-shape as §2.1). Rotate-on-use: the presented token is revoked and exactly one successor
-is issued. Refresh tokens are stored **hashed** (sha256) in `refresh_tokens` (§6.3a) —
-a DB read never yields a usable credential.
+Presents a refresh token from **either** the `__Host-refresh_token` cookie (§2.1c, the
+normal path) **or** `{"refresh_token": "<opaque>"}` in the body (the compatibility leg)
+→ `200` with a **new** `TokenResponse` pair (same shape as §2.1). Rotate-on-use: the
+presented token is revoked and exactly one successor is issued. Refresh tokens are stored
+**hashed** (sha256) in `refresh_tokens` (§6.3a) — a DB read never yields a usable
+credential.
 
-- `401` unknown / expired / revoked token, or the user no longer exists.
+**The cookie wins when both are sent.** A client presenting both is one caught
+mid-deploy, and the cookie holds the leg the server rotated last.
+
+- `403 missing_client_header` when the **cookie** is the credential and
+  `X-Brain-Client: web` is absent (§2.1c). The check fires **before** rotation, so a
+  forged request cannot burn the victim's token, and it does **not** clear the cookie.
+- `401` no token presented at all, or unknown / expired / revoked, or the user no longer
+  exists. When the **cookie** was the failing leg the response also **expires it**
+  (`Max-Age=0`), so a dead cookie cannot make every future boot start with a doomed
+  refresh. A failing **body** leg leaves the cookie untouched.
 - **Reuse detection:** presenting an already-rotated (revoked) token revokes the
   user's ENTIRE active refresh family and returns `401` — a stolen rotated token
   cannot be replayed, and the legitimate client simply logs in again.
@@ -137,9 +154,63 @@ a DB read never yields a usable credential.
 
 ### 2.1b `POST /auth/logout` — revoke a refresh token (public)
 
-Body `{"refresh_token": "<opaque>"}` → always `204` (no token-existence oracle). Ends
-the revocable leg; the short-lived access token simply expires. A plan cancellation or
-admin action can likewise revoke rows server-side.
+Cookie and/or body (`{"refresh_token": "<opaque>"}`) → always `204` (no token-existence
+oracle), **and always expires the cookie**. Revokes BOTH legs when both are presented, so
+a client mid-migration cannot leave one alive. Ends the revocable leg; the short-lived
+access token simply expires. A plan cancellation or admin action can likewise revoke rows
+server-side.
+
+**No `X-Brain-Client` check here, unlike §2.1a — deliberately.** The worst a forged logout
+achieves is signing the user out; requiring the header would buy that back with a strictly
+worse failure, since a logout refused with `403` leaves the cookie in place after the
+portal has already dropped its in-memory session, and the next reload silently signs the
+user back in. A route whose failure mode is "still logged in" must not be able to fail.
+
+### 2.1c The `__Host-refresh_token` cookie + `X-Brain-Client` (added 2026-08-31)
+
+Every route that mints a session pair — §2.1 login, §2.1a refresh, §2.3/§16.3 the two
+token exchanges, and §15 cold-signup registration — also writes the refresh token to:
+
+```
+Set-Cookie: __Host-refresh_token=<opaque>; Max-Age=1209600; Path=/; Secure; HttpOnly; SameSite=Lax
+```
+
+`POST /admin/impersonate/token` ("Modo médico", §11.4) is the one session-ish route that
+**never** touches it: that token has no refresh leg, and writing (or leaving) a cookie
+there would silently change who the browser is.
+
+**Why, and why each attribute.** The portals used to keep BOTH legs in `sessionStorage`,
+where any script on the page can read them — one XSS handed an attacker a 14-day
+revocable-but-unrevoked credential. `HttpOnly` closes that. `SameSite=Lax` (never `None`)
+is possible because each frontend now reverse-proxies brain-api under its OWN origin at
+`/api/*`, so the browser sees a first-party cookie — which also keeps Safari/Firefox
+tracking prevention from silently evicting it mid-session. The `__Host-` prefix pins the
+cookie to exactly one host (no `Domain`, `Path=/`, `Secure` enforced by the browser),
+which matters because every service here sits under a **shared** `*.easypanel.host`
+parent that a neighbour could otherwise write cookies for. `Path` cannot be narrowed:
+`__Host-` mandates `/`, which also makes brain-api independent of where the frontend
+mounted the proxy.
+
+`X-Brain-Client: web` is the CSRF guard on the one route where the cookie is the
+credential. It is load-bearing rather than belt-and-braces: `SameSite` compares
+*registrable domains*, and whether `easypanel.host` is a public suffix is not something
+this service can assume — if it is not, a neighbour under that parent counts as same-site.
+A cross-site `<form>` cannot set a request header at all, and a cross-site `fetch()` that
+tries triggers a CORS preflight this service answers only for `CORS_ALLOW_ORIGINS`.
+
+**Not required anywhere else**, and must not be: every other authenticated route reads a
+bearer `Authorization` header, which a cross-site request cannot forge either — demanding
+it there would break the mesh's service-to-service callers, Stripe's webhook and any
+not-yet-migrated frontend, for no gain.
+
+`REFRESH_COOKIE_PERSISTENT=false` switches the cookie to a **session** cookie (no
+`Max-Age`), which dies with the browser — the right setting for a clinic whose reception
+desk is a shared machine. The server-side token keeps its own TTL and revocability either
+way.
+
+**The body leg stays for now.** `refresh_token` in the §2.1 response and in the §2.1a /
+§2.1b request bodies is unchanged, so a client that has not migrated keeps working. It is
+removable only once BOTH portals are confirmed migrated and stable in production.
 
 ---
 
@@ -663,7 +734,8 @@ Migration **`0001`** creates `tenants`/`users`/`entitlements`/`demo_requests`; m
 | `SECRET_KEY` | — | JWT HS256 signing key. **MUST be byte-identical to the PreCheck backend's `SECRET_KEY`** — the minted SSO token (§10) is only valid if both services share it |
 | `SECRET_KEY_PREVIOUS` | `""` | rotation window ONLY: old key accepted for verification while issued tokens age out; mint always uses `SECRET_KEY` (`docs/key-rotation.md`) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | brain access-token TTL (short; refresh is the long leg) |
-| `REFRESH_TOKEN_EXPIRE_DAYS` | `14` | refresh-token TTL (§2.1a; hashed at rest, rotate-on-use) |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `14` | refresh-token TTL (§2.1a; hashed at rest, rotate-on-use). Also the `Max-Age` of the `__Host-refresh_token` cookie (§2.1c) |
+| `REFRESH_COOKIE_PERSISTENT` | `true` | `false` emits a **session** cookie instead (no `Max-Age`) — it dies with the browser. The right setting for a shared reception-desk machine; the server-side token keeps its own TTL and revocability either way (§2.1c) |
 | `AUTH_RATE_LIMIT_PER_MIN` | `10` | per-IP `/auth/token` + `/auth/refresh` budget (§5); `0` disables |
 | `HUB_TOKEN_EXPIRE_MINUTES` | `60` | TTL of the minted secretarIA hub token (§12.2) |
 | `PRECHECK_TOKEN_EXPIRE_MINUTES` | `60` | TTL of the minted PreCheck SSO token (§10); matches PreCheck's own session length |

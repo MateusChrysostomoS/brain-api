@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     # rotated on every use; a presented-again (already-rotated) token revokes the
     # user's whole refresh family (reuse = theft signal).
     REFRESH_TOKEN_EXPIRE_DAYS: int = 14
+    # Whether the HttpOnly refresh COOKIE (core/cookies.py) carries a Max-Age.
+    # True (default): a persistent cookie that lives as long as the refresh token
+    # itself, so a reload or a new tab resumes the session silently. False: a
+    # SESSION cookie with no Max-Age, which the browser drops when it closes —
+    # closer to the per-tab sessionStorage behaviour this replaced, and the right
+    # setting for a clinic whose reception desk is a shared machine. Either way
+    # the server-side token keeps its own REFRESH_TOKEN_EXPIRE_DAYS lifetime and
+    # stays revocable; this only decides how long the BROWSER holds it.
+    REFRESH_COOKIE_PERSISTENT: bool = True
     # Max POST /auth/token + /auth/refresh attempts per client IP per minute
     # (in-process sliding window, same machinery as the demo limiter; fail-open).
     # 0 disables (hermetic tests set 0; production keeps the default).

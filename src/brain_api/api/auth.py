@@ -7,6 +7,14 @@ fields, so `password_hash` can never be serialized (tenant-secrets-encryption ru
 
 The Authorization header, the token and the password are NEVER logged; login success
 logs only a stable `user_id` reference.
+
+THE REFRESH LEG TRAVELS IN A COOKIE (2026-08-31). Every route here that mints a
+session pair also writes the opaque refresh token to the HttpOnly
+`__Host-refresh_token` cookie — see `core/cookies.py` for why each attribute is
+what it is. `POST /auth/refresh` and `POST /auth/logout` accept the token from
+EITHER that cookie or the JSON body, preferring the cookie; the body leg is kept
+only until both portals are confirmed migrated in production, and is what makes
+this round purely additive for a client that has not moved yet.
 """
 
 from uuid import UUID
@@ -16,6 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.api.deps import Principal, get_current_principal
 from brain_api.config import get_settings
+from brain_api.core.cookies import (
+    clear_refresh_cookie,
+    read_refresh_cookie,
+    require_client_header,
+    set_refresh_cookie,
+)
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.core.ratelimit import SlidingWindowLimiter, client_ip
@@ -77,6 +91,11 @@ def build_session_response(user: User, refresh_token: str) -> TokenResponse:
     every path that mints a session: login, refresh, the two token exchanges here, AND the
     cold-signup registration in `api/public_signup.py` (imported from there) so a freshly
     registered lead gets a session byte-identical to a normal login.
+
+    Prefer `issue_session` below unless you genuinely have no `Response` to write
+    the cookie onto — a session minted without the cookie can never be resumed
+    after a reload, because the migrated portals keep the access token in memory
+    only.
     """
     return TokenResponse(
         access_token=create_access_token(
@@ -90,8 +109,43 @@ def build_session_response(user: User, refresh_token: str) -> TokenResponse:
         refresh_token=refresh_token,
         expires_in=get_settings().ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         name=user.name,
+        email=user.email,
         professional_id=user.professional_id,
     )
+
+
+def issue_session(response: Response, user: User, refresh_token: str) -> TokenResponse:
+    """Build the session pair AND plant the refresh cookie on the outgoing response.
+
+    Every route that hands a browser a brand-new session goes through here, so the
+    cookie can never drift out of step with the token in the body — including
+    after a ROTATION, where the cookie must carry the successor and never the
+    token just spent.
+
+    Deliberately NOT used by `POST /admin/impersonate/token` ("Modo médico"):
+    that route mints an access token with no refresh leg at all, and overwriting
+    the admin's own cookie with a tenant-scoped one — or leaving it in place for
+    the impersonated session to silently rotate — would quietly swap who the
+    browser is. The frontend marks that session non-refreshable for the same
+    reason.
+    """
+    set_refresh_cookie(response, refresh_token)
+    return build_session_response(user, refresh_token)
+
+
+def _expired_cookie_headers() -> dict[str, str]:
+    """The `Set-Cookie` that deletes the refresh cookie, as raise-able headers.
+
+    Needed because FastAPI throws away the injected `Response` when a route
+    RAISES: `HTTPException` is rendered by an exception handler that never sees
+    it. Building the header off a throwaway `Response` keeps `core/cookies.py`
+    the single source of truth for the cookie's attributes — and they must match
+    exactly, or the browser treats the delete as a different cookie and keeps the
+    original.
+    """
+    probe = Response()
+    clear_refresh_cookie(probe)
+    return {"set-cookie": probe.headers["set-cookie"]}
 
 
 @router.post(
@@ -108,6 +162,7 @@ def build_session_response(user: User, refresh_token: str) -> TokenResponse:
 async def login(
     payload: LoginRequest,
     request: Request,
+    response: Response,
     session: AsyncSession = Depends(get_session),
 ) -> TokenResponse:
     """Authenticate the credentials and mint the access + refresh session pair."""
@@ -122,7 +177,7 @@ async def login(
     refresh = await issue_refresh_token(session, user.id)
     # Stable reference only — never log the email, password or either token.
     logger.info("login", user_id=str(user.id))
-    return build_session_response(user, refresh)
+    return issue_session(response, user, refresh)
 
 
 @router.post(
@@ -131,26 +186,58 @@ async def login(
     summary="Refresh the session",
     description="Rotate a refresh token: the presented one is revoked, a new pair is issued.",
     responses={
-        401: {"description": "Unknown, expired, revoked (or reused) refresh token."},
+        401: {"description": "No refresh token presented, or it is unknown/expired/reused."},
+        403: {"description": "Cookie-authenticated without X-Brain-Client (CSRF guard)."},
         429: {"description": "Rate limited (per-IP auth budget)."},
     },
 )
 async def refresh(
-    payload: RefreshRequest,
     request: Request,
+    response: Response,
+    payload: RefreshRequest | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> TokenResponse:
     """Rotate-on-use: one refresh token yields exactly one successor. Reuse of an
-    already-rotated token revokes the user's whole refresh family (theft signal)."""
+    already-rotated token revokes the user's whole refresh family (theft signal).
+
+    TWO WAYS IN, ONE PREFERRED. The `__Host-refresh_token` cookie wins whenever the
+    browser sent one; the JSON body is the compatibility leg for a portal that has
+    not migrated yet. Preferring the cookie matters during the migration itself: a
+    client that presents both is one caught mid-deploy, and the cookie holds the
+    leg this server rotated last.
+
+    THE COOKIE IS THE ONLY AMBIENT CREDENTIAL IN THIS SERVICE, so it is the only
+    one needing a CSRF guard — the browser attaches it to a cross-site form POST
+    without the page asking. `X-Brain-Client` closes that: a form cannot set a
+    request header, and a cross-site fetch() that tries is stopped by the CORS
+    preflight. The body leg needs no such check (anyone able to put a valid refresh
+    token in a request body already has the token).
+    """
     _check_auth_rate_limit(request)
-    result = await rotate_refresh_token(session, payload.refresh_token)
-    if result is None:
+    from_cookie = read_refresh_cookie(request)
+    if from_cookie is not None:
+        require_client_header(request)
+    presented = from_cookie or (payload.refresh_token if payload else None)
+    if not presented:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
         )
+    result = await rotate_refresh_token(session, presented)
+    if result is None:
+        # A cookie that can never work again must not survive the rejection: left
+        # in place it makes every future boot of that browser start with a doomed
+        # /auth/refresh, and after a reuse-triggered family revocation it is
+        # precisely the credential we just decided to distrust. Cleared ONLY when
+        # the cookie is what failed — a legacy body-leg rejection says nothing
+        # about a cookie that may belong to a live session in the same browser.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+            headers=_expired_cookie_headers() if from_cookie else None,
+        )
     logger.info("token_refreshed", user_id=str(result.user.id))
-    return build_session_response(result.user, result.new_refresh_token)
+    return issue_session(response, result.user, result.new_refresh_token)
 
 
 @router.post(
@@ -160,12 +247,35 @@ async def refresh(
     description="Revoke a refresh token. Always 204 (no token-existence oracle).",
 )
 async def logout(
-    payload: LogoutRequest,
+    request: Request,
+    payload: LogoutRequest | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """End the revocable leg. The short-lived access token simply expires."""
-    await revoke_refresh_token(session, payload.refresh_token)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    """End the revocable leg. The short-lived access token simply expires.
+
+    Revokes BOTH legs when both are presented, so a client caught mid-migration
+    cannot leave one of them alive, and always expires the cookie in the browser.
+
+    NO `X-Brain-Client` CHECK HERE, unlike /auth/refresh — deliberately. The worst
+    a forged logout achieves is signing the user out, while requiring the header
+    would buy that back with a strictly worse failure: a logout refused with 403
+    leaves the cookie in place after the portal has already dropped its in-memory
+    session, so the very next reload silently signs the user back in. A route
+    whose failure mode is "still logged in" must not be able to fail.
+    """
+    presented = {
+        token
+        for token in (
+            read_refresh_cookie(request),
+            payload.refresh_token if payload else None,
+        )
+        if token
+    }
+    for token in presented:
+        await revoke_refresh_token(session, token)
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    clear_refresh_cookie(response)
+    return response
 
 
 @router.get(
@@ -212,6 +322,7 @@ async def me(
 async def exchange_onboarding_token(
     payload: ExchangeOnboardingTokenIn,
     request: Request,
+    response: Response,
     session: AsyncSession = Depends(get_session),
 ) -> TokenResponse:
     """Mint the SAME session pair a password login would, for the provisioned owner."""
@@ -229,7 +340,7 @@ async def exchange_onboarding_token(
         intent_id=str(result.intent_id),
         tenant_id=str(result.user.tenant_id),
     )
-    return build_session_response(result.user, refresh)
+    return issue_session(response, result.user, refresh)
 
 
 @router.post(
@@ -248,6 +359,7 @@ async def exchange_onboarding_token(
 async def exchange_invite_token(
     payload: ExchangeInviteTokenIn,
     request: Request,
+    response: Response,
     session: AsyncSession = Depends(get_session),
 ) -> TokenResponse:
     """Mint the SAME session pair a password login would, for the invited professional."""
@@ -265,7 +377,7 @@ async def exchange_invite_token(
         user_id=str(user.id),
         tenant_id=str(user.tenant_id) if user.tenant_id else None,
     )
-    return build_session_response(user, refresh)
+    return issue_session(response, user, refresh)
 
 
 @router.post(

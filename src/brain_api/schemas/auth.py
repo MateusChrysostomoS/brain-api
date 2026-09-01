@@ -34,6 +34,15 @@ class TokenResponse(BaseModel):
     round, CONTRACT_onboarding_v1.md §6) so the portal has them right after login/refresh
     without a separate `/auth/me` round-trip; `professional_id` is also embedded as a
     claim on `access_token` itself (see `core.security.create_access_token`).
+
+    `email` is ADDITIVE for the same reason, added by the HttpOnly-cookie round
+    (core/cookies.py). It matters now in a way it did not before: a portal that
+    resumes its session from the refresh COOKIE never saw a login form, so unlike
+    `login()` it has no submitted address to fall back on — and the access token
+    deliberately carries no email claim (auth-jwt-multitenant: the JWT holds
+    stable identity, not display data). Returning it here is not a disclosure:
+    every route that fills it in has already authenticated the caller AS that
+    user.
     """
 
     access_token: str
@@ -41,19 +50,33 @@ class TokenResponse(BaseModel):
     refresh_token: str | None = None
     expires_in: int | None = None
     name: str | None = None
+    email: str | None = None
     professional_id: UUID | None = None
 
 
 class RefreshRequest(BaseModel):
-    """`POST /auth/refresh` body — exchange a refresh token for a new session pair."""
+    """`POST /auth/refresh` body — exchange a refresh token for a new session pair.
 
-    refresh_token: str = Field(min_length=1, max_length=512)
+    `refresh_token` is OPTIONAL because the token normally arrives in the HttpOnly
+    `__Host-refresh_token` cookie instead (core/cookies.py), which the browser
+    attaches on its own — a migrated portal posts no body at all. The field stays
+    for the clients that have not migrated yet; the route prefers the cookie and
+    answers 401 when neither leg is present. Do NOT make it required again until
+    every frontend is confirmed migrated in production.
+    """
+
+    refresh_token: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 class LogoutRequest(BaseModel):
-    """`POST /auth/logout` body — revoke a refresh token (ends the revocable leg)."""
+    """`POST /auth/logout` body — revoke a refresh token (ends the revocable leg).
 
-    refresh_token: str = Field(min_length=1, max_length=512)
+    Optional for the same reason as `RefreshRequest.refresh_token` above. Logout
+    revokes the cookie's token AND the body's when both are present, so a client
+    mid-migration can never leave one of the two legs alive.
+    """
+
+    refresh_token: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 class UserOut(BaseModel):

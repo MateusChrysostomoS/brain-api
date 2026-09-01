@@ -31,10 +31,10 @@ never a third writer of the tenant/user/entitlement themselves.
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_api.api.auth import build_session_response
+from brain_api.api.auth import issue_session
 from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
@@ -99,6 +99,7 @@ def _check_rate_limit(request: Request) -> None:
 )
 async def register_signup(
     request: Request,
+    response: Response,
     payload: SignupIntentCreate,
     session: AsyncSession = Depends(get_session),
 ) -> SignupRegisterOut:
@@ -123,7 +124,11 @@ async def register_signup(
     )
     return SignupRegisterOut(
         intent_id=registration.intent.id,
-        session=build_session_response(registration.user, refresh),
+        # issue_session, not build_session_response: registration IS a login here
+        # (the wizard's first card signs the lead in), so it must plant the same
+        # HttpOnly refresh cookie — otherwise the freshly registered owner loses
+        # the session on the first reload, mid-checkout.
+        session=issue_session(response, registration.user, refresh),
     )
 
 

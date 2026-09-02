@@ -1,6 +1,11 @@
 # CHECKPOINT — Refresh token em cookie httpOnly `__Host-` + guarda CSRF
 
-**Estado:** BUILT, TESTADO e COMMITADO em 2026-09-01 (`80989fa`). **NÃO deployado.**
+**Estado:** BUILT, TESTADO, COMMITADO (`80989fa`) e **DEPLOYADO em 2026-09-02**.
+Verificado ao vivo: `POST /auth/refresh` sem cookie e sem corpo devolvia **422**
+(`loc: [body, refresh_token], Field required`) antes do deploy e devolve **401**
+(`Invalid or expired refresh token`) depois — a credencial deixou de ser obrigatória no corpo.
+A perna legada do corpo segue viva (token inválido → 401, não 422), então quem ainda manda
+o token no body não quebrou.
 **Aditivo de propósito** — nada quebra pra quem já está no ar.
 
 Esta é a **fase 1 de 3** de uma rodada cross-repo (brain-api → secretarIA-frontend →
@@ -93,9 +98,12 @@ mão.
 
 ## Pendências
 
-- **Deploy** — esta fase precisa estar no ar e estável antes de qualquer frontend depender
-  dela. Nada muda pra quem já está no ar: um `Set-Cookie` numa resposta cross-origin lida com
-  `credentials` != `include` é **ignorado** pelo browser.
+- ~~**Deploy**~~ — **FEITO em 2026-09-02**, antes do `brain-frontend` (fase 3), que foi ao ar
+  logo em seguida no mesmo dia. O `secretarIA-frontend` (fase 2) **ainda não foi migrado** e não
+  precisa ser com pressa: o CORS não foi tocado e a perna do corpo continua viva, então ele segue
+  funcionando na origem antiga sem alteração nenhuma. (Fases 2 e 3 são IRMÃS, não uma corrente:
+  cada frontend depende só desta fase 1. Uma leitura apressada do "fase 1 de 3" sugere
+  o contrário e quase adiou o deploy do brain-frontend sem motivo.)
 - **Remover a perna do corpo JSON** (`refresh_token` na resposta e nos bodies) — sessão futura
   separada, só depois dos dois frontends confirmados estáveis em produção.
 - **CORS não foi tocado**, de propósito: outros consumidores podem continuar batendo direto na

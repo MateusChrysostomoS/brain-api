@@ -76,7 +76,15 @@ houve um segundo resgate real, ou um segundo smoke que ninguém anotou. Restam *
 validade vazado num grupo de WhatsApp vira produto grátis até alguém notar. Desligar é
 `scripts/create_courtesy_coupon.py --code CORTESIA100 --deactivate`.
 
-## 5. O que entrou em 2026-09-02 (o fechamento)
+## 5. O que entrou em 2026-09-02 (o fechamento) — NO AR
+
+Deployado e conferido em produção no mesmo dia. Provas: `_precheck_identity` no container
+`srsjjutcs531b5r6wimclu4qz` devolve `precheck clinica sao jose` (frase em palavras, sem
+sufixo); o chunk do `/sso` em `precheck.com.br` traz "Sua clínica está pronta" e **zero**
+ocorrências de "Pagamento confirmado"; `brainai.com.br/checkout/sucesso/?courtesy=1` abre
+em "Estamos preparando sua conta…" e resolve para "Sua conta já está pronta / Entre com o
+e-mail usado no cadastro".
+
 
 O backend estava pronto desde 25/08; o que faltava era a **verdade nas telas**. O token do
 SSO não diz se a clínica foi ativada por pagamento ou por cupom — e as duas telas do fim do

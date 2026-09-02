@@ -132,9 +132,34 @@ async def test_slug_e_trigger_sao_deterministicos(db_session):
     a = onboarding_sync._precheck_identity(tenant.clinic_name, tenant.id)
     b = onboarding_sync._precheck_identity(tenant.clinic_name, tenant.id)
     assert a == b                                    # retentativa gera o mesmo
-    slug, trigger = a
+    slug, _ = a
     assert slug.startswith("clinica-sao-jose")       # acento normalizado
-    assert " " in trigger and str(tenant.id)[:8] in slug
+    assert str(tenant.id)[:8] in slug                # sufixo garante unicidade
+
+
+@pytest.mark.asyncio
+async def test_frase_sai_em_palavras_sem_hifen_nem_codigo(db_session):
+    """A frase é o que o paciente vê no QR impresso na recepção e o que digita
+    quando não clica no link. Ela levava o slug hifenizado E o sufixo hexadecimal
+    — "precheck clinica-sao-jose 6bac6f6c" —, que não se fala nem se copia certo.
+
+    Unicidade dela é responsabilidade do PreCheck agora: `_resolve_trigger_phrase`
+    só acrescenta o sufixo quando há colisão de verdade."""
+    tenant, _ = await _tenant_com_precheck(db_session, clinic_name="Clínica São José")
+    _, frase = onboarding_sync._precheck_identity(tenant.clinic_name, tenant.id)
+
+    assert frase == "precheck clinica sao jose"
+    assert "-" not in frase                          # não é uma URL
+    assert str(tenant.id)[:8] not in frase           # nada de hexadecimal por padrão
+
+
+@pytest.mark.asyncio
+async def test_frase_tolera_nome_so_de_simbolos(db_session):
+    """Um nome que não sobrevive à normalização não pode virar "precheck " solto —
+    o dispatcher casa por substring e uma frase vazia casaria com tudo."""
+    tenant, _ = await _tenant_com_precheck(db_session, clinic_name="+++")
+    _, frase = onboarding_sync._precheck_identity(tenant.clinic_name, tenant.id)
+    assert frase == "precheck clinica"
 
 
 # ── fail-soft (o que protege o webhook do Stripe) ───────────────────────────

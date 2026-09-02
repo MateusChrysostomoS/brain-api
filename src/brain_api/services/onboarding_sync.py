@@ -108,19 +108,35 @@ DEFAULT_PRECHECK_TEMPLATE = "clinica-geral"
 
 
 def _precheck_identity(clinic_name: str, tenant_id: UUID) -> tuple[str, str]:
-    """(clinic_slug, trigger_phrase) determinísticos para uma clínica do PreCheck.
+    """(clinic_slug, trigger_phrase) para uma clínica do PreCheck.
 
-    PreCheck exige os dois únicos: o slug é PK natural da clínica e a frase é o que
-    faz o dispatcher rotear o paciente (o match é `frase in mensagem`, então frases
-    curtas colidem). Derivar do nome e desempatar com um sufixo do tenant_id dá
-    unicidade sem precisar de round-trip de consulta — e, sendo determinístico,
-    uma retentativa gera exatamente os mesmos valores da tentativa anterior.
+    Os dois têm de ser únicos do lado de lá, mas por motivos diferentes — e é isso
+    que faz um levar sufixo e o outro não.
+
+    O SLUG é PK natural da clínica e ninguém o lê: leva o sufixo do tenant_id
+    sempre, garantindo unicidade sem round-trip de consulta e sendo determinístico
+    (uma retentativa gera exatamente o mesmo valor).
+
+    A FRASE é o oposto: é o que o paciente vê no link wa.me, no QR Code impresso na
+    recepção, e o que ele digita à mão quando não clica em nenhum dos dois. Até
+    25/08 ela levava o slug hifenizado E o sufixo — saía "precheck clinica-do-
+    coracao 6bac6f6c", com hífens no meio de uma frase falada e um código
+    hexadecimal que ninguém copia certo. Agora vai limpa, em palavras.
+
+    Unicidade da frase passou a ser do PreCheck: `_resolve_trigger_phrase`
+    (app/routers/internal.py) detecta colisão contra as clínicas existentes e só
+    então acrescenta o sufixo, tentando antes variações que ainda carregam o nome.
+    Ou seja, o código opaco virou último recurso em vez de padrão — e a resposta do
+    provisionamento devolve a frase EFETIVA, que é a que o bridge persiste.
     """
-    base = re.sub(r"[^a-z0-9]+", "-", unicodedata.normalize("NFKD", clinic_name)
-                  .encode("ascii", "ignore").decode().lower()).strip("-") or "clinica"
+    ascii_name = (unicodedata.normalize("NFKD", clinic_name)
+                  .encode("ascii", "ignore").decode())
+    base = re.sub(r"[^a-z0-9]+", "-", ascii_name.lower()).strip("-") or "clinica"
     sufixo = str(tenant_id)[:8]
     slug = f"{base[:60]}-{sufixo}"
-    return slug, f"precheck {base[:40]} {sufixo}"
+    # Espaços, não hífens: a frase é falada e digitada, não uma URL.
+    frase = re.sub(r"\s+", " ", base[:40].replace("-", " ")).strip()
+    return slug, f"precheck {frase}"
 
 
 async def ensure_precheck_provisioned(session: AsyncSession, tenant: Tenant) -> None:

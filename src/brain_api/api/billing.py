@@ -153,7 +153,7 @@ async def precheck_topup(
 @router.post(
     "/billing/precheck/upgrade",
     response_model=PrecheckUsageOut,
-    summary="Swap between the PreCheck Basic/Advanced tiers",
+    summary="Swap between the PreCheck tiers (Start/Basic/Advanced)",
     responses={
         401: {"description": "Missing/invalid token."},
         409: {

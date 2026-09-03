@@ -1,5 +1,11 @@
 # CHECKPOINT — PreCheck billing (plans, quota, top-up, tier upgrade)
 
+> **Superseded in part (2026-09-03):** PreCheck now has **three** tiers (Start 50 /
+> Basic 100 / Advanced 300) and real sale prices. The tier ladder, the live Stripe price
+> ids, the new `STRIPE_PRICE_MAP` and the **deploy order that must not be inverted** live
+> in `CHECKPOINT_tres_faixas_precheck.md`. Everything below still describes the machinery
+> correctly — only "two tiers" and the R$1,00 top-up example are outdated.
+
 Status: **BUILT + tested locally (2026-08-01)**, UNCOMMITTED, not deployed.
 Full suite (PowerShell, from `C:\TECH\BRAIN\brain-api`):
 
@@ -195,6 +201,7 @@ rule.
 
 | Setting | Default | Purpose |
 |---|---|---|
+| `PRECHECK_START_CONSULTATIONS_PER_MONTH` | `50` | Start (entry) tier's monthly quota — added 2026-09-03 |
 | `PRECHECK_BASIC_CONSULTATIONS_PER_MONTH` | `100` | Basic tier's monthly quota (catalog-import-time read) |
 | `PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH` | `300` | Advanced tier's (and the combo's) monthly quota |
 | `PRECHECK_TOPUP_MIN_QUANTITY` | `5` | Smallest avulso purchase (422 `quantity_below_minimum` under it) |
@@ -208,9 +215,9 @@ rule.
 
 ## Stripe Dashboard steps (deploy)
 
-1. Create **two recurring Prices** (monthly), one per PreCheck tier — "PreCheck Basic"
-   and "PreCheck Advanced" (whatever product/pricing the business has settled on for
-   each tier).
+1. Create **one recurring Price** (monthly) per PreCheck tier — as of 2026-09-03 that is
+   **three**: "PreCheck Start", "PreCheck Basic" and "PreCheck Advanced". The live ones
+   are already created; their ids are in `CHECKPOINT_tres_faixas_precheck.md` §1.
 2. Create **one one-off Price** for the avulso pré-consulta: **Standard pricing**
    (deliberately NOT "Package pricing" — package sells in fixed blocks, which is exactly
    the model this replaced), **R$1,00 BRL**, recurrence **One time**. The quantity is

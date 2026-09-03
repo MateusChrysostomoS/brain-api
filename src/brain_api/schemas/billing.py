@@ -53,9 +53,10 @@ class PrecheckTopupIn(BaseModel):
 
 
 class PrecheckUpgradeIn(BaseModel):
-    """`POST /billing/precheck/upgrade` body — swap to the other PreCheck tier.
+    """`POST /billing/precheck/upgrade` body — swap to another PreCheck tier.
 
-    `plan` names a CATALOG id (validated server-side against the two PreCheck plans by
+    `plan` names a CATALOG id (validated server-side against `catalog.
+    PRECHECK_TIER_PLAN_IDS` by
     `services.billing.upgrade_precheck_plan`, same "client only ever names catalog ids"
     rule as `CheckoutRequest.plan` above).
     """

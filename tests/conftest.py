@@ -54,11 +54,12 @@ os.environ.setdefault(
         # deliberately absent here: it would now be rejected as an unknown catalog id.
         # "precheck" is the LEGACY alias for precheck_basic (precheck-billing round,
         # 2026-08-01) — kept spelled this way here deliberately so tests exercise the
-        # alias-normalization path (_parse_price_map); "precheck_advanced" and
-        # "precheck_topup" (the avulso consultation's one-off PER-UNIT price) are spelled
-        # canonically.
+        # alias-normalization path (_parse_price_map); "precheck_start",
+        # "precheck_advanced" and "precheck_topup" (the avulso consultation's one-off
+        # PER-UNIT price) are spelled canonically.
         '{"complete_clinic_combo": "price_combo", "secretaria_basico": "price_ferro", '
-        '"precheck": "price_precheck", "precheck_advanced": "price_precheck_advanced", '
+        '"precheck": "price_precheck", "precheck_start": "price_precheck_start", '
+        '"precheck_advanced": "price_precheck_advanced", '
         '"precheck_topup": "price_precheck_topup", '
         '"multi_professional": "price_multipro", "reactivation_pack": "price_react", '
         '"ehr": "price_ehr"}'

@@ -81,9 +81,9 @@ LIMIT_BILLABLE_PATIENTS = "billable_patients"
 LIMIT_ACTIVE_PROFESSIONALS = "active_professionals"
 #: Monthly QUOTA of PreCheck consultations (patient pre-consultation flows completed).
 #: Unlike the secretarIA metering limits above (which stay 0 = unenforced-by-quota on
-#: every plan today), this one carries a REAL per-plan base_limit — see the two PreCheck
-#: PlanDefs and PRECHECK_BASIC_CONSULTATIONS_PER_MONTH / PRECHECK_ADVANCED_CONSULTATIONS_
-#: PER_MONTH below. PreCheck billing is flat-price-plus-quota, not metered, so this LIMIT
+#: every plan today), this one carries a REAL per-plan base_limit — see the three PreCheck
+#: PlanDefs and PRECHECK_START_CONSULTATIONS_PER_MONTH / PRECHECK_BASIC_CONSULTATIONS_PER_
+#: MONTH / PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH below. PreCheck billing is flat-price-plus-quota, not metered, so this LIMIT
 #: is the enforcement mechanism itself (services/precheck_billing.py), not just a display
 #: number. Recorded through the SAME POST /internal/usage-events -> services/usage.py::
 #: record_usage ledger every other feature uses; deliberately absent from that module's
@@ -112,10 +112,29 @@ PLAN_FREE = "free"
 #: constant because already-seeded/demo rows and not-yet-migrated STRIPE_PRICE_MAP
 #: entries may still spell the plan this way.
 PLAN_PRECHECK = "precheck"
+#: Entry PreCheck tier (2026-09-03 three-tier round: 50 / 100 / 300 consultations a
+#: month). Added BELOW Basic instead of renaming the existing two — every entitlement
+#: row, Stripe price-map key and provisioned tenant already spells the other two ids,
+#: and a rename would need a data migration to buy nothing.
+PLAN_PRECHECK_START = "precheck_start"
 PLAN_PRECHECK_BASIC = "precheck_basic"
 PLAN_PRECHECK_ADVANCED = "precheck_advanced"
 PLAN_SECRETARIA_BASICO = "secretaria_basico"
 PLAN_COMPLETE_CLINIC_COMBO = "complete_clinic_combo"
+
+#: The PreCheck tier ladder, cheapest first. The ONE place that answers "which plans are
+#: PreCheck tiers a tenant may swap between" — `services/billing.py::
+#: upgrade_precheck_plan` validates its target against this, so adding a tier here is
+#: what makes it swappable, and the frontend's own ladder mirrors it
+#: (brain-frontend `_lib/pricing.ts`).
+#: Deliberately EXCLUDES PLAN_COMPLETE_CLINIC_COMBO: the combo is PreCheck-ENABLED
+#: (precheck=True, carrying the Advanced quota) but is not a PreCheck TIER — letting a
+#: combo tenant "swap" into a PreCheck-only plan would silently drop their secretarIA.
+PRECHECK_TIER_PLAN_IDS: tuple[str, ...] = (
+    PLAN_PRECHECK_START,
+    PLAN_PRECHECK_BASIC,
+    PLAN_PRECHECK_ADVANCED,
+)
 
 #: STRIPE_PRICE_MAP key for the avulso PreCheck consultation's one-off Stripe Price —
 #: PER UNIT (standard pricing, one consultation), charged as `quantity x unit price` on a
@@ -272,6 +291,7 @@ ADDON_IDS: frozenset[str] = frozenset(ADDONS)
 # restart is enough (get_settings() is lru_cached, so this module only ever reads them
 # once per process). Every OTHER plan/add-on limit in this file stays a literal
 # precisely because it should NOT be tunable without a reviewed code change.
+_PRECHECK_START_QUOTA = get_settings().PRECHECK_START_CONSULTATIONS_PER_MONTH
 _PRECHECK_BASIC_QUOTA = get_settings().PRECHECK_BASIC_CONSULTATIONS_PER_MONTH
 _PRECHECK_ADVANCED_QUOTA = get_settings().PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH
 
@@ -284,6 +304,14 @@ PLANS: dict[str, PlanDef] = {
             precheck=False,
             secretaria=False,
             secretaria_tier=None,
+        ),
+        PlanDef(
+            id=PLAN_PRECHECK_START,
+            name="PreCheck Start",
+            precheck=True,
+            secretaria=False,
+            secretaria_tier=None,
+            base_limits={LIMIT_PRECHECK_CONSULTATIONS: _PRECHECK_START_QUOTA},
         ),
         PlanDef(
             id=PLAN_PRECHECK_BASIC,

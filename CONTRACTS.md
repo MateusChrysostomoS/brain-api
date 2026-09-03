@@ -386,11 +386,21 @@ concept, `available=false`, was retired 2026-07-22 along with the tier ladder be
 | plan id | products | secretarIA tier | implied add-ons | notes |
 |---|---|---|---|---|
 | `free` | — | — | — | default / no subscription |
-| `precheck` | precheck | — | — | |
+| `precheck_start` | precheck | — | — | entry tier: **50** consultations/month (`LIMIT_PRECHECK_CONSULTATIONS`, from `PRECHECK_START_CONSULTATIONS_PER_MONTH`) |
+| `precheck_basic` | precheck | — | — | **100**/month (`PRECHECK_BASIC_CONSULTATIONS_PER_MONTH`) |
+| `precheck_advanced` | precheck | — | — | **300**/month (`PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH`) |
 | `secretaria_basico` | secretaria | `basico` | — | fully metered, **no flat/anchor price**: three companion Stripe Meters bill active professionals, billable patients, and reminders sent outside the WhatsApp 24h window (§13.3) — AI converses + books in Google Calendar + sends 24h/1h reminders, all billed by usage. Replaces the retired `secretaria_ferro`/`secretaria_bronze_1`/`secretaria_bronze_2` tier ladder (2026-07-22): one plan, one tier, for every secretarIA tenant |
 | `complete_clinic_combo` | precheck + secretaria | `basico` | `reactivation_pack`, `verified_identity` | ~15% off the sum (`discount_pct=15` metadata; real price lives in Stripe, billing round) |
 
-Legacy aliases: `"brain-completo"` → `complete_clinic_combo`, `"secretaria_ferro"` →
+The three PreCheck rows are the **tier ladder** (`catalog.PRECHECK_TIER_PLAN_IDS`,
+cheapest first) — the set `POST /billing/precheck/upgrade` accepts as a swap target
+(§13.6). They differ ONLY in the monthly consultation quota; the combo is PreCheck-
+enabled too but is deliberately NOT a tier (swapping into a PreCheck-only plan would
+drop its secretarIA side).
+
+Legacy aliases: `"precheck"` → `precheck_basic` (the 2026-08-01 split of one PreCheck
+plan into tiers; a third, `precheck_start`, joined 2026-09-03),
+`"brain-completo"` → `complete_clinic_combo`, `"secretaria_ferro"` →
 `secretaria_basico` (old seeded rows keep their semantics — ferro's fully-metered
 pricing model carries forward unchanged under the new id; a PATCH write normalizes to
 the canonical id). `"secretaria_bronze_1"` is **not** aliased — its flat-fee shape was

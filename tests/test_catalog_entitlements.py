@@ -66,11 +66,12 @@ def test_assignable_plan_ids_has_no_reserved_slots():
     every catalog plan is currently assignable. PLAN_PRECHECK ("precheck") is no longer a
     `PLANS` member as of the 2026-08-01 PreCheck-billing split — it lives on only as a
     LEGACY_PLAN_ALIASES key (see test_get_plan_resolves_precheck_alias_to_basic below),
-    replaced here by the two real tiers."""
+    replaced here by the three real tiers (Start joined 2026-09-03)."""
     assert catalog.ASSIGNABLE_PLAN_IDS == catalog.PLAN_IDS
     assert catalog.ASSIGNABLE_PLAN_IDS == frozenset(
         {
             catalog.PLAN_FREE,
+            catalog.PLAN_PRECHECK_START,
             catalog.PLAN_PRECHECK_BASIC,
             catalog.PLAN_PRECHECK_ADVANCED,
             catalog.PLAN_SECRETARIA_BASICO,
@@ -97,15 +98,19 @@ def test_get_plan_resolves_precheck_alias_to_basic():
 
 
 def test_precheck_plans_carry_env_default_quotas():
-    """The two PreCheck plans' LIMIT_PRECHECK_CONSULTATIONS base_limit is read from
-    Settings (PRECHECK_BASIC_CONSULTATIONS_PER_MONTH / PRECHECK_ADVANCED_CONSULTATIONS_
-    PER_MONTH) at catalog import time; hermetic tests set neither env var, so the code
-    defaults (100 / 300) apply."""
+    """Each PreCheck tier's LIMIT_PRECHECK_CONSULTATIONS base_limit is read from Settings
+    (PRECHECK_START_/BASIC_/ADVANCED_CONSULTATIONS_PER_MONTH) at catalog import time;
+    hermetic tests set none of the env vars, so the code defaults (50 / 100 / 300)
+    apply."""
     from brain_api.config import get_settings
 
     settings = get_settings()
+    start = catalog.get_plan(catalog.PLAN_PRECHECK_START)
     basic = catalog.get_plan(catalog.PLAN_PRECHECK_BASIC)
     advanced = catalog.get_plan(catalog.PLAN_PRECHECK_ADVANCED)
+    assert start.base_limits[catalog.LIMIT_PRECHECK_CONSULTATIONS] == (
+        settings.PRECHECK_START_CONSULTATIONS_PER_MONTH
+    )
     assert basic.base_limits[catalog.LIMIT_PRECHECK_CONSULTATIONS] == (
         settings.PRECHECK_BASIC_CONSULTATIONS_PER_MONTH
     )
@@ -113,8 +118,32 @@ def test_precheck_plans_carry_env_default_quotas():
         settings.PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH
     )
     # Env defaults, asserted as literals too so a silent default change is caught here.
+    assert settings.PRECHECK_START_CONSULTATIONS_PER_MONTH == 50
     assert settings.PRECHECK_BASIC_CONSULTATIONS_PER_MONTH == 100
     assert settings.PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH == 300
+
+
+def test_precheck_tier_ladder_is_ordered_and_excludes_the_combo():
+    """PRECHECK_TIER_PLAN_IDS is what POST /billing/precheck/upgrade accepts as a target
+    (services/billing.py::upgrade_precheck_plan). It must list the three standalone tiers
+    CHEAPEST FIRST (the frontend renders the ladder in this order) and must NOT include
+    the combo: the combo is precheck=True, so a membership test written against
+    `PlanDef.precheck` instead of this tuple would let a combo tenant swap into a
+    PreCheck-only plan and silently lose secretarIA."""
+    assert catalog.PRECHECK_TIER_PLAN_IDS == (
+        catalog.PLAN_PRECHECK_START,
+        catalog.PLAN_PRECHECK_BASIC,
+        catalog.PLAN_PRECHECK_ADVANCED,
+    )
+    assert catalog.PLAN_COMPLETE_CLINIC_COMBO not in catalog.PRECHECK_TIER_PLAN_IDS
+    assert catalog.get_plan(catalog.PLAN_COMPLETE_CLINIC_COMBO).precheck is True
+
+    quotas = [
+        catalog.get_plan(pid).base_limits[catalog.LIMIT_PRECHECK_CONSULTATIONS]
+        for pid in catalog.PRECHECK_TIER_PLAN_IDS
+    ]
+    assert quotas == sorted(quotas), quotas
+    assert all(catalog.get_plan(pid).precheck for pid in catalog.PRECHECK_TIER_PLAN_IDS)
 
 
 def test_combo_carries_the_advanced_precheck_quota():

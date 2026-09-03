@@ -678,6 +678,58 @@ async def test_precheck_upgrade_swaps_price_and_updates_entitlement(db_session, 
     assert summary.quota == advanced_quota
 
 
+async def test_precheck_upgrade_swaps_into_the_start_tier(db_session, monkeypatch):
+    """The swap target is validated against catalog.PRECHECK_TIER_PLAN_IDS, not against a
+    hardcoded Basic/Advanced pair -- so the entry tier added in the 2026-09-03 three-tier
+    round is a legal target, and in BOTH directions (this one swaps DOWN, from Advanced).
+    Written against the newest tier on purpose: the old two-id membership check answered
+    422 invalid_precheck_plan here."""
+    tenant = Tenant(clinic_name="Downgrade Clinic")
+    db_session.add(tenant)
+    await db_session.flush()
+    ent = Entitlement(
+        tenant_id=tenant.id,
+        plan=catalog.PLAN_PRECHECK_ADVANCED,
+        status="active",
+        precheck_enabled=True,
+        stripe_customer_id="cus_start",
+        stripe_subscription_id="sub_start",
+    )
+    db_session.add(ent)
+    await db_session.commit()
+
+    calls: dict = {}
+
+    async def fake_stripe_get(path):
+        return {
+            "id": "sub_start",
+            "items": {
+                "data": [{"id": "si_adv", "price": {"id": "price_precheck_advanced"}}]
+            },
+        }
+
+    async def fake_stripe_post(path, data, *, idempotency_key=None):
+        calls["post_data"] = data
+        return {"id": "sub_start", "status": "active"}
+
+    monkeypatch.setattr(billing_service, "_stripe_get", fake_stripe_get)
+    monkeypatch.setattr(billing_service, "_stripe_post", fake_stripe_post)
+
+    summary = await billing_service.upgrade_precheck_plan(
+        db_session, tenant.id, catalog.PLAN_PRECHECK_START
+    )
+
+    assert calls["post_data"]["items[0][id]"] == "si_adv"
+    assert calls["post_data"]["items[0][price]"] == "price_precheck_start"
+
+    await db_session.refresh(ent)
+    start_quota = get_settings().PRECHECK_START_CONSULTATIONS_PER_MONTH
+    assert ent.plan == catalog.PLAN_PRECHECK_START
+    assert ent.limits[catalog.LIMIT_PRECHECK_CONSULTATIONS] == start_quota
+    assert summary.plan == catalog.PLAN_PRECHECK_START
+    assert summary.quota == start_quota
+
+
 async def test_precheck_upgrade_subscription_price_mismatch_409(db_session, monkeypatch):
     """Defensive: the live subscription carries no item at the CURRENT plan's price at
     all -- nothing to identify as "the item to swap"."""

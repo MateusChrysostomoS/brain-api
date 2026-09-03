@@ -229,11 +229,12 @@ class Settings(BaseSettings):
     # --- PreCheck billing (precheck-billing round) ---
     # PreCheck bills FLAT-PRICE-plus-quota, never metered (unlike secretaria_basico above):
     # each PreCheck plan grants a monthly consultation quota (services/catalog.py's
-    # LIMIT_PRECHECK_CONSULTATIONS), read from these two settings AT CATALOG IMPORT TIME
+    # LIMIT_PRECHECK_CONSULTATIONS), read from these three settings AT CATALOG IMPORT TIME
     # (services/catalog.py's PLANS construction) rather than hardcoded like every other
     # plan limit — a deliberate exception so an operator can retune the quota (a promo, a
     # temporary bump) with an env change + restart, no code deploy. Changing these after
     # the process has started has NO effect until restart (catalog.py reads them once).
+    PRECHECK_START_CONSULTATIONS_PER_MONTH: int = 50
     PRECHECK_BASIC_CONSULTATIONS_PER_MONTH: int = 100
     PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH: int = 300
     # Bounds on ONE avulso purchase of PreCheck consultations (POST /billing/precheck/topup,

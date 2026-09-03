@@ -592,15 +592,16 @@ async def create_precheck_topup_checkout_session(
 async def upgrade_precheck_plan(
     session: AsyncSession, tenant_id: UUID, target_plan_id: str
 ) -> precheck_billing.PrecheckUsageSummary:
-    """Swap a tenant's PreCheck subscription between the two PreCheck tiers (Basic <->
+    """Swap a tenant's PreCheck subscription between the PreCheck tiers (Start / Basic /
     Advanced) via a LIVE Stripe subscription-item price swap, then OPTIMISTICALLY update
     the local entitlement so the new quota applies immediately — the later
     `customer.subscription.updated` webhook recompute confirms the same state
     independently from Stripe's own event.
 
     Checks, in order: 422 `invalid_precheck_plan:{target}` unless `target_plan_id`
-    resolves to one of the two PreCheck plans; 409 `not_precheck_plan` when the tenant's
-    CURRENT resolved plan isn't PreCheck-enabled at all (nothing to swap); 409
+    resolves to one of the PreCheck tiers (`catalog.PRECHECK_TIER_PLAN_IDS`); 409
+    `not_precheck_plan` when the tenant's CURRENT resolved plan isn't PreCheck-enabled at
+    all (nothing to swap); 409
     `already_on_plan` when the target IS the tenant's current (canonical) plan; 409
     `no_active_subscription` when the entitlement carries no `stripe_subscription_id`;
     503 `price_not_configured:{id}` when either plan's Stripe price is missing; 409
@@ -614,10 +615,7 @@ async def upgrade_precheck_plan(
     existing subscription item's price).
     """
     target_plan = catalog.get_plan(target_plan_id)
-    if target_plan is None or target_plan.id not in (
-        catalog.PLAN_PRECHECK_BASIC,
-        catalog.PLAN_PRECHECK_ADVANCED,
-    ):
+    if target_plan is None or target_plan.id not in catalog.PRECHECK_TIER_PLAN_IDS:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, f"invalid_precheck_plan:{target_plan_id}"
         )

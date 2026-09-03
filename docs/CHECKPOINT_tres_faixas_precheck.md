@@ -5,9 +5,8 @@
 > `STRIPE_PRICE_MAP` de produção vendia o Basic por **R$ 1,00** (um Price de teste que
 > ficou apontado depois de um teste de funil).
 >
-> **Estado:** código commitado nos dois repos e validado localmente (suítes + build).
-> **NÃO deployado** e o `STRIPE_PRICE_MAP` de produção **ainda não foi trocado** — ler a
-> ordem de deploy na §4 antes de mexer, ela não é opcional.
+> **Estado: NO AR em 2026-09-03**, os três passos da §4 concluídos e provados em produção
+> (§5.2). A ordem da §4 continua valendo para qualquer faixa futura.
 
 ## 1. A tabela
 
@@ -90,7 +89,7 @@ propósito: um map com typo não pode desvender um produto em silêncio). Então
 Invertendo 1 e 2, `_parse_price_map` levanta `ValueError` em **toda** chamada de billing —
 checkout, portal, webhook e a tela de uso caem juntos.
 
-## 5. Validação (local, 2026-09-03)
+## 5.1 Validação (local, 2026-09-03)
 
 - brain-api: `uv run pytest -q` → **538 passed** (antes: 535 + 1 falha, o
   `test_assignable_plan_ids_has_no_reserved_slots`, que trava justamente o conjunto de
@@ -99,18 +98,49 @@ checkout, portal, webhook e a tela de uso caem juntos.
 - brain-frontend: `npx tsc --noEmit` limpo · `npx vitest run` → **158 passed** ·
   `npm run build` ok. Conferido no `out/index.html` gerado: as três faixas com
   R$ 119,99 / R$ 209,99 / R$ 599,99 e 50 / 100 / 300 pré-consultas.
-- ⚠️ Nada disto foi conferido **ao vivo** — não houve deploy nesta rodada.
+## 5.2 Prova em produção (2026-09-03, depois do deploy)
+
+- **Código no ar:** `GET /openapi.json` devolve `summary: "Swap between the PreCheck tiers
+  (Start/Basic/Advanced)"` na rota de upgrade — string escrita nesta rodada, então o
+  container está no commit certo. (`/health` NÃO serve de prova aqui: responde igual com
+  código velho.)
+- **Vitrine:** `brainai.com.br` serve R$ 119,99 / R$ 209,99 / R$ 599,99, as três faixas,
+  50/100/300 e o grid `price-grid--3` + `--2`. Conferido também no navegador, incluindo o
+  passo de plano do `/cadastro` (que **não** aparece em `curl` — depende de
+  `useSearchParams` e só existe depois da hidratação).
+- **Price map:** provado pelo funil de verdade, não por leitura de env. `POST
+  /public/signup-intents` com `catalog_ids: ["precheck_start"]` → **201**, e `POST
+  /public/checkout-sessions` → **200** com URL do Stripe. Esse segundo passo chama
+  `billing.validate_selection` como fail-fast e responde **503
+  `price_not_configured:precheck_start`** quando a chave não está no map — o 200 é a prova
+  de que ela está.
+- Efeito colateral do teste, para limpar: tenant `ZZ SMOKE precheck_start 1788465780
+  (apagar)` / `smoke-start-1788465780@example.com`, intent
+  `f4160f58-1e5e-49ff-8a7a-89f1a7dd8d16`. Nenhum Customer e nenhuma assinatura nasceram
+  (sessão `mode=setup`, sem pagamento); a Checkout Session expira sozinha em 04/09 20:03 UTC.
+
+### O trial de 75 dias NÃO se aplica ao PreCheck (achado desta rodada)
+
+`GET /public/checkout-config` devolve `trial_period_days: 75` e isso assustou com razão —
+mas o número é **global**, e quem decide por compra é `billing._trial_days_for`: ele
+devolve **0 para qualquer plano sem secretarIA**. O trial nunca foi cortesia comercial, é
+a janela de aprovação da Meta para o WhatsApp Coexistence, e PreCheck não tem conexão
+nenhuma a ser aprovada. **PreCheck cobra na hora.** Confirmado ao vivo: a Checkout Session
+do teste acima voltou com `custom_text` **todo null** — o texto de trial só é montado
+quando há trial. Vale para os dois caminhos (checkout direto, `billing.py:453`, e a
+assinatura que o webhook cria no cold signup, `billing.py:855`).
 
 ## 6. Pendências
 
-- [ ] Deploy nos dois serviços + troca do price map, **na ordem da §4**.
-- [ ] Cancelar as 3 assinaturas de teste presas no Price de R$ 1,00 (§2).
+- [x] ~~Deploy nos dois serviços + troca do price map~~ — feito e provado (§5.2).
+- [ ] **Apagar o tenant do smoke** (§5.2) — `DELETE /admin/tenants/{id}`.
+- [ ] Cancelar as 3 assinaturas de teste presas no Price de R$ 1,00 (§2). Elas seguem
+      cobrando R$ 1,00/mês; arquivar o Price não as tocou.
 - [ ] **Preço do avulso**: R$ 2,50/pré-consulta hoje. Com o Basic a R$ 2,10/pré-consulta
       (209,99÷100) e o Advanced a R$ 2,00, o avulso está caro o suficiente para não
       canibalizar o upgrade — decisão registrada, não mexida nesta rodada.
-- [ ] **Trial**: `STRIPE_TRIAL_PERIOD_DAYS` tem default `0` no código, mas o
-      `/public/checkout-config` de produção já respondeu **75 dias**. Confirmar o valor
-      setado no EasyPanel antes de vender com preço novo.
+- [x] ~~**Trial**: confirmar os 75 dias antes de vender com preço novo~~ — **resolvido,
+      não era problema**: o trial não alcança plano sem secretarIA (§5.2).
 - [ ] A vitrine do PreCheck (`/comecar`) segue mandando `plan=precheck_basic` fixo. Continua
       correto (é pré-seleção, e o wizard mostra as três) — mas agora a pré-seleção é a faixa
       do MEIO, o que é uma escolha comercial e não um default técnico.

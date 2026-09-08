@@ -738,5 +738,770 @@
     "mtime": 1787781601.3250935,
     "ast_hash": "64b91504dcc02be836f705c8f68ba4f3",
     "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\env.py": {
+    "mtime": 1781827773.972744,
+    "ast_hash": "ac1e13d4776f9fea24a7ee5c5001ca59",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0001_initial_schema.py": {
+    "mtime": 1781827826.906953,
+    "ast_hash": "bd7517a8b77e50f398feaff6fe0099a4",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0002_precheck_account_links.py": {
+    "mtime": 1781835531.6753333,
+    "ast_hash": "02071e820e48895e77c8fa7832675c0d",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0003_billing_and_refresh_tokens.py": {
+    "mtime": 1784235214.7958825,
+    "ast_hash": "6f02d4bd361bdd2e7b2b85a1d2cae510",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0004_privacy_requests.py": {
+    "mtime": 1784235214.7958825,
+    "ast_hash": "6765abd0f35ac9e4aef40492da610377",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0005_usage_events.py": {
+    "mtime": 1784235214.7958825,
+    "ast_hash": "f28c163aa2ea28004313b9498581b2da",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0006_signup_intents.py": {
+    "mtime": 1784235214.7958825,
+    "ast_hash": "e93f25556272b78674ec20deddf1ebfa",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0007_onboarding_state_machine.py": {
+    "mtime": 1784352486.6572115,
+    "ast_hash": "e5706bb9b8b56065d13a7de61138ff76",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0008_billing_meter_pricing.py": {
+    "mtime": 1784500947.811886,
+    "ast_hash": "36c3efbf58ecc18551d829ab3f4505a1",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0009_test_window.py": {
+    "mtime": 1784769017.3978207,
+    "ast_hash": "3157ad63e379c9a2bb93a358033388f6",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0010_precheck_billing.py": {
+    "mtime": 1785602368.5313435,
+    "ast_hash": "377fc4e945e0728700b87873a638ccee",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0011_launch_waitlist.py": {
+    "mtime": 1785611805.674702,
+    "ast_hash": "e835d1c511600c0997fb5f53f9aab403",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0012_role_taxonomy.py": {
+    "mtime": 1786114902.7562494,
+    "ast_hash": "bbe34af4c5d97ed47bd866b391de0f4a",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0013_secretary_role.py": {
+    "mtime": 1786742739.5746453,
+    "ast_hash": "a262ac65b199e005bef355d881ac527c",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0014_password_reset.py": {
+    "mtime": 1786752312.6924262,
+    "ast_hash": "f857f33972384dc7a0c56727eb44c4b8",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0015_precheck_provisioning.py": {
+    "mtime": 1787698625.277283,
+    "ast_hash": "f749fc081af7234bde86d7bfdcdfd905",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0016_courtesy_coupons.py": {
+    "mtime": 1787698625.277283,
+    "ast_hash": "dee07863b96132c8ff12f8c2383445eb",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0017_message_channels.py": {
+    "mtime": 1788836812.901548,
+    "ast_hash": "db4670d39bf6c1696e9e149da5f7aecc",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\scripts\\create_admin.py": {
+    "mtime": 1782224346.8718143,
+    "ast_hash": "af9baa685e52ece997959a5d2362230e",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\scripts\\create_courtesy_coupon.py": {
+    "mtime": 1787698625.277283,
+    "ast_hash": "5bc1f5744152a5699622150643a599a0",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\scripts\\link_precheck_account.py": {
+    "mtime": 1781880554.8794708,
+    "ast_hash": "1b55e01eb888da00ff43a4bbb40ea073",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\scripts\\provision_precheck_tenants.sql": {
+    "mtime": 1786115180.6157458,
+    "ast_hash": "0092c2fa6fcae0288e19fdab064ac549",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\scripts\\seed_admin.py": {
+    "mtime": 1781880572.102523,
+    "ast_hash": "711f9f360042c461f15e3a6167bc91d3",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\scripts\\seed_dev.py": {
+    "mtime": 1786115159.6083252,
+    "ast_hash": "8f423e2c5997090e6719ea23e6285538",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\config.py": {
+    "mtime": 1788231191.679314,
+    "ast_hash": "21e1e2eef2264149a6fde5f40c12a0a9",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\main.py": {
+    "mtime": 1785611397.4724615,
+    "ast_hash": "290de05fcef25d17879427340f2e3c66",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\__init__.py": {
+    "mtime": 1781827625.7081635,
+    "ast_hash": "9f240855a02f7fae8b6ecd1eca026cf9",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\admin.py": {
+    "mtime": 1786067685.4549086,
+    "ast_hash": "63e227f9d2fdb94f12f3bd1b64cd5e97",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\auth.py": {
+    "mtime": 1788231965.7432728,
+    "ast_hash": "c53b1d5bf106da0a04751ecf092ee053",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\billing.py": {
+    "mtime": 1785611024.5410118,
+    "ast_hash": "6e62f5693dca717f0771235147558e86",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\demo.py": {
+    "mtime": 1784235214.811571,
+    "ast_hash": "0cfcf9b036711ff437c67839168c6981",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\deps.py": {
+    "mtime": 1786742614.809681,
+    "ast_hash": "51daa4091ab312bd67fcf6d18a971de2",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\doctor.py": {
+    "mtime": 1786742645.9246516,
+    "ast_hash": "cdd8e27525ac8fb02e4dff55a79eb4d9",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\entitlements.py": {
+    "mtime": 1781828015.661892,
+    "ast_hash": "9815156883edc72cbd78f2042def99d3",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\health.py": {
+    "mtime": 1781827696.7418811,
+    "ast_hash": "384ca66b814365c73172c8b3f944b3d1",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\internal.py": {
+    "mtime": 1787780745.5408885,
+    "ast_hash": "0398fb1abc4e4baf49d12535b62b2844",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\internal_precheck.py": {
+    "mtime": 1785602423.8369217,
+    "ast_hash": "00d8fcbed6c1f47fd140c9e3c3e3b160",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\onboarding.py": {
+    "mtime": 1787698625.277283,
+    "ast_hash": "f3b32a3a2e77eb663d1a959d813b1788",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\privacy.py": {
+    "mtime": 1784235214.811571,
+    "ast_hash": "2dd75eb1d3333f9a2dbe27642e52861c",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\public_signup.py": {
+    "mtime": 1788231386.4661338,
+    "ast_hash": "41e213b3e59923fb126c0f65ba4b129f",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\public_waitlist.py": {
+    "mtime": 1785611805.674702,
+    "ast_hash": "87169708b882507457e8bb7b1b1e8e83",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\sso.py": {
+    "mtime": 1786742624.1123638,
+    "ast_hash": "e2a5e6942006ba6739bede761b0e3760",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\__init__.py": {
+    "mtime": 1781827683.171358,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\core\\cookies.py": {
+    "mtime": 1788231172.722764,
+    "ast_hash": "d8f5d4d3fb814e0ac136525a6e38cfb7",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\core\\database.py": {
+    "mtime": 1781827644.5738463,
+    "ast_hash": "ae7f63c6faedaa8227b5e4504dda2247",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\core\\logging.py": {
+    "mtime": 1781827657.6725168,
+    "ast_hash": "266d8ed0ba672268d3ede4675a20d9eb",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\core\\ratelimit.py": {
+    "mtime": 1784235214.811571,
+    "ast_hash": "2bb5e1eaa91e67f2d35355a3398b87ae",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\core\\security.py": {
+    "mtime": 1786114912.9362104,
+    "ast_hash": "68cb4769843997dbd7f6dc55b42b2b31",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\core\\__init__.py": {
+    "mtime": 1781827639.6496928,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\courtesy_coupon.py": {
+    "mtime": 1787698625.2819955,
+    "ast_hash": "182b13c713e0b637de4539fe1104753d",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\demo_request.py": {
+    "mtime": 1781828431.195704,
+    "ast_hash": "a832bcc12f1b86efa3931e42b176a295",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\entitlement.py": {
+    "mtime": 1784500938.683166,
+    "ast_hash": "59d2febf1d140398882f3a3ebd5c3e6b",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\precheck_link.py": {
+    "mtime": 1781880554.871112,
+    "ast_hash": "8971ebb17aac03657c4af7f7a5edc260",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\precheck_topup_credit.py": {
+    "mtime": 1785611040.779577,
+    "ast_hash": "b7f28fb99d0de05fb05ad7e5af5feb97",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\privacy_request.py": {
+    "mtime": 1784235214.811571,
+    "ast_hash": "82f6190d6940b28db03a9ea5c83c7178",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\processed_stripe_event.py": {
+    "mtime": 1784235214.811571,
+    "ast_hash": "0ff1003ec35a00f7cadf20b48be020a0",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\refresh_token.py": {
+    "mtime": 1784235214.811571,
+    "ast_hash": "f692c5f9c7555ba4115764f7c3c05ed3",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\signup_attempt.py": {
+    "mtime": 1784352259.1061647,
+    "ast_hash": "d13cc7caa63af510804e84b214276ad5",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\signup_intent.py": {
+    "mtime": 1787698625.2819955,
+    "ast_hash": "214fc9d1574e3a010c730263fb790554",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\tenant.py": {
+    "mtime": 1788836796.9179668,
+    "ast_hash": "638b0b193331b0f8d4140f1430c8728e",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\usage_event.py": {
+    "mtime": 1785602358.028559,
+    "ast_hash": "d639c380fe3dc4e0e08abe894a0057a5",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\user.py": {
+    "mtime": 1786752298.642262,
+    "ast_hash": "031b3098f7870bbf6801ea4fbfd2f25f",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\waitlist_lead.py": {
+    "mtime": 1785611312.7422597,
+    "ast_hash": "6d83a992e94d09bbdc91c4c3c83a684b",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\__init__.py": {
+    "mtime": 1787698625.2814813,
+    "ast_hash": "e8bcef852cc93f504c8637d1fa530890",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\admin.py": {
+    "mtime": 1786742720.5040095,
+    "ast_hash": "7e45fc0a1faced526c667d116f9ecd7f",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\auth.py": {
+    "mtime": 1788231209.5775056,
+    "ast_hash": "c85124d743dea6d81189050155338041",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\billing.py": {
+    "mtime": 1785611012.5496032,
+    "ast_hash": "e205cfeb00de93c666c28840cb19eea7",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\demo.py": {
+    "mtime": 1781828016.518054,
+    "ast_hash": "5beb3cd16079e28c08b5263f88d509a8",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\doctor.py": {
+    "mtime": 1785553413.1899686,
+    "ast_hash": "ea007a37033c2f7e513e74dafc18cf90",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\entitlement.py": {
+    "mtime": 1788836824.3765724,
+    "ast_hash": "dd297f12491bcb3a6f901ef1f0d026a9",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\internal.py": {
+    "mtime": 1787780751.706942,
+    "ast_hash": "d819b4e3acf78746693c8c8f6ffcd250",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\internal_precheck.py": {
+    "mtime": 1785602403.863727,
+    "ast_hash": "b4b247ebecf344294a31dd622969a06f",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\onboarding.py": {
+    "mtime": 1786742657.1189313,
+    "ast_hash": "80a32752c839ff2687db75055de928d5",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\privacy.py": {
+    "mtime": 1784235214.8275054,
+    "ast_hash": "f2b53da8a8c98ad20982816ba5ddcc89",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\secretaria.py": {
+    "mtime": 1782228356.3746946,
+    "ast_hash": "23057526ffaa3cdb2e859e411349b2aa",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\signup.py": {
+    "mtime": 1787698625.2830093,
+    "ast_hash": "c3bc0a0a9183846c064c61c2fd7bf14f",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\sso.py": {
+    "mtime": 1781835589.1658063,
+    "ast_hash": "11ee47290f37640316913cb64063dbf4",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\waitlist.py": {
+    "mtime": 1785611353.0817728,
+    "ast_hash": "d3b73b6afe79ec0d67127c9f33d9e5a9",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\__init__.py": {
+    "mtime": 1781827743.914344,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\admin.py": {
+    "mtime": 1786115448.2236683,
+    "ast_hash": "808d0f9046a9eb41c24b1ae4810ea45f",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\auth.py": {
+    "mtime": 1786752374.3688655,
+    "ast_hash": "a1fbfbc7d37c53a6f9fd5eb7c9e4da29",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\billing.py": {
+    "mtime": 1787698625.2849548,
+    "ast_hash": "816c8569610794189b196cb4988341fd",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\catalog.py": {
+    "mtime": 1785611045.8124435,
+    "ast_hash": "7541ef1d0bd9f8224fc35b3122983b38",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\courtesy.py": {
+    "mtime": 1787698625.2855859,
+    "ast_hash": "d53ae4688e773e4120b574297f876bda",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\demo.py": {
+    "mtime": 1784235214.8275054,
+    "ast_hash": "ea204a681af973b7a6b72f63dda08b4c",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\doctor.py": {
+    "mtime": 1785553425.6867032,
+    "ast_hash": "72fe78de0120347886ee545371a0409a",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\entitlements.py": {
+    "mtime": 1788836836.0343552,
+    "ast_hash": "8006531637fa38dedafafe81e44b37f8",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\meta_graph.py": {
+    "mtime": 1786320873.0337737,
+    "ast_hash": "31276c3d30856d2a2fab9253802c03f1",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\onboarding.py": {
+    "mtime": 1784352640.7196865,
+    "ast_hash": "2bf67d4b10ba25225e21265674119255",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\onboarding_sync.py": {
+    "mtime": 1787698625.286938,
+    "ast_hash": "6fef72cca0a7e97a4ec2005d9f31853b",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\precheck_billing.py": {
+    "mtime": 1785611049.917451,
+    "ast_hash": "f3c513d1a4541d8ea6f46cc94cf677e1",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\precheck_client.py": {
+    "mtime": 1786067674.566879,
+    "ast_hash": "d83ca49732351dad373785f0c436d8ed",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\precheck_handoff.py": {
+    "mtime": 1787781029.284274,
+    "ast_hash": "0b7297aa210d3ebcaf15385455599dd2",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\precheck_provisioning.py": {
+    "mtime": 1787698625.286938,
+    "ast_hash": "f91c78034284e4eede0d891dd1e116d3",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\privacy.py": {
+    "mtime": 1784235214.8432505,
+    "ast_hash": "41abe81375e169695737e383077c6c06",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\secretaria_client.py": {
+    "mtime": 1784729461.0661733,
+    "ast_hash": "67ec1bf61ceff521a606b3d6ffe5f499",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\secretaria_internal.py": {
+    "mtime": 1782952578.1808958,
+    "ast_hash": "4ce7f895883d1803e29190d1e69e991d",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\secretaria_provisioning.py": {
+    "mtime": 1784354653.0317752,
+    "ast_hash": "619a2c20e588beeb079b99cf11f08cf9",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\signup.py": {
+    "mtime": 1787698625.286938,
+    "ast_hash": "b41c9fde44ef955cd632a8dfedd4d556",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\sso.py": {
+    "mtime": 1781880554.8794708,
+    "ast_hash": "d4c9959b8c99b9a027b30528af53c481",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\usage.py": {
+    "mtime": 1784733236.63067,
+    "ast_hash": "2674d62c829ff03ec3b8d11201eb521d",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\waitlist.py": {
+    "mtime": 1785611371.3322947,
+    "ast_hash": "3e0c140eeb17f77affb927e0aebca5a9",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\__init__.py": {
+    "mtime": 1781827747.0157166,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\conftest.py": {
+    "mtime": 1785611407.2927675,
+    "ast_hash": "fa583869c8556207e5a3798ae510c3cd",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_admin_tenant_delete.py": {
+    "mtime": 1784729621.0150585,
+    "ast_hash": "4281a90da2aa03e138227c9841f5b0fe",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_auth_hardening.py": {
+    "mtime": 1786115419.0973234,
+    "ast_hash": "939c861fb1ad4644bd2b7d9bdb6325ab",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_billing.py": {
+    "mtime": 1785611131.4730704,
+    "ast_hash": "6091bbad2f1d130d9d4e3896f6b0ebc8",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_billing_phase1.py": {
+    "mtime": 1785207553.7686815,
+    "ast_hash": "53a1600f64ef77e97f969a6de2a585bd",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_catalog_entitlements.py": {
+    "mtime": 1785602598.5366654,
+    "ast_hash": "4c35e0df2bb4b02529f921c67e722a20",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_config.py": {
+    "mtime": 1787331312.1202166,
+    "ast_hash": "f9c4d552f7287526a51a9d4e19c5c456",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_courtesy_coupon.py": {
+    "mtime": 1787698625.2898004,
+    "ast_hash": "e43dfd9c7d12d367f690a85da0b6c5eb",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_doctor_profile.py": {
+    "mtime": 1786115365.1625712,
+    "ast_hash": "0588b6ffca2d57afce265a2f05c2eaa6",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_doctor_secretaria.py": {
+    "mtime": 1784235214.8432505,
+    "ast_hash": "6a5226047335e77dd97ac55ffd668f2a",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_impersonation.py": {
+    "mtime": 1786115377.5458076,
+    "ast_hash": "e182a2ea1e938a1c163114c632f4897d",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_launch_waitlist.py": {
+    "mtime": 1785611453.833534,
+    "ast_hash": "df836c1e7ad0e81663af67bf416d148f",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_message_channels.py": {
+    "mtime": 1788836948.3510585,
+    "ast_hash": "a6d486e51d74ea958cda6e682178902c",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_onboarding.py": {
+    "mtime": 1784353300.9063294,
+    "ast_hash": "99464a3b32462f2f213765e1cf1af078",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_onboarding_endpoints.py": {
+    "mtime": 1786321034.4751923,
+    "ast_hash": "00bca44b6f60c947e9854483905b3579",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_password_reset.py": {
+    "mtime": 1786753798.2153292,
+    "ast_hash": "454756d0b80fb3830d934af3966d9056",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_precheck_billing.py": {
+    "mtime": 1785611168.824327,
+    "ast_hash": "7fcd978bcdf22d68748f4d57c98ebc94",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_precheck_handoff.py": {
+    "mtime": 1787780917.4247074,
+    "ast_hash": "32f8a7599cd19de5bd7f2107ccddff6a",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_precheck_provisioning_bridge.py": {
+    "mtime": 1787698625.2898004,
+    "ast_hash": "7f39b312fae69e7e5f7a323bb6d1b827",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_privacy.py": {
+    "mtime": 1784235214.8432505,
+    "ast_hash": "5e54f7a452b3ee8293016eb9249f9e50",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_professional_emails.py": {
+    "mtime": 1787014677.9596279,
+    "ast_hash": "b1587a2b588330812c82d6f92b6d9aa8",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_rbac.py": {
+    "mtime": 1786115314.2547202,
+    "ast_hash": "e7596da52ce24c819ea5e7ad9c5fea73",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_refresh_cookie.py": {
+    "mtime": 1788231884.272707,
+    "ast_hash": "430fa29f0e55850ca833c1a4fccbe25b",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_secretary_role.py": {
+    "mtime": 1786743227.0245886,
+    "ast_hash": "72874159a236a1b67d2cd93912a3c9e8",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_signup.py": {
+    "mtime": 1786115369.759114,
+    "ast_hash": "369d6ded2ce7755e31e8fa269c7676a6",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_smoke.py": {
+    "mtime": 1782228452.9424968,
+    "ast_hash": "211bd276323acd0772bbddbc0404bf81",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_test_window.py": {
+    "mtime": 1784770211.301741,
+    "ast_hash": "5b018c9b03730425364f57324042a324",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_trial_por_plano.py": {
+    "mtime": 1787698625.2898004,
+    "ast_hash": "bbc2308f87d4e5a05c64709e60012061",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_usage_events.py": {
+    "mtime": 1784235214.8432505,
+    "ast_hash": "1fe56caae367fd44878abd3bb008fd60",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\__init__.py": {
+    "mtime": 1781828254.6407604,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\CLAUDE.md": {
+    "mtime": 1788837785.469193,
+    "ast_hash": "c9ac9b72509e5cc96f15a2e4b14ca981",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\CONTRACTS.md": {
+    "mtime": 1788837579.4541736,
+    "ast_hash": "72040db63039e827cf083496b4796793",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docker-compose.yml": {
+    "mtime": 1781827595.2388465,
+    "ast_hash": "07a7b668a227c6011dca7ccb03ef91d5",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\README.md": {
+    "mtime": 1786117946.515607,
+    "ast_hash": "5693f8ccaf6e7531816e680f4eaa2e29",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_brain_message_canal.md": {
+    "mtime": 1788837776.102832,
+    "ast_hash": "88ca13466ef33d196d96f62a1da594d1",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_coexistence.md": {
+    "mtime": 1786322459.032279,
+    "ast_hash": "3b2ff1c53133388d7c43259ba4065964",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_launch_waitlist.md": {
+    "mtime": 1785612815.613465,
+    "ast_hash": "42bb4467d0ec2f4369d0c6420c8c1ea0",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_meu_perfil.md": {
+    "mtime": 1785553902.1742063,
+    "ast_hash": "16327ef3cccc9e993d69cc8d7122cbee",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_onboarding_multiprofessional.md": {
+    "mtime": 1786322472.000401,
+    "ast_hash": "61f66db3a385f01fb9fd92ed44957ff0",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_password_reset.md": {
+    "mtime": 1786754274.7435553,
+    "ast_hash": "c53c25c275ca8998b76308fca89ccd1b",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_precheck_billing.md": {
+    "mtime": 1785611911.897946,
+    "ast_hash": "fd552ef30e3ec70f8fe3af32535a0d4d",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_precheck_handoff_context.md": {
+    "mtime": 1787787786.4846907,
+    "ast_hash": "f13f4cf790827980c91982b537aeccce",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_refresh_cookie.md": {
+    "mtime": 1788234433.408748,
+    "ast_hash": "c1da4c3a62214c3edfa56c9ff9f391ca",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_register_at_first_card.md": {
+    "mtime": 1785612938.3183143,
+    "ast_hash": "16073e525e1cf53d1f4d0e02d22b8eca",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_role_taxonomy_admin_tabs.md": {
+    "mtime": 1786118019.7385962,
+    "ast_hash": "894e7f9eab8a07a3569678a51891c629",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_secretary_role.md": {
+    "mtime": 1786745651.8405313,
+    "ast_hash": "99ba1dcbcf98d299667518de881f284c",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_test_window.md": {
+    "mtime": 1785210000.053833,
+    "ast_hash": "ad0c56af085f86fb14b6c405cd7091e9",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\cross-db-erasure.md": {
+    "mtime": 1784235214.6629224,
+    "ast_hash": "a5dae41c1901b8c9b4779e48483c7846",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\GUIA_CREDENCIAIS_META_EMBEDDED_SIGNUP.md": {
+    "mtime": 1786322424.480018,
+    "ast_hash": "5869a05a6386cf55c9f5f4975cc56580",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\key-rotation.md": {
+    "mtime": 1784235214.6629224,
+    "ast_hash": "18f207fc266eeae4065e5b00e7cc0c27",
+    "semantic_hash": ""
   }
 }

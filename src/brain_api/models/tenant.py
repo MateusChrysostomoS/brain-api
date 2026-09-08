@@ -89,6 +89,29 @@ class Tenant(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # --- Delivery channels (migration 0017_message_channels) ---------------------------
+    # HOW this clinic talks to its patients, not WHAT it bought: a channel is an
+    # operational property of the TENANT, never of the plan (`services/catalog.py`'s
+    # `PlanDef` is deliberately untouched — a clinic switches channel without switching
+    # plan).
+    #
+    # Two booleans, not one enum: they mirror `Entitlement.precheck_enabled` /
+    # `secretaria_enabled`, which already model "which ones" as a SET rather than an
+    # exclusive choice. A clinic plausibly migrates gradually (keeps WhatsApp for its
+    # existing patients, offers Brain-Message to the new ones); a single enum would force
+    # an all-or-nothing cutover that does not match the real case.
+    #
+    # 0017 backfilled `whatsapp_enabled` for every tenant with a stamped `connected_at` —
+    # the only signal available in this repo that a WABA was actually connected
+    # (`services/onboarding.py::record_attempt` stamps it on a 'pass' attempt). No new
+    # tenant is born with a channel on; whoever provisions the channel turns it on.
+    whatsapp_enabled: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("false"), default=False
+    )
+    brain_message_enabled: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("false"), default=False
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

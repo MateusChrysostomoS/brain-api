@@ -15,7 +15,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.models import Entitlement, Tenant
-from brain_api.schemas.entitlement import EntitlementOut, ProductsOut
+from brain_api.schemas.entitlement import ChannelsOut, EntitlementOut, ProductsOut
 from brain_api.services import catalog
 
 #: Subscription states under which any gate may pass (mirrors `check_quota`).
@@ -76,11 +76,19 @@ async def resolve_entitlement(session: AsyncSession, tenant_id: UUID) -> Entitle
       tenant; the portal must always render a coherent state.
     - Tenant row missing (shouldn't happen for a valid token) -> `clinic_name=""` rather
       than crashing.
+    - `channels` comes from the TENANT row, not the entitlement one: a delivery channel is
+      operational (how the clinic talks to patients), not commercial (what it bought). A
+      tenant with no entitlement row still reports its real channels; a missing tenant row
+      degrades to both-off, the same fail-closed default a fresh tenant gets.
     """
     tenant = await session.get(Tenant, tenant_id)
     ent = await session.get(Entitlement, tenant_id)
 
     clinic_name = tenant.clinic_name if tenant is not None else ""
+    channels = ChannelsOut(
+        whatsapp=tenant.whatsapp_enabled if tenant is not None else False,
+        brain_message=tenant.brain_message_enabled if tenant is not None else False,
+    )
 
     if ent is None:
         # Default state for a tenant with no entitlement row yet.
@@ -88,6 +96,7 @@ async def resolve_entitlement(session: AsyncSession, tenant_id: UUID) -> Entitle
             tenant_id=tenant_id,
             clinic_name=clinic_name,
             products=ProductsOut(precheck=False, secretaria=False),
+            channels=channels,
             plan=catalog.PLAN_FREE,
             secretaria_tier=None,
             status="inactive",
@@ -109,6 +118,7 @@ async def resolve_entitlement(session: AsyncSession, tenant_id: UUID) -> Entitle
             precheck=ent.precheck_enabled,
             secretaria=ent.secretaria_enabled,
         ),
+        channels=channels,
         plan=ent.plan,
         secretaria_tier=catalog.plan_tier(ent.plan),
         status=ent.status,

@@ -24,8 +24,27 @@ class ProductsOut(BaseModel):
     secretaria: bool
 
 
+class ChannelsOut(BaseModel):
+    """Per-channel delivery flags (CONTRACTS.md §3.1 `channels`).
+
+    `whatsapp` <- tenants.whatsapp_enabled, `brain_message` <- tenants.brain_message_enabled.
+
+    Deliberately shaped like `ProductsOut` (a set of independent bools, not an exclusive
+    enum) and deliberately sourced from `tenants`, not `entitlements`/`catalog`: a channel
+    is HOW the clinic talks to patients, an operational property of the tenant, while a
+    plan is WHAT it bought. Both can be on during a gradual migration off WhatsApp.
+    """
+
+    whatsapp: bool
+    brain_message: bool
+
+
 class EntitlementOut(BaseModel):
     """`GET /entitlements` payload — resolved entitlement state for one tenant.
+
+    `channels` is the tenant's delivery channels (`tenants.whatsapp_enabled` /
+    `brain_message_enabled`) — additive, and the reason it lives here rather than in a
+    second call is that the portal already reads this payload to decide what to render.
 
     `addons` / `limits` carry the FULL formalized keysets from `services/catalog.py`
     (every add-on id -> bool; every limit key -> int), normalized through the catalog so
@@ -40,6 +59,7 @@ class EntitlementOut(BaseModel):
     tenant_id: UUID
     clinic_name: str
     products: ProductsOut
+    channels: ChannelsOut
     plan: str
     secretaria_tier: str | None = None
     status: str

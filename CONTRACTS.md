@@ -326,6 +326,7 @@ the token's `tenant_id` (never from a client-supplied id).
   "tenant_id": "2b9a…uuid",
   "clinic_name": "Consultório Dr. Aurélio Lima",
   "products": { "precheck": true, "secretaria": true },
+  "channels": { "whatsapp": true, "brain_message": false },
   "plan": "complete_clinic_combo",
   "secretaria_tier": "basico",
   "status": "active",
@@ -345,6 +346,8 @@ the token's `tenant_id` (never from a client-supplied id).
 | `clinic_name` | string | from `tenants.clinic_name` |
 | `products.precheck` | bool | `entitlements.precheck_enabled` |
 | `products.secretaria` | bool | `entitlements.secretaria_enabled` |
+| `channels.whatsapp` | bool | `tenants.whatsapp_enabled` |
+| `channels.brain_message` | bool | `tenants.brain_message_enabled` |
 | `plan` | string | a **catalog plan id** (§3.2); legacy rows may still carry an alias (e.g. `"brain-completo"`) |
 | `secretaria_tier` | string \| null | derived from the plan via the catalog: `basico` \| null |
 | `addons` | object | the **full formalized keyset** (§3.2): every add-on id → bool. Normalized through the catalog, so pre-catalog rows still read complete |
@@ -357,6 +360,13 @@ the token's `tenant_id` (never from a client-supplied id).
   `false`, `plan: "free"`, `status: "inactive"`, `addons`/`limits` full keysets all
   false/zero, `usage: {}`. (Never 404 for a valid tenant — the portal must always render
   a coherent state.)
+- `channels` is read from the **`tenants`** row, not `entitlements` and not the catalog: a
+  delivery channel is *how* the clinic talks to patients (operational, tenant-owned),
+  while a plan is *what* it bought. It is therefore correct even in the default branch
+  above — a tenant with no entitlement row can still be live on WhatsApp. Two independent
+  booleans, not an exclusive enum (`0017_message_channels`): a clinic migrating off
+  WhatsApp is legitimately on **both** at once. A missing `tenants` row degrades to both
+  `false`, matching the `clinic_name: ""` rule.
 - `addons`/`limits` are normalized through the catalog on read: catalog defaults for the
   row's plan, with whatever the row materialized layered on top. Product flags are the
   row's own columns (they can diverge from the plan via an explicit admin override).

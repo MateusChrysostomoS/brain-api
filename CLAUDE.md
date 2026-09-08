@@ -17,6 +17,22 @@ errado; documentar depois garante que o doc descreve o que realmente está no ar
 - Cite âncoras estáveis (nome de função/módulo), não números de linha frágeis, quando possível.
 - Mantenha o `CHECKPOINT_*` da feature em dia até ela ser 100% concluída/encerrada; aí vira histórico.
 
+## Prompts pendentes
+
+- `z_prompts/PROMPT_BRAIN_MESSAGE_CANAL_ENTITLEMENT.md`,
+  `..._OTP_SWITCHBOARD.md` (raiz de BRAIN, convenção compartilhada, gerados 2026-09-07) —
+  trazem secretarIA e PreCheck pra funcionar também pelo canal Brain-Message: campo de canal
+  (`whatsapp`/`brain_message`) no Tenant/EntitlementOut, e o switchboard de acesso do
+  paciente por OTP e-mail (decisão já tomada com o dono) que roteia pra secretarIA e/ou
+  PreCheck pela malha `/internal` existente. Parte de um conjunto de 10 prompts cross-repo —
+  o segundo depende do primeiro e dos endpoints internos criados em secretarIA e PreCheck
+  (`PROMPT_BRAIN_MESSAGE_SECRETARIA_PIPELINE_CANAL.md`,
+  `PROMPT_BRAIN_MESSAGE_PRECHECK_CONDUTOR.md`).
+  **`..._CANAL_ENTITLEMENT.md` EXECUTADO em 2026-09-08** (canal no `Tenant` +
+  `EntitlementOut.channels`, migração `0017_message_channels`) — estado, provas e as
+  4 decisões tomadas sem consulta estão em `docs/CHECKPOINT_brain_message_canal.md`.
+  `..._OTP_SWITCHBOARD.md` continua PENDENTE.
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.

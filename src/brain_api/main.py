@@ -21,6 +21,7 @@ from brain_api.api import (
     internal,
     internal_precheck,
     onboarding,
+    patient_access,
     privacy,
     public_signup,
     public_waitlist,
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
     app.include_router(doctor.router, tags=["doctor"])
     app.include_router(onboarding.router, tags=["doctor", "onboarding"])
     app.include_router(billing.router, tags=["billing"])
+    app.include_router(patient_access.router)
     app.include_router(internal.router)
     app.include_router(internal_precheck.router)
     return app

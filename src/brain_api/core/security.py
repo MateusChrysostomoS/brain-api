@@ -184,3 +184,57 @@ def hash_refresh_token(raw: str) -> str:
     """SHA-256 hex for storage/lookup. Fast is fine: the input is 64 random bytes
     (not a guessable password), so bcrypt-style stretching adds nothing here."""
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+# --- Patient session token (purpose-scoped; a PATIENT, never a staff user) -------------
+
+# Purpose scope carried by the Brain-Message patient session token. Like HUB_TOKEN_SCOPE
+# above, its load-bearing property is what it does to `api/deps.py::get_current_principal`:
+# that dependency rejects ANY token carrying a `scope` claim outright, so a patient token
+# is structurally incapable of authenticating a staff route — it fails the staff gate
+# before role, tenant or ownership is even looked at. This is the auth-jwt-multitenant
+# boundary the whole vertical rests on, and it is worth stating twice: the internal
+# service key (`X-Internal-Api-Key` / `X-Internal-Token`) is a SERVICE-PAIR secret and must
+# never authenticate an end user, staff or patient; a browser reaching brain-api presents
+# THIS instead.
+PATIENT_TOKEN_SCOPE = "patient_message"
+
+
+def create_patient_token(*, tenant_id: str, patient_ref: str) -> str:
+    """Mint the short-lived access token for one Brain-Message patient session.
+
+    The claims are the entire authority the patient has: WHICH clinic (`tenant_id`) and
+    WHICH patient (`sub`). There is no role, no professional id and no ownership claim —
+    a patient has none of those, and omitting them means a future gate that reads one
+    cannot accidentally read a default off a patient token.
+
+    `sub` is `MessagePatient.id` as a string, the same handle secretarIA and PreCheck
+    receive. Nothing derived from the e-mail is in the token: the address is personal
+    data, and a JWT is base64, not encryption — anyone holding the token could read it.
+    """
+    settings = get_settings()
+    now = datetime.now(UTC)
+    claims: dict[str, Any] = {
+        "sub": patient_ref,
+        "tenant_id": tenant_id,
+        "scope": PATIENT_TOKEN_SCOPE,
+        "iat": now,
+        "exp": now + timedelta(minutes=settings.PATIENT_TOKEN_EXPIRE_MINUTES),
+    }
+    return jwt.encode(claims, settings.SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_patient_token(token: str) -> dict[str, Any] | None:
+    """Validate a patient token: signature/expiry via `decode_token` + the EXACT scope.
+
+    Returns None for a staff JWT, for a hub token, and for anything forged or expired —
+    fail closed. The scope equality is what stops the three token populations from
+    crossing surfaces in either direction: a doctor's token has no `scope` and is
+    rejected here, exactly as a patient's is rejected by `get_current_principal`.
+    """
+    claims = decode_token(token)
+    if claims is None or claims.get("scope") != PATIENT_TOKEN_SCOPE:
+        return None
+    if not claims.get("sub") or not claims.get("tenant_id"):
+        return None
+    return claims

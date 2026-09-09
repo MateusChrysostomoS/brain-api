@@ -310,6 +310,43 @@ class Settings(BaseSettings):
     # accounts in both products sees the same window.
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
 
+    # --- Brain-Message patient access (OTP by e-mail + the patient session) ---
+    # The patient's end of the second channel. A patient is NOT a `users` row: they prove
+    # an e-mail with a short code and get a purpose-scoped session
+    # (core/security.py PATIENT_TOKEN_SCOPE) that can reach exactly one tenant.
+    #
+    # Access-token lifetime, mirroring ACCESS_TOKEN_EXPIRE_MINUTES: the short leg is
+    # unrevocable, so it stays short and the cookie-backed row below is what a logout
+    # kills.
+    PATIENT_TOKEN_EXPIRE_MINUTES: int = 30
+    # Lifetime of the revocable leg (the `__Host-patient_session` cookie + its
+    # `message_patient_sessions` row). Longer than a doctor's would be justified for a
+    # phone the patient owns, but 30 days already means re-proving the e-mail only
+    # monthly; anything longer starts to outlive the reason the patient logged in.
+    PATIENT_SESSION_EXPIRE_DAYS: int = 30
+    # Digits in the emailed code. Six is the ceiling of what a patient will retype from
+    # a phone; the brute-force budget it implies is spent by PATIENT_OTP_MAX_ATTEMPTS
+    # below, NOT by the code length.
+    PATIENT_OTP_LENGTH: int = 6
+    # How long a code stays good. Short on purpose ("expira em poucos minutos"): the
+    # whole window in which an intercepted e-mail is worth anything.
+    PATIENT_OTP_EXPIRE_MINUTES: int = 10
+    # Wrong guesses one challenge tolerates before it is burned. This is the real
+    # anti-brute-force ceiling for a 6-digit code, and it is deliberately independent of
+    # the per-IP limiter, which an attacker with many IPs would otherwise walk around.
+    PATIENT_OTP_MAX_ATTEMPTS: int = 5
+    # Per-IP budget for POST /patient-access/request-otp, matching the demo/waitlist
+    # capture limiters (the other two unauthenticated routes that send e-mail).
+    PATIENT_OTP_RATE_LIMIT_PER_MIN: int = 5
+    # Per-ADDRESS budget for the same route, on its own bucket. The per-IP one protects
+    # the service; this one protects the human whose inbox an attacker would otherwise
+    # flood from a botnet, which is the abuse case a per-IP limiter cannot see.
+    PATIENT_OTP_EMAIL_RATE_LIMIT_PER_MIN: int = 3
+    # Per-IP budget for POST /patient-access/verify-otp. Separate bucket from request-otp:
+    # a client legitimately requests once and verifies once, and sharing a bucket would
+    # let a burst of requests lock a patient out of finishing their own login.
+    PATIENT_VERIFY_RATE_LIMIT_PER_MIN: int = 10
+
     @property
     def cors_origins(self) -> list[str]:
         """Parse CORS_ALLOW_ORIGINS into a clean list of origins.

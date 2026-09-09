@@ -7,6 +7,12 @@ autogenerate and the migrations env rely on.
 from brain_api.models.courtesy_coupon import CourtesyCoupon
 from brain_api.models.demo_request import DemoRequest
 from brain_api.models.entitlement import Entitlement
+from brain_api.models.patient_access import (
+    MessagePatient,
+    MessagePatientOtp,
+    MessagePatientSession,
+    PatientConsentEvent,
+)
 from brain_api.models.precheck_link import PrecheckAccountLink
 from brain_api.models.precheck_topup_credit import PrecheckTopupCredit
 from brain_api.models.privacy_request import PrivacyRequest
@@ -23,6 +29,10 @@ __all__ = [
     "CourtesyCoupon",
     "DemoRequest",
     "Entitlement",
+    "MessagePatient",
+    "MessagePatientOtp",
+    "MessagePatientSession",
+    "PatientConsentEvent",
     "PrecheckAccountLink",
     "PrecheckTopupCredit",
     "PrivacyRequest",

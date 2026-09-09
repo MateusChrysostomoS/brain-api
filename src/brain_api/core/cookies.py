@@ -133,3 +133,59 @@ def require_client_header(request: Request) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="missing_client_header",
         )
+
+
+# --- The patient session cookie (Brain-Message) ---------------------------------------
+#
+# The same three attributes, for the same three reasons, on a SECOND cookie: the patient
+# portal and the staff portal are different sessions, and a patient must never inherit —
+# or overwrite — a doctor's. A distinct NAME is what keeps them apart in one browser
+# where a clinic employee is also a patient of the clinic next door.
+#
+# `__Host-` mandates `Path=/`, so the two cookies are both sent to every path of this
+# host; the routes each one guards read only their own name, and a patient token failing
+# `get_current_principal`'s scope check (and vice versa) is the real separation.
+
+PATIENT_SESSION_COOKIE_NAME = "__Host-patient_session"
+
+
+def set_patient_session_cookie(response: Response, raw_token: str) -> None:
+    """Attach the patient's opaque session token as the hardened cookie.
+
+    Lifetime follows the server-side row (`PATIENT_SESSION_EXPIRE_DAYS`), so the browser
+    stops sending it at roughly the moment the DB would refuse it anyway.
+
+    Deliberately NOT gated on `REFRESH_COOKIE_PERSISTENT`: that setting exists so a clinic
+    can make a shared reception-desk machine forget a DOCTOR's session when the browser
+    closes. A patient is on their own phone, and being logged out of the clinic chat on
+    every app switch is the failure mode this channel exists to avoid.
+    """
+    settings = get_settings()
+    response.set_cookie(
+        key=PATIENT_SESSION_COOKIE_NAME,
+        value=raw_token,
+        max_age=settings.PATIENT_SESSION_EXPIRE_DAYS * _SECONDS_PER_DAY,
+        path="/",  # mandated by the __Host- prefix
+        domain=None,  # ditto — host-locked, never sent to a sibling
+        secure=True,  # ditto
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def clear_patient_session_cookie(response: Response) -> None:
+    """Expire the patient cookie in the browser. Attributes MUST match the set."""
+    response.delete_cookie(
+        key=PATIENT_SESSION_COOKIE_NAME,
+        path="/",
+        domain=None,
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def read_patient_session_cookie(request: Request) -> str | None:
+    """The patient session token the browser sent, or None. Never logged by callers."""
+    value = request.cookies.get(PATIENT_SESSION_COOKIE_NAME)
+    return value or None

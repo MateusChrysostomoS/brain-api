@@ -31,7 +31,13 @@ errado; documentar depois garante que o doc descreve o que realmente está no ar
   **`..._CANAL_ENTITLEMENT.md` EXECUTADO em 2026-09-08** (canal no `Tenant` +
   `EntitlementOut.channels`, migração `0017_message_channels`) — estado, provas e as
   4 decisões tomadas sem consulta estão em `docs/CHECKPOINT_brain_message_canal.md`.
-  `..._OTP_SWITCHBOARD.md` continua PENDENTE.
+  **`..._OTP_SWITCHBOARD.md` EXECUTADO em 2026-09-08, COMMITADO** (`795cc26`, `/patient-access/*`
+  + migração `0018_patient_access`) — a migração não estava aplicada em produção (500 em
+  `request-otp`), corrigido 2026-09-09 via `alembic upgrade head` manual no console EasyPanel.
+  `z_prompts/PROMPT_BRAIN_MESSAGE_E2E_QA_PRODUCAO.md` (raiz de BRAIN, gerado 2026-09-09) é o
+  roteiro de QA ao vivo pra essa cadeia inteira (staff + portal do paciente), com um bug ainda
+  não corrigido: e-mail do OTP nunca chega porque a secretarIA não tem o template
+  `patient_access_otp` cadastrado.
 
 ## graphify
 

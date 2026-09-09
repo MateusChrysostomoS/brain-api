@@ -200,4 +200,14 @@ async def send_notification_email(to: str, template: str, variables: dict[str, A
         "/internal/notifications/email",
         json={"to": to, "template": template, "variables": variables},
     )
+    if resp is not None and resp.status_code >= 400:
+        # The `None` paths already log inside `_request`; this one did not, and that is
+        # how a refused send stayed invisible on BOTH sides of the mesh. Template and
+        # status only — never `to` (PII) and never `variables`, which on the patient-login
+        # path carries the one-time `code` itself.
+        logger.warning(
+            "secretaria_notification_email_refused",
+            template=template,
+            upstream_status=resp.status_code,
+        )
     return resp is not None and resp.status_code < 400

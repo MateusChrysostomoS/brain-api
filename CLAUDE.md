@@ -38,6 +38,13 @@ errado; documentar depois garante que o doc descreve o que realmente está no ar
   roteiro de QA ao vivo pra essa cadeia inteira (staff + portal do paciente), com um bug ainda
   não corrigido: e-mail do OTP nunca chega porque a secretarIA não tem o template
   `patient_access_otp` cadastrado.
+- `z_prompts/PROMPT_BRAIN_MESSAGE_PORTAL_INTERACTIVE_TAP.md` (raiz de BRAIN, gerado 2026-09-11,
+  com autorização explícita do dono pra tocar este repo) — toque real em botões/listas no Portal
+  do paciente (`/conversa`), continuação de `PROMPT_BRAIN_MESSAGE_INTERACTIVE_BUBBLES_RENDERING.md`
+  (que só cobriu o console de staff). `PatientMessageIn` (`schemas/patient_access.py`,
+  `extra="forbid"`) e `message_switchboard.py::send_message` ganham um campo novo
+  (`interactive_reply_id`) só no ramo secretarIA — PreCheck fica intocado. **NÃO EXECUTADO
+  ainda.** Confirmar com o dono antes de qualquer deploy real aqui (ver §0 do prompt).
 
 ## graphify
 

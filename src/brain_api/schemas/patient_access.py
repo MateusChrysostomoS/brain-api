@@ -80,6 +80,14 @@ class PatientMessageIn(BaseModel):
     # rejected here with a clear 422 instead of upstream with an opaque one.
     text: str = Field(min_length=1, max_length=4000)
     patient_name: str | None = Field(default=None, max_length=200)
+    # The id of the reply button / list row the patient tapped in the portal, when `text`
+    # is that control's title. Relayed to secretarIA ONLY (PreCheck's inbound model is
+    # `extra="forbid"` and has no such field - services/message_switchboard.py drops it
+    # on that leg). Never trusted here or there: secretarIA checks it against the options
+    # its own recent cards offered on that conversation and routes an unknown id as
+    # plain text. 256 is the longest id a card can carry (a reply button's cap; list rows
+    # cap at 200), the same bound secretarIA's schema enforces.
+    interactive_reply_id: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class MessageOut(BaseModel):

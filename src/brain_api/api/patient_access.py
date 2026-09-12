@@ -318,6 +318,7 @@ async def send_thread_message(
         patient_ref=str(patient.id),
         text=payload.text,
         patient_name=payload.patient_name,
+        interactive_reply_id=payload.interactive_reply_id,
     )
     logger.info(
         "patient_message_relayed",

@@ -181,6 +181,7 @@ async def send_message(
     patient_ref: str,
     text: str,
     patient_name: str | None = None,
+    interactive_reply_id: str | None = None,
 ) -> dict[str, Any]:
     """Relay one patient message to `product`'s inbound endpoint.
 
@@ -199,6 +200,11 @@ async def send_message(
     `tenant_id` and `patient_ref` come from the validated session, never from the request
     body. That is the whole tenant-isolation argument for this hop: a patient cannot name
     a clinic or a patient handle, so there is nothing to tamper with.
+
+    `interactive_reply_id` (a tap on a reply button / list row) rides only on the
+    secretarIA leg: it is the one product whose inbound contract knows the field, and
+    sending it to PreCheck would be the exact stray-key 422 described above. PreCheck's
+    questionnaire accepts the option's label as `text`, which the client sends either way.
     """
     if product == PRODUCT_SECRETARIA:
         body: dict[str, Any] = {
@@ -208,6 +214,8 @@ async def send_message(
         }
         if patient_name:
             body["patient_name"] = patient_name
+        if interactive_reply_id:
+            body["interactive_reply_id"] = interactive_reply_id
         return await _call(product, "POST", "/internal/brain-message/inbound", json=body)
 
     body = {

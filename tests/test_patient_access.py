@@ -23,6 +23,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
@@ -599,6 +600,85 @@ async def test_send_to_precheck_uses_its_own_token_and_field_name(pclient, monke
     assert "X-Internal-Api-Key" not in call["headers"]
     assert set(call["json"]) == {"tenant_id", "session_ref", "text", "patient_name"}
     assert call["json"]["session_ref"] == body["patient_ref"]
+
+
+TAP_ID = "prof|8faa12e1-0000-0000-0000-000000000001"
+
+
+async def test_a_portal_tap_reaches_secretaria_with_its_id(pclient, monkeypatch):
+    """A tap on a reply button / list row: the label as `text`, the id beside it.
+
+    secretarIA is the product that knows the field (and validates it against the cards it
+    offered); brain-api only carries it. Without the field the body is byte-for-byte what
+    it was before the field existed - a client built against the older contract changes
+    nothing on the wire.
+    """
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    calls = _spy_transport(monkeypatch, payload={"status": "queued"})
+    body = (await _login(client, sessionmaker, seed.both)).json()
+
+    resp = await client.post(
+        "/patient-access/threads/secretaria/messages",
+        headers=_bearer(body["access_token"]),
+        json={"text": "Dra. Ana", "interactive_reply_id": TAP_ID},
+    )
+    assert resp.status_code == 200, resp.text
+    assert calls[0]["json"] == {
+        "tenant_id": str(seed.both),
+        "external_id": body["patient_ref"],
+        "text": "Dra. Ana",
+        "interactive_reply_id": TAP_ID,
+    }
+
+    resp = await client.post(
+        "/patient-access/threads/secretaria/messages",
+        headers=_bearer(body["access_token"]),
+        json={"text": "oi"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "interactive_reply_id" not in calls[1]["json"]
+
+
+async def test_a_portal_tap_never_reaches_precheck(pclient, monkeypatch):
+    """PreCheck's inbound model is `extra="forbid"` and has no such field: the id is
+    dropped on that leg, and the label still goes as `text` (what its flow accepts)."""
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    calls = _spy_transport(monkeypatch, payload={"session_ref": "x", "status": "question"})
+    body = (await _login(client, sessionmaker, seed.both)).json()
+
+    resp = await client.post(
+        "/patient-access/threads/precheck/messages",
+        headers=_bearer(body["access_token"]),
+        json={"text": "Sim", "interactive_reply_id": "buttons|0"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert set(calls[0]["json"]) == {"tenant_id", "session_ref", "text"}
+    assert calls[0]["json"]["text"] == "Sim"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"text": "oi", "interactive_reply_id": ""},
+        {"text": "oi", "interactive_reply_id": "x" * 257},
+        {"text": "oi", "interactive_reply_id": "prof|1", "tenant_id": "other"},
+    ],
+)
+async def test_the_tap_id_is_bounded_and_the_body_stays_closed(pclient, monkeypatch, bad):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    calls = _spy_transport(monkeypatch, payload={"status": "queued"})
+    body = (await _login(client, sessionmaker, seed.both)).json()
+
+    resp = await client.post(
+        "/patient-access/threads/secretaria/messages",
+        headers=_bearer(body["access_token"]),
+        json=bad,
+    )
+    assert resp.status_code == 422, resp.text
+    assert calls == []
 
 
 async def test_poll_relays_to_each_products_own_read_route(pclient, monkeypatch):

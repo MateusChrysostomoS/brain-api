@@ -200,23 +200,42 @@ def hash_refresh_token(raw: str) -> str:
 PATIENT_TOKEN_SCOPE = "patient_message"
 
 
-def create_patient_token(*, tenant_id: str, patient_ref: str) -> str:
+def create_patient_token(
+    *, tenant_id: str, patient_ref: str, session_id: str, login_session_id: str
+) -> str:
     """Mint the short-lived access token for one Brain-Message patient session.
 
-    The claims are the entire authority the patient has: WHICH clinic (`tenant_id`) and
-    WHICH patient (`sub`). There is no role, no professional id and no ownership claim —
-    a patient has none of those, and omitting them means a future gate that reads one
-    cannot accidentally read a default off a patient token.
+    The claims are the entire authority the patient has: WHICH clinic (`tenant_id`),
+    WHICH patient (`sub`) and WHICH server-side session (`sid`). There is no role, no
+    professional id and no ownership claim — a patient has none of those, and omitting
+    them means a future gate that reads one cannot accidentally read a default off a
+    patient token.
 
     `sub` is `MessagePatient.id` as a string, the same handle secretarIA and PreCheck
     receive. Nothing derived from the e-mail is in the token: the address is personal
     data, and a JWT is base64, not encryption — anyone holding the token could read it.
+
+    `sid` is the `message_patient_sessions.id` the token was minted with, and it is what
+    makes a logout real for THIS leg too: `api/patient_access.py::get_current_patient`
+    re-reads that row on every request and refuses the token once the row is revoked
+    (OWASP ASVS 5.0 7.4.1: after logout "the application disallows any further use of
+    the session"). Without it a 30-minute bearer outlives the logout that was meant to
+    end it — and with a multi-clinic account, one logout would leave N of them alive.
+
+    `login_sid` names the session the patient's CODE opened. For that session's own token
+    it equals `sid`; for a clinic linked by confirmation it is the login the link was made
+    from, and `get_current_patient` requires that row to be live too. So ending a login —
+    by either kind of logout — ends every clinic it opened, including a link whose insert
+    raced the logout's revoke. Required, never defaulted to `sid`: a linked token minted
+    without it would silently outlive the login it came from.
     """
     settings = get_settings()
     now = datetime.now(UTC)
     claims: dict[str, Any] = {
         "sub": patient_ref,
         "tenant_id": tenant_id,
+        "sid": session_id,
+        "login_sid": login_session_id,
         "scope": PATIENT_TOKEN_SCOPE,
         "iat": now,
         "exp": now + timedelta(minutes=settings.PATIENT_TOKEN_EXPIRE_MINUTES),
@@ -235,6 +254,10 @@ def decode_patient_token(token: str) -> dict[str, Any] | None:
     claims = decode_token(token)
     if claims is None or claims.get("scope") != PATIENT_TOKEN_SCOPE:
         return None
-    if not claims.get("sub") or not claims.get("tenant_id"):
+    # `sid` and `login_sid` are required, not optional: a token that cannot name its rows
+    # cannot be revoked, and accepting one (say, a pre-`sid` token still inside its 30
+    # minutes at deploy time) would reopen exactly the hole the claims close. Cost: one
+    # re-login.
+    if not all(claims.get(key) for key in ("sub", "tenant_id", "sid", "login_sid")):
         return None
     return claims

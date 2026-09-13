@@ -45,6 +45,24 @@ errado; documentar depois garante que o doc descreve o que realmente está no ar
   `extra="forbid"`) e `message_switchboard.py::send_message` ganham um campo novo
   (`interactive_reply_id`) só no ramo secretarIA — PreCheck fica intocado. **NÃO EXECUTADO
   ainda.** Confirmar com o dono antes de qualquer deploy real aqui (ver §0 do prompt).
+- `z_prompts/PROMPT_BRAIN_MESSAGE_PORTAL_MULTI_CLINICA_CONTA_SEGURA.md` (raiz de BRAIN, gerado
+  2026-09-12 via `/prompt-generator`, com pesquisa de práticas de segurança embutida) — o dono
+  pediu conta única multi-clínica pro paciente (hoje `MessagePatient` isola identidade por
+  `(tenant_id, email)` de propósito, ver o docstring do modelo). Descoberta de clínicas-irmãs
+  por e-mail (`find_sibling_candidates`) + confirmação explícita nomeada (nunca vínculo
+  silencioso por e-mail sozinho, padrão OWASP de account-linking) antes de mintar qualquer
+  sessão nova; logout revoga a conta inteira; nota de risco aceito sobre e-mail OTP não
+  atender NIST SP 800-63B Rev. 4 AAL2. Sem migração. Roda nesta mesma branch
+  (`feature/whatsapp-patient-vision`, decisão do dono em 2026-09-12 — não abrir branch nova
+  aqui). Depende do frontend (`PROMPT_BRAIN_MESSAGE_PORTAL_MULTI_CLINICA_FRONTEND.md`,
+  Brain-Message-Frontend) rodar depois. **EXECUTADO em 2026-09-12, UNCOMMITTED, não
+  deployado** (sem migração): estado, contrato HTTP pro frontend, as decisões tomadas sem
+  consulta — incluindo dois desvios do texto (o JWT do paciente ganhou `sid`/`login_sid`
+  conferidos em `get_current_patient`, e confirmar exige o cookie do próprio login + login
+  recente) —, a revisão de segurança com o tratamento de cada achado e a nota de risco
+  aceito NIST SP 800-63B-4 estão em `docs/CHECKPOINT_conta_unica_multi_clinica.md`. Padrão
+  registrado como skill: `TECH/.claude/skills/cross-tenant-account-linking/`. O `pytest` não
+  precisa de Docker/Postgres local — a suíte usa SQLite em memória (`tests/conftest.py`).
 
 ## graphify
 

@@ -25,12 +25,14 @@ os.environ.setdefault("SIGNUP_RATE_LIMIT_PER_MIN", "0")
 # same route many times from one fake IP); its rate-limit test monkeypatches the limiter
 # instance directly instead of relying on this setting.
 os.environ.setdefault("WAITLIST_RATE_LIMIT_PER_MIN", "0")
-# Same reasoning for the three Brain-Message patient-access buckets
+# Same reasoning for the four Brain-Message patient-access buckets
 # (tests/test_patient_access.py logs a patient in dozens of times from one fake IP and
-# one address); the dedicated rate-limit tests monkeypatch the limiter instances.
+# one address, and confirms sibling clinics many times more); the dedicated rate-limit
+# tests monkeypatch the limiter instances.
 os.environ.setdefault("PATIENT_OTP_RATE_LIMIT_PER_MIN", "0")
 os.environ.setdefault("PATIENT_OTP_EMAIL_RATE_LIMIT_PER_MIN", "0")
 os.environ.setdefault("PATIENT_VERIFY_RATE_LIMIT_PER_MIN", "0")
+os.environ.setdefault("PATIENT_LINK_RATE_LIMIT_PER_MIN", "0")
 
 # Mesh upstreams are UNSET in tests: the proxy / internal-data clients then degrade to an
 # empty page with no network. Force-empty here (real env beats the .env file in

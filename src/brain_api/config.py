@@ -315,9 +315,10 @@ class Settings(BaseSettings):
     # an e-mail with a short code and get a purpose-scoped session
     # (core/security.py PATIENT_TOKEN_SCOPE) that can reach exactly one tenant.
     #
-    # Access-token lifetime, mirroring ACCESS_TOKEN_EXPIRE_MINUTES: the short leg is
-    # unrevocable, so it stays short and the cookie-backed row below is what a logout
-    # kills.
+    # Access-token lifetime, mirroring ACCESS_TOKEN_EXPIRE_MINUTES. The short leg carries
+    # its session row's id (`sid`), so a logout that kills the row kills it too; it stays
+    # short anyway, because a bearer copied out of memory needs no row to be replayed
+    # until the moment that row is revoked.
     PATIENT_TOKEN_EXPIRE_MINUTES: int = 30
     # Lifetime of the revocable leg (the `__Host-patient_session` cookie + its
     # `message_patient_sessions` row). Longer than a doctor's would be justified for a
@@ -346,6 +347,19 @@ class Settings(BaseSettings):
     # a client legitimately requests once and verifies once, and sharing a bucket would
     # let a burst of requests lock a patient out of finishing their own login.
     PATIENT_VERIFY_RATE_LIMIT_PER_MIN: int = 10
+    # Per-ACCOUNT budget (the authenticated address) for
+    # POST /patient-access/siblings/{tenant_id}/confirm, the multi-clinic account.
+    # Authenticated, but it is the route that CREATES a session, so it gets the verify
+    # route's care — on its own bucket, keyed by the account rather than the IP (see
+    # api/patient_access.py `_link_limiter` for why an IP key fails behind the portal proxy).
+    PATIENT_LINK_RATE_LIMIT_PER_MIN: int = 10
+    # How long after the code that opened the login session a sibling clinic can still be
+    # confirmed. Linking changes what one credential reaches, so it is treated as a
+    # sensitive account change that needs a recent proof (OWASP ASVS 5.0 7.5.1). Equal to
+    # PATIENT_TOKEN_EXPIRE_MINUTES today — with no refresh route, every live patient token
+    # is already that fresh — and kept separate so a future refresh route cannot quietly
+    # stretch "prove once" into "link at any time in the next 30 days".
+    PATIENT_LINK_CONFIRM_WINDOW_MINUTES: int = 30
 
     @property
     def cors_origins(self) -> list[str]:

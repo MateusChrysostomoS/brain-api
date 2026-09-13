@@ -19,6 +19,13 @@ errado; documentar depois garante que o doc descreve o que realmente está no ar
 
 ## Prompts pendentes
 
+- `z_prompts/PROMPT_SECRETARIA_CONFIG_PROFISSIONAIS_NAO_CARREGA.md` (raiz de BRAIN, gerado
+  2026-09-12) — bug ao vivo: aba "Profissionais" de `/configuracao` no `secretarIA-frontend`
+  não carrega dados de clínica real nenhum. Duas das pistas levantadas tocam este repo: CORS
+  allowlist (`46b4eb3`, `src/brain_api/config.py`) e a migração `0012_role_taxonomy`
+  (`docs/CHECKPOINT_role_taxonomy_admin_tabs.md`, ainda marcada "NOT yet run in production"
+  em 2026-08-07, sem confirmação mais recente) — nenhuma confirmada ainda, exige reproduzir
+  ao vivo primeiro.
 - `z_prompts/PROMPT_BRAIN_MESSAGE_CANAL_ENTITLEMENT.md`,
   `..._OTP_SWITCHBOARD.md` (raiz de BRAIN, convenção compartilhada, gerados 2026-09-07) —
   trazem secretarIA e PreCheck pra funcionar também pelo canal Brain-Message: campo de canal
@@ -45,6 +52,16 @@ errado; documentar depois garante que o doc descreve o que realmente está no ar
   `extra="forbid"`) e `message_switchboard.py::send_message` ganham um campo novo
   (`interactive_reply_id`) só no ramo secretarIA — PreCheck fica intocado. **NÃO EXECUTADO
   ainda.** Confirmar com o dono antes de qualquer deploy real aqui (ver §0 do prompt).
+- `z_prompts/PROMPT_BRAIN_MESSAGE_PORTAL_MULTI_CLINICA_CONTA_SEGURA.md` (raiz de BRAIN, gerado
+  2026-09-12 via `/prompt-generator`, com pesquisa de práticas de segurança embutida) — o dono
+  pediu conta única multi-clínica pro paciente (hoje `MessagePatient` isola identidade por
+  `(tenant_id, email)` de propósito, ver o docstring do modelo). Descoberta de clínicas-irmãs
+  por e-mail (`find_sibling_candidates`) + confirmação explícita nomeada (nunca vínculo
+  silencioso por e-mail sozinho, padrão OWASP de account-linking) antes de mintar qualquer
+  sessão nova; logout revoga a conta inteira; nota de risco aceito sobre e-mail OTP não
+  atender NIST SP 800-63B Rev. 4 AAL2. Sem migração. Depende do frontend
+  (`PROMPT_BRAIN_MESSAGE_PORTAL_MULTI_CLINICA_FRONTEND.md`, Brain-Message-Frontend) rodar
+  depois. **NÃO EXECUTADO ainda.**
 
 ## graphify
 

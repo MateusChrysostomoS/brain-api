@@ -84,7 +84,16 @@ errado; documentar depois garante que o doc descreve o que realmente está no ar
   derrubar a conta inteira; `session_is_recent`/`created_at` (usado por `confirm_sibling`)
   fica preso aos 30 minutos do login original se a sessão renovar indefinidamente. Depende
   do frontend (`..._FRONTEND.md`, Brain-Message-Frontend) rodar DEPOIS e só contra produção
-  deployada. **NÃO EXECUTADO ainda.**
+  deployada. **EXECUTADO em 2026-09-14, commit `__COMMIT__` — migração
+  `0019_patient_session_rotation` NÃO aplicada em produção, não deployado.** `POST
+  /patient-access/refresh` renova a linha de login IN PLACE (id estável, só o valor gira, teto de
+  90 dias deslizante), reemite as clínicas já vinculadas (`linked_sessions`), aceita o cookie
+  anterior por 60s de graça (compare-and-swap; fora da janela = reuso → conta revogada), e
+  `created_at` NÃO desliza (vincular clínica nova numa sessão antiga segue pedindo código).
+  Estado, contrato HTTP pro frontend, as três escolhas dos riscos e as decisões sem consulta em
+  `docs/CHECKPOINT_patient_session_refresh.md`. Skill `auth-jwt-multitenant` estendida com a
+  seção "The patient population". **Ordem de deploy: `alembic upgrade head` → brain-api → só
+  então o prompt irmão do frontend.**
 
 ## graphify
 

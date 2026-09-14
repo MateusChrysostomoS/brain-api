@@ -320,11 +320,25 @@ class Settings(BaseSettings):
     # short anyway, because a bearer copied out of memory needs no row to be replayed
     # until the moment that row is revoked.
     PATIENT_TOKEN_EXPIRE_MINUTES: int = 30
-    # Lifetime of the revocable leg (the `__Host-patient_session` cookie + its
-    # `message_patient_sessions` row). Longer than a doctor's would be justified for a
-    # phone the patient owns, but 30 days already means re-proving the e-mail only
-    # monthly; anything longer starts to outlive the reason the patient logged in.
-    PATIENT_SESSION_EXPIRE_DAYS: int = 30
+    # CEILING of the revocable leg (the `__Host-patient_session` cookie + its
+    # `message_patient_sessions` row) measured from the LAST renewal, not from the login:
+    # `POST /patient-access/refresh` slides both the row's `expires_at` and the cookie's
+    # `Max-Age` forward by this much every time the portal reopens, so a patient who comes
+    # back with any regularity never meets it. It only bites a phone that stayed away for
+    # this long in a row. 90 days is the owner's decision (2026-09-14, chosen over keeping
+    # 30): the portal has to feel like WhatsApp — open it, you are in — and a monthly code
+    # was the opposite of that. What bounds a stolen cookie is not this number but
+    # rotate-on-use + reuse detection (`services/patient_access.py::rotate_patient_session`)
+    # and the account-wide logout.
+    PATIENT_SESSION_EXPIRE_DAYS: int = 90
+    # After a refresh rotates the cookie, the value it REPLACED keeps working for this many
+    # seconds — answering with a fresh access token but no new cookie. The portal polls
+    # several product threads (and several clinics) at once, so two renewals can be in
+    # flight with the same cookie; the staff client had to add a single-flight lock for
+    # exactly this (`Brain-Message-Frontend/lib/real/brain-session.ts`). Presenting the
+    # replaced value AFTER this window is the reuse/theft signal, and revokes the account.
+    # Short on purpose: it only has to cover requests that were already in flight.
+    PATIENT_SESSION_ROTATION_GRACE_SECONDS: int = 60
     # Digits in the emailed code. Six is the ceiling of what a patient will retype from
     # a phone; the brute-force budget it implies is spent by PATIENT_OTP_MAX_ATTEMPTS
     # below, NOT by the code length.
@@ -353,12 +367,15 @@ class Settings(BaseSettings):
     # route's care — on its own bucket, keyed by the account rather than the IP (see
     # api/patient_access.py `_link_limiter` for why an IP key fails behind the portal proxy).
     PATIENT_LINK_RATE_LIMIT_PER_MIN: int = 10
-    # How long after the code that opened the login session a sibling clinic can still be
-    # confirmed. Linking changes what one credential reaches, so it is treated as a
-    # sensitive account change that needs a recent proof (OWASP ASVS 5.0 7.5.1). Equal to
-    # PATIENT_TOKEN_EXPIRE_MINUTES today — with no refresh route, every live patient token
-    # is already that fresh — and kept separate so a future refresh route cannot quietly
-    # stretch "prove once" into "link at any time in the next 30 days".
+    # How long after the CODE that opened the login session a sibling clinic can still be
+    # confirmed for the FIRST time. Linking changes what one credential reaches, so it is
+    # treated as a sensitive account change that needs a recent proof (OWASP ASVS 5.0
+    # 7.5.1). Measured from the row's `created_at` — the moment of the code — and NOT
+    # slid by `POST /patient-access/refresh`, on purpose: a refresh proves possession of
+    # a cookie, not of the inbox, and this window is what keeps "prove once" from becoming
+    # "link at any time in the next 90 days". A clinic ALREADY linked is a different case
+    # and needs no window: the refresh reopens it on the strength of the recorded consent
+    # (`PatientRefreshOut.linked_sessions`). Equal to PATIENT_TOKEN_EXPIRE_MINUTES today.
     PATIENT_LINK_CONFIRM_WINDOW_MINUTES: int = 30
 
     @property

@@ -156,6 +156,12 @@ class MessagePatientSession(Base):
     stays the login session's — so for that session the row is purely the revocation
     handle its JWT's `sid` points at.
 
+    A login's row is RENEWED IN PLACE (2026-09-14, `POST /patient-access/refresh`): the
+    opaque value rotates and `expires_at` slides, but `id` never changes, because that id
+    is what every token of the account — the login's `sid`, each linked clinic's
+    `login_sid` — is bound to. The staff `refresh_tokens` table rotates by inserting a
+    successor row; here that would be a silent logout of every linked clinic.
+
     `tenant_id` is denormalized off the patient on purpose: every lookup in this vertical
     is "this session, for this tenant", and carrying the scope on the row means the
     tenant check sits in the same SQL as the token check rather than in a second
@@ -172,8 +178,22 @@ class MessagePatientSession(Base):
         ForeignKey("tenants.id", ondelete="CASCADE"), index=True, nullable=False
     )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    # The hash the LAST refresh replaced, and when. A login's row keeps its `id` across
+    # renewals — every access token and every linked clinic's token names it by `sid` /
+    # `login_sid`, so a new row per refresh would sign the patient out of everything
+    # (`services/patient_access.py::rotate_patient_session`). Only the VALUE rotates, and
+    # the previous one stays answerable for `PATIENT_SESSION_ROTATION_GRACE_SECONDS` so
+    # two renewals in flight with the same cookie are not mistaken for theft. NULL until
+    # the first refresh; a row that was never presented as a cookie (a linked clinic's)
+    # never fills it.
+    previous_token_hash: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Slid forward by each refresh (a login's row) — never for a linked clinic's row, which
+    # lives exactly as long as the one JWT that names it.
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The moment of the CODE. Deliberately untouched by a refresh: `session_is_recent`
+    # reads it to decide whether a FIRST link to another clinic still has a fresh proof.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

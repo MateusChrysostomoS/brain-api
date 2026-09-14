@@ -29,6 +29,7 @@ The three things this module owns, and the rule each one follows:
 """
 
 import secrets
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -322,8 +323,170 @@ async def find_live_session(
 
 
 def session_is_recent(row: MessagePatientSession, minutes: int) -> bool:
-    """True while `row` — opened by a verified code — is younger than `minutes`."""
+    """True while `row` — opened by a verified code — is younger than `minutes`.
+
+    Measures `created_at`, the moment of the CODE, and a refresh never moves it
+    (`rotate_patient_session`). So on a long, renewed session this goes false and stays
+    false: confirming a clinic for the FIRST time then needs a fresh code, while clinics
+    already linked keep reopening through the refresh. That split is the decision, not an
+    oversight — see `config.py::PATIENT_LINK_CONFIRM_WINDOW_MINUTES`.
+    """
     return _as_utc(row.created_at) + timedelta(minutes=minutes) > datetime.now(UTC)
+
+
+@dataclass(frozen=True)
+class PatientSessionRenewal:
+    """What `rotate_patient_session` hands back for a cookie it accepted.
+
+    `new_raw_token` is `None` when the presented value was the one a refresh moments ago
+    already replaced (inside the grace window): the browser is holding the successor
+    from that response, and writing another cookie here would only race it.
+    """
+
+    row: MessagePatientSession
+    patient: MessagePatient
+    new_raw_token: str | None
+
+
+async def _live_row_patient(
+    session: AsyncSession, row: MessagePatientSession, now: datetime
+) -> MessagePatient | None:
+    """The patient behind a row that is neither revoked nor expired, else `None`."""
+    if row.revoked_at is not None or _as_utc(row.expires_at) <= now:
+        return None
+    patient = await session.get(MessagePatient, row.patient_id)
+    if patient is None or patient.tenant_id != row.tenant_id:
+        return None
+    return patient
+
+
+async def rotate_patient_session(
+    session: AsyncSession, raw_token: str
+) -> PatientSessionRenewal | None:
+    """Renew the login session a cookie names — IN PLACE — or `None` (the caller 401s).
+
+    The staff twin, `services/auth.py::rotate_refresh_token`, inserts a successor row and
+    revokes the presented one. That cannot be copied here: `MessagePatientSession.id` is
+    the `sid` of the login's access token AND the `login_sid` of every linked clinic's
+    token (`api/patient_access.py::_authenticate_patient` checks both against a LIVE row),
+    so a new row per refresh would sign the patient out of every other clinic on the very
+    request meant to keep them in. So the row keeps its `id`; what rotates is the VALUE:
+    a fresh opaque token replaces `token_hash`, the old hash moves to
+    `previous_token_hash` with `rotated_at`, and `expires_at` slides forward by
+    `PATIENT_SESSION_EXPIRE_DAYS` — the sliding renewal. `created_at` is left alone on
+    purpose (`session_is_recent`).
+
+    Three outcomes for a presented value:
+
+    1. It is the CURRENT value of a live row → rotate as above, return the new raw token.
+       The rotation is a compare-and-swap: `UPDATE ... WHERE token_hash = <presented>`,
+       and only a rowcount of 1 counts. Two requests carrying the same value can both
+       READ the row before either writes; only one UPDATE can match, and the other falls
+       through to case 2 instead of rotating a second time and leaving the browser with a
+       cookie the DB never kept. (The select also takes `FOR UPDATE`, which on Postgres
+       makes the second request wait and re-read; the CAS is what makes the outcome the
+       same on a database that ignores the lock, SQLite included — the suite proved the
+       lock alone was not enough.)
+    2. It is the PREVIOUS value and the rotation is younger than
+       `PATIENT_SESSION_ROTATION_GRACE_SECONDS` → accept: a renewal that was already in
+       flight when another one landed (the portal polls several threads and clinics at
+       once). Returns the row with `new_raw_token=None`: no second rotation, no cookie.
+    3. It is the PREVIOUS value and the window has closed → the reuse/theft signal, the
+       staff route's semantics: a value this browser was told to discard is being
+       presented again from somewhere. Every live session of the ACCOUNT is revoked
+       (`revoke_account_sessions` — the address is the account), a warning is logged with
+       ids only, and `None` comes back. The legitimate patient re-proves the inbox.
+
+    Unknown, revoked and expired values are `None` alike; nothing here distinguishes them.
+    """
+    now = datetime.now(UTC)
+    presented = hash_refresh_token(raw_token)
+    settings = get_settings()
+
+    row = await session.scalar(
+        select(MessagePatientSession)
+        .where(MessagePatientSession.token_hash == presented)
+        .with_for_update()
+    )
+    if row is not None:
+        patient = await _live_row_patient(session, row, now)
+        if patient is None:
+            return None
+        new_raw = generate_refresh_token()
+        swapped = await session.execute(
+            update(MessagePatientSession)
+            .where(
+                MessagePatientSession.id == row.id,
+                MessagePatientSession.token_hash == presented,
+            )
+            .values(
+                token_hash=hash_refresh_token(new_raw),
+                previous_token_hash=presented,
+                rotated_at=now,
+                expires_at=now + timedelta(days=settings.PATIENT_SESSION_EXPIRE_DAYS),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if swapped.rowcount == 1:
+            # The patient is back — the fact `_resolve_patient` stamps on a login.
+            patient.last_seen_at = now
+            await session.commit()
+            await session.refresh(row)
+            return PatientSessionRenewal(row=row, patient=patient, new_raw_token=new_raw)
+        # Lost the race: another renewal rotated this same value between our read and
+        # our write. The UPDATE matched nothing, so there is nothing to undo — and no
+        # rollback on purpose: `presented` is now the row's PREVIOUS value, and the lookup
+        # below must see the winner's write, committed or (under a shared connection)
+        # still in flight.
+
+    row = await session.scalar(
+        select(MessagePatientSession)
+        .where(MessagePatientSession.previous_token_hash == presented)
+        # Re-read the columns even if this session already holds the instance: a request
+        # that lost the compare-and-swap above still has the PRE-rotation attributes in its
+        # identity map, and deciding grace-vs-theft on those would call the winner a thief.
+        .execution_options(populate_existing=True)
+    )
+    if row is None:
+        return None
+    patient = await _live_row_patient(session, row, now)
+    if patient is None:
+        return None
+    grace = timedelta(seconds=settings.PATIENT_SESSION_ROTATION_GRACE_SECONDS)
+    if row.rotated_at is not None and _as_utc(row.rotated_at) + grace > now:
+        return PatientSessionRenewal(row=row, patient=patient, new_raw_token=None)
+
+    count = await revoke_account_sessions(session, patient.email)
+    # Tenant and a count only — never the address, never a token value.
+    logger.warning(
+        "patient_session_reuse_detected",
+        tenant_id=str(patient.tenant_id),
+        count=count,
+    )
+    return None
+
+
+async def reopen_linked_clinic(session: AsyncSession, sibling: MessagePatient) -> UUID:
+    """A fresh session row for a clinic the account ALREADY linked; returns its id.
+
+    The refresh's answer to the multi-clinic account: a patient who confirmed a sibling
+    clinic must not be asked to confirm it again — or type a code for it — just because
+    the portal was reopened. The authority is the `CONSENT_KIND_ACCOUNT_LINK` event that
+    confirmation recorded; the CALLER must have checked it (`linked_identities`) — this
+    helper mints, it does not decide. No recency gate, because nothing new is being
+    granted: the clinic was already reachable by this account.
+
+    Same row `confirm_sibling` issues — the access token's lifetime, no cookie, so the
+    row is only the revocation handle its JWT's `sid` points at — and the same
+    `last_seen_at` stamp.
+    """
+    sibling.last_seen_at = datetime.now(UTC)
+    _, session_id = await issue_patient_session(
+        session,
+        sibling,
+        lifetime=timedelta(minutes=get_settings().PATIENT_TOKEN_EXPIRE_MINUTES),
+    )
+    return session_id
 
 
 # --- The multi-clinic account (discover, confirm by name, end it whole) ----------------

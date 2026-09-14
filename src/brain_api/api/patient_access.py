@@ -38,6 +38,7 @@ from brain_api.config import get_settings
 from brain_api.core.cookies import (
     clear_patient_session_cookie,
     read_patient_session_cookie,
+    require_client_header,
     set_patient_session_cookie,
 )
 from brain_api.core.database import get_session
@@ -53,6 +54,7 @@ from brain_api.schemas.patient_access import (
     OtpRequestIn,
     OtpVerifyIn,
     PatientMessageIn,
+    PatientRefreshOut,
     PatientSessionOut,
     RelayOut,
     SiblingCandidateOut,
@@ -154,6 +156,45 @@ async def _authenticate_patient(
         # identity that was moved.
         return None
     return patient, row
+
+
+async def _sibling_report(
+    session: AsyncSession, patient: MessagePatient
+) -> tuple[list[tuple[MessagePatient, Tenant]], set[UUID]]:
+    """The multi-clinic account's discovery step, shared by `verify_otp` and `refresh`:
+    which other clinics know this proven address, and which of those the account already
+    confirmed. Reads only — nothing is minted here."""
+    siblings = await patient_access.find_sibling_candidates(
+        session, patient.email, exclude_tenant_id=patient.tenant_id
+    )
+    linked = await patient_access.linked_identities(session, [p for p, _ in siblings])
+    return siblings, linked
+
+
+def _candidates_out(
+    siblings: list[tuple[MessagePatient, Tenant]], linked: set[UUID]
+) -> list[SiblingCandidateOut]:
+    return [
+        SiblingCandidateOut(
+            tenant_id=tenant.id,
+            clinic_name=tenant.clinic_name,
+            already_linked=sibling.id in linked,
+        )
+        for sibling, tenant in siblings
+    ]
+
+
+def _expired_patient_cookie_headers() -> dict[str, str]:
+    """The `Set-Cookie` that deletes the patient cookie, as raise-able headers.
+
+    `api/auth.py::_expired_cookie_headers`'s twin, for the same reason: FastAPI discards
+    the injected `Response` when a route RAISES, so a rejection that must also expire the
+    cookie has to carry the header on the `HTTPException` itself — built off a throwaway
+    `Response` so `core/cookies.py` stays the one source of the cookie's attributes.
+    """
+    probe = Response()
+    clear_patient_session_cookie(probe)
+    return {"set-cookie": probe.headers["set-cookie"]}
 
 
 async def get_current_patient(
@@ -292,10 +333,7 @@ async def verify_otp(
     # this just-proven address already a patient of? Only asked about — nothing is minted
     # for them here, because the address alone must never authorize a link.
     clinic = await session.get(Tenant, patient.tenant_id)
-    siblings = await patient_access.find_sibling_candidates(
-        session, patient.email, exclude_tenant_id=patient.tenant_id
-    )
-    linked = await patient_access.linked_identities(session, [p for p, _ in siblings])
+    siblings, linked = await _sibling_report(session, patient)
     # Tenant and a count only — never the address, never a clinic's name.
     logger.info(
         "patient_sibling_candidates_found",
@@ -314,14 +352,116 @@ async def verify_otp(
         tenant_id=patient.tenant_id,
         patient_ref=patient.id,
         clinic_name=clinic.clinic_name if clinic is not None else "",
-        sibling_candidates=[
-            SiblingCandidateOut(
-                tenant_id=tenant.id,
-                clinic_name=tenant.clinic_name,
-                already_linked=sibling.id in linked,
+        sibling_candidates=_candidates_out(siblings, linked),
+    )
+
+
+@router.post(
+    "/refresh",
+    response_model=PatientRefreshOut,
+    summary="Renew the patient session silently — no code, no prompt",
+    description=(
+        "Reads the `__Host-patient_session` cookie and answers with a fresh access token "
+        "for the login clinic plus one for every clinic this account already linked. The "
+        "cookie is rotated and its lifetime slides forward; presenting the value it replaced "
+        "after a short grace window ends the whole account (reuse signal)."
+    ),
+    responses={
+        401: {
+            "description": (
+                "No patient cookie, or one that is unknown, expired, revoked or reused. "
+                "A rejected cookie is also expired in the browser."
             )
-            for sibling, tenant in siblings
-        ],
+        },
+        403: {"description": "Cookie presented without X-Brain-Client (CSRF guard)."},
+    },
+)
+async def refresh(
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+) -> PatientRefreshOut:
+    """The silent renewal behind "opened the portal, already logged in".
+
+    The cookie is the ONLY credential here — no bearer, because the whole point is that
+    the page just reloaded and holds nothing in memory. That makes it the second ambient
+    credential in this service after `/auth/refresh`, and it gets the same guard for the
+    same reason: `require_client_header` runs BEFORE the token is spent, so a cross-site
+    form POST cannot burn the patient's cookie (auth-jwt-multitenant, "check it before
+    spending the token").
+
+    What comes back is `verify-otp`'s body plus `linked_sessions` — a token per clinic the
+    account already confirmed (§2.5 of the prompt: a linked clinic must survive a reload
+    without a new confirmation or code). Reopening them rests on the recorded consent, not
+    on a recent code, so it has no `PATIENT_LINK_CONFIRM_WINDOW_MINUTES` gate; linking a
+    NEW clinic still does (`confirm_sibling`). The `login_sid` of each reissued token is
+    the SAME row id as before the refresh, because `rotate_patient_session` renews the row
+    in place — which is also why a linked token minted before the refresh keeps working.
+
+    A cookie that failed is expired in the browser on the way out (`_expired_patient_
+    cookie_headers`): left in place it would make every future boot start with a doomed
+    refresh, and after a reuse-triggered revocation it is precisely the value to distrust.
+    """
+    raw = read_patient_session_cookie(request)
+    if raw is None:
+        # Nothing to clear: no cookie was sent.
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing patient session")
+    require_client_header(request)
+
+    renewal = await patient_access.rotate_patient_session(session, raw)
+    if renewal is None:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "Invalid or expired session",
+            headers=_expired_patient_cookie_headers(),
+        )
+    patient, login_row = renewal.patient, renewal.row
+    if renewal.new_raw_token is not None:
+        set_patient_session_cookie(response, renewal.new_raw_token)
+    settings = get_settings()
+
+    clinic = await session.get(Tenant, patient.tenant_id)
+    siblings, linked = await _sibling_report(session, patient)
+    linked_sessions: list[ClinicSessionOut] = []
+    for sibling, tenant in siblings:
+        if sibling.id not in linked:
+            continue
+        sibling_session_id = await patient_access.reopen_linked_clinic(session, sibling)
+        linked_sessions.append(
+            ClinicSessionOut(
+                access_token=create_patient_token(
+                    tenant_id=str(sibling.tenant_id),
+                    patient_ref=str(sibling.id),
+                    session_id=str(sibling_session_id),
+                    login_session_id=str(login_row.id),
+                ),
+                expires_in=settings.PATIENT_TOKEN_EXPIRE_MINUTES * 60,
+                tenant_id=sibling.tenant_id,
+                clinic_name=tenant.clinic_name,
+                patient_ref=sibling.id,
+            )
+        )
+    # Ids and counts only — never the address, never a token.
+    logger.info(
+        "patient_session_refreshed",
+        tenant_id=str(patient.tenant_id),
+        patient_ref=str(patient.id),
+        rotated=renewal.new_raw_token is not None,
+        linked_count=len(linked_sessions),
+    )
+    return PatientRefreshOut(
+        access_token=create_patient_token(
+            tenant_id=str(patient.tenant_id),
+            patient_ref=str(patient.id),
+            session_id=str(login_row.id),
+            login_session_id=str(login_row.id),
+        ),
+        expires_in=settings.PATIENT_TOKEN_EXPIRE_MINUTES * 60,
+        tenant_id=patient.tenant_id,
+        patient_ref=patient.id,
+        clinic_name=clinic.clinic_name if clinic is not None else "",
+        sibling_candidates=_candidates_out(siblings, linked),
+        linked_sessions=linked_sessions,
     )
 
 

@@ -110,6 +110,21 @@ class ClinicSessionOut(BaseModel):
     patient_ref: UUID
 
 
+class PatientRefreshOut(PatientSessionOut):
+    """What `POST /patient-access/refresh` returns: `verify-otp`'s body, plus the clinics
+    this account already linked, each with a session of its own — so a reopened portal
+    comes back with EVERY clinic it had, not only the one the code was typed at.
+
+    `sibling_candidates` still lists every other clinic that knows the address (with
+    `already_linked` set), so the client can offer the unlinked ones; `linked_sessions`
+    carries the tokens for the linked ones, minted on the strength of the consent event
+    their confirmation recorded. The cookie, when the presented one was rotated, travels
+    in `Set-Cookie` as always — never in this body.
+    """
+
+    linked_sessions: list[ClinicSessionOut] = Field(default_factory=list)
+
+
 class ThreadOut(BaseModel):
     """One product tab the patient may open."""
 

@@ -22,6 +22,7 @@ mode each test exists to catch:
   access token dies with the session row its `sid` names.
 """
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -35,7 +36,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from brain_api.core.cookies import PATIENT_SESSION_COOKIE_NAME
+from brain_api.core.cookies import (
+    CLIENT_HEADER_NAME,
+    CLIENT_HEADER_VALUE,
+    PATIENT_SESSION_COOKIE_NAME,
+)
 from brain_api.core.database import Base, get_session
 from brain_api.core.security import (
     ALGORITHM,
@@ -1336,3 +1341,381 @@ async def test_discovery_and_linking_log_tenants_and_counts_only(pclient, monkey
     rendered = repr(events)
     for personal in (PATIENT_EMAIL, CLINIC_ONLY_SECRETARIA, CLINIC_BOTH):
         assert personal not in rendered
+
+
+# --- 8) Silent renewal: the cookie alone reopens the account -------------------------------
+#
+# The symptom this closes: reload the portal and you are asked for a code again, because
+# the access token lived only in memory and nothing turned the cookie back into one. Every
+# test below is one of the ways the fix could have re-broken something that already worked
+# — a linked clinic dying with the login's row id, concurrent polling reading as theft, or
+# a first-time link becoming impossible on a long session.
+
+
+_CLIENT_HEADER = {CLIENT_HEADER_NAME: CLIENT_HEADER_VALUE}
+
+
+async def _refresh(client, cookie=None, headers=None):
+    """`POST /refresh` as the portal sends it. With `cookie`, that exact value is sent
+    instead of the jar's — the way to present a value the browser was told to drop."""
+    hdrs = dict(_CLIENT_HEADER if headers is None else headers)
+    if cookie is not None:
+        hdrs["Cookie"] = f"{PATIENT_SESSION_COOKIE_NAME}={cookie}"
+    return await client.post("/patient-access/refresh", headers=hdrs)
+
+
+def _threads(client, token):
+    return client.get("/patient-access/threads", headers=_bearer(token))
+
+
+async def _session_row(sessionmaker, token):
+    async with sessionmaker() as session:
+        return await session.get(MessagePatientSession, uuid.UUID(decode_token(token)["sid"]))
+
+
+async def test_the_cookie_alone_reopens_the_login_clinic(pclient):
+    """No bearer, no code: the cookie becomes a working access token for the same row."""
+    client, sessionmaker, seed = pclient
+    login = (await _login(client, sessionmaker, seed.both)).json()
+    first_cookie = client.cookies.get(PATIENT_SESSION_COOKIE_NAME)
+    assert first_cookie
+
+    resp = await _refresh(client)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["tenant_id"] == str(seed.both)
+    assert body["patient_ref"] == login["patient_ref"]
+    assert body["clinic_name"] == CLINIC_BOTH
+    assert body["linked_sessions"] == []
+    assert body["access_token"] != login["access_token"]
+    claims = decode_token(body["access_token"])
+    assert claims["scope"] == PATIENT_TOKEN_SCOPE
+    # The SAME session row — the id every token of the account is bound to did not move.
+    assert claims["sid"] == decode_token(login["access_token"])["sid"]
+    assert claims["login_sid"] == claims["sid"]
+
+    # The cookie rotated: a new value, the old hash parked as "previous".
+    second_cookie = resp.cookies.get(PATIENT_SESSION_COOKIE_NAME)
+    assert second_cookie and second_cookie != first_cookie
+    row = await _session_row(sessionmaker, body["access_token"])
+    assert row.token_hash == hash_refresh_token(second_cookie)
+    assert row.previous_token_hash == hash_refresh_token(first_cookie)
+    assert row.rotated_at is not None and row.revoked_at is None
+
+    assert (await _threads(client, body["access_token"])).status_code == 200
+    # Nothing was revoked: a token minted before the refresh is still good.
+    assert (await _threads(client, login["access_token"])).status_code == 200
+
+
+async def test_the_session_slides_to_ninety_days_on_every_refresh(pclient):
+    """The ceiling is 90 days from the LAST refresh, never from the login (§2.1, §2.2)."""
+    from brain_api.config import get_settings
+
+    assert get_settings().PATIENT_SESSION_EXPIRE_DAYS == 90
+    client, sessionmaker, seed = pclient
+    login = (await _login(client, sessionmaker, seed.both)).json()
+    sid = uuid.UUID(decode_token(login["access_token"])["sid"])
+    # A session opened 80 days ago, 10 short of the ceiling.
+    async with sessionmaker() as session, session.begin():
+        row = await session.get(MessagePatientSession, sid)
+        row.created_at = datetime.now(UTC) - timedelta(days=80)
+        row.expires_at = datetime.now(UTC) + timedelta(days=10)
+
+    resp = await _refresh(client)
+    assert resp.status_code == 200, resp.text
+    async with sessionmaker() as session:
+        row = await session.get(MessagePatientSession, sid)
+    assert patient_access._as_utc(row.expires_at) > datetime.now(UTC) + timedelta(
+        days=89, hours=23
+    )
+    # `created_at` did NOT get younger: the proof of the code is what it always was.
+    assert patient_access._as_utc(row.created_at) < datetime.now(UTC) - timedelta(days=79)
+    # The browser's copy slides with it, with every hardening attribute intact.
+    set_cookie = resp.headers["set-cookie"].lower()
+    assert PATIENT_SESSION_COOKIE_NAME.lower() in set_cookie
+    assert f"max-age={90 * 86400}" in set_cookie
+    assert "httponly" in set_cookie and "secure" in set_cookie and "samesite=lax" in set_cookie
+
+
+async def test_refresh_needs_the_client_header_before_spending_the_cookie(pclient):
+    """The cookie is ambient, so the CSRF guard runs first — a forged POST burns nothing."""
+    client, sessionmaker, seed = pclient
+    await _login(client, sessionmaker, seed.both)
+    before = client.cookies.get(PATIENT_SESSION_COOKIE_NAME)
+
+    resp = await client.post("/patient-access/refresh")  # jar cookie, no header
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "missing_client_header"
+    assert "set-cookie" not in resp.headers
+    async with sessionmaker() as session:
+        row = await session.scalar(
+            select(MessagePatientSession).where(
+                MessagePatientSession.token_hash == hash_refresh_token(before)
+            )
+        )
+    assert row is not None and row.previous_token_hash is None, "the cookie was spent"
+    # Not spent: the same value still renews.
+    assert (await _refresh(client)).status_code == 200
+
+
+@pytest.mark.parametrize("reason", ["no_cookie", "unknown", "logged_out"])
+async def test_a_missing_or_dead_cookie_is_refused_and_expired(pclient, reason):
+    client, sessionmaker, seed = pclient
+    if reason == "no_cookie":
+        resp = await _refresh(client)
+        assert resp.status_code == 401
+        assert "set-cookie" not in resp.headers, "nothing to expire when nothing was sent"
+        return
+    await _login(client, sessionmaker, seed.both)
+    cookie = client.cookies.get(PATIENT_SESSION_COOKIE_NAME)
+    if reason == "logged_out":
+        await client.post("/patient-access/logout")
+    else:
+        cookie = "not-a-session-anyone-issued"
+    client.cookies.clear()
+
+    resp = await _refresh(client, cookie=cookie)
+    assert resp.status_code == 401
+    # The dead cookie is expired in the browser so the next boot does not start doomed.
+    set_cookie = resp.headers["set-cookie"].lower()
+    assert PATIENT_SESSION_COOKIE_NAME.lower() in set_cookie and "max-age=0" in set_cookie
+
+
+async def test_a_linked_clinic_survives_a_refresh(pclient):
+    """Risk A. The sibling's token names the login row by `login_sid`; a refresh that
+    replaced that row would kill it. Both the token minted BEFORE and the one the refresh
+    reissues must open the linked clinic — with no confirmation and no code in between."""
+    client, sessionmaker, seed = pclient
+    login, sibling = await _two_clinic_account(client, sessionmaker, seed)
+    linked = (await _confirm(client, login["access_token"], seed.only_secretaria)).json()
+
+    resp = await _refresh(client)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # (1) The pre-refresh sibling token still works: its `login_sid` still names a live row.
+    before = await _threads(client, linked["access_token"])
+    assert before.status_code == 200, before.text
+    assert before.json()["data"] == [
+        {"product": "secretaria", "clinic_name": CLINIC_ONLY_SECRETARIA}
+    ]
+
+    # (2) The refresh brought the linked clinic back on its own — the reload case, where
+    # the page holds nothing and the pre-refresh token is gone.
+    assert [s["tenant_id"] for s in body["linked_sessions"]] == [str(seed.only_secretaria)]
+    reissued = body["linked_sessions"][0]
+    assert reissued["clinic_name"] == CLINIC_ONLY_SECRETARIA
+    assert reissued["patient_ref"] == sibling["patient_ref"]
+    claims = decode_token(reissued["access_token"])
+    assert claims["tenant_id"] == str(seed.only_secretaria)
+    assert claims["sub"] == sibling["patient_ref"]
+    assert claims["login_sid"] == decode_token(login["access_token"])["sid"]
+    assert claims["sid"] != decode_token(linked["access_token"])["sid"], "a row of its own"
+    after = await _threads(client, reissued["access_token"])
+    assert after.status_code == 200, after.text
+    assert after.json()["data"] == before.json()["data"]
+    # Still only that clinic: the login's PreCheck does not leak into the linked token.
+    assert (
+        await client.post(
+            "/patient-access/threads/precheck/messages",
+            headers=_bearer(reissued["access_token"]),
+            json={"text": "oi"},
+        )
+    ).status_code == 403
+
+    # Remembered as linked, and the consent trail did not grow.
+    assert body["sibling_candidates"] == [
+        {
+            "tenant_id": str(seed.only_secretaria),
+            "clinic_name": CLINIC_ONLY_SECRETARIA,
+            "already_linked": True,
+        }
+    ]
+    async with sessionmaker() as session:
+        assert await session.scalar(_link_events()) == 1
+
+
+async def test_refresh_never_mints_a_session_for_a_clinic_that_was_only_discovered(pclient):
+    """Discovery is not consent: a candidate the patient never confirmed gets no token."""
+    client, sessionmaker, seed = pclient
+    login, sibling = await _two_clinic_account(client, sessionmaker, seed)
+
+    body = (await _refresh(client)).json()
+    assert body["linked_sessions"] == []
+    assert body["sibling_candidates"] == [
+        {
+            "tenant_id": str(seed.only_secretaria),
+            "clinic_name": CLINIC_ONLY_SECRETARIA,
+            "already_linked": False,
+        }
+    ]
+    async with sessionmaker() as session:
+        rows = await session.scalar(
+            select(func.count())
+            .select_from(MessagePatientSession)
+            .where(MessagePatientSession.patient_id == uuid.UUID(sibling["patient_ref"]))
+        )
+    assert rows == 1, "only the sibling's own login row — nothing minted by the refresh"
+
+
+async def test_two_refreshes_with_the_same_cookie_do_not_lock_the_patient_out(pclient):
+    """Risk B, sequentially. The portal polls several threads and clinics at once, so a
+    second renewal carrying the value a first one just replaced is a request that was in
+    flight — NOT reuse. Inside the grace window it gets a token and no new cookie; the
+    account stays whole. (On Postgres, `FOR UPDATE` turns the truly parallel case into
+    exactly this sequence: the second request waits, re-reads, and lands in the grace
+    branch — `rotate_patient_session`.)"""
+    client, sessionmaker, seed = pclient
+    login, sibling = await _two_clinic_account(client, sessionmaker, seed)
+    linked = (await _confirm(client, login["access_token"], seed.only_secretaria)).json()
+    t0 = client.cookies.get(PATIENT_SESSION_COOKIE_NAME)
+    client.cookies.clear()
+
+    first = await _refresh(client, cookie=t0)
+    assert first.status_code == 200, first.text
+    t1 = first.cookies.get(PATIENT_SESSION_COOKIE_NAME)
+    assert t1 and t1 != t0
+
+    second = await _refresh(client, cookie=t0)  # the same value, again, moments later
+    assert second.status_code == 200, second.text
+    assert "set-cookie" not in second.headers, "the browser already holds t1 — do not race it"
+    assert decode_token(second.json()["access_token"])["sid"] == decode_token(
+        login["access_token"]
+    )["sid"]
+    assert (await _threads(client, second.json()["access_token"])).status_code == 200
+    # The linked clinic came back on BOTH answers.
+    assert [s["tenant_id"] for s in second.json()["linked_sessions"]] == [
+        str(seed.only_secretaria)
+    ]
+
+    # Nothing was revoked, and the newest cookie renews normally afterwards.
+    row = await _session_row(sessionmaker, login["access_token"])
+    assert row.revoked_at is None
+    assert row.token_hash == hash_refresh_token(t1)
+    assert (await _threads(client, linked["access_token"])).status_code == 200
+    third = await _refresh(client, cookie=t1)
+    assert third.status_code == 200, third.text
+    assert third.cookies.get(PATIENT_SESSION_COOKIE_NAME) not in (None, t0, t1)
+
+
+async def test_two_parallel_refreshes_with_the_same_cookie_both_succeed(pclient):
+    """Risk B, actually in parallel: two renewals fired together with one cookie both come
+    back 200, and the account is alive afterwards. Whichever one rotated, the other landed
+    in the grace branch; the browser is left holding a value the server knows."""
+    client, sessionmaker, seed = pclient
+    login = (await _login(client, sessionmaker, seed.both)).json()
+    t0 = client.cookies.get(PATIENT_SESSION_COOKIE_NAME)
+    client.cookies.clear()
+
+    a, b = await asyncio.gather(_refresh(client, cookie=t0), _refresh(client, cookie=t0))
+    assert (a.status_code, b.status_code) == (200, 200), (a.text, b.text)
+    issued = [r.cookies.get(PATIENT_SESSION_COOKIE_NAME) for r in (a, b)]
+    issued = [c for c in issued if c]
+    assert issued, "at least one of them rotated"
+    row = await _session_row(sessionmaker, login["access_token"])
+    assert row.revoked_at is None, "two renewals in flight must never read as theft"
+    # Every cookie a browser could have ended up with still opens the account.
+    for cookie in issued:
+        assert (await _refresh(client, cookie=cookie)).status_code == 200
+
+
+async def test_the_replaced_cookie_is_theft_once_the_window_closes(pclient):
+    """Risk B's other half, kept from the staff route: a value this browser was told to
+    drop, presented again after the grace window, ends the WHOLE account — every clinic,
+    every token — and expires the cookie. The patient re-proves the inbox."""
+    from brain_api.config import get_settings
+
+    client, sessionmaker, seed = pclient
+    login, sibling = await _two_clinic_account(client, sessionmaker, seed)
+    linked = (await _confirm(client, login["access_token"], seed.only_secretaria)).json()
+    t0 = client.cookies.get(PATIENT_SESSION_COOKIE_NAME)
+
+    first = await _refresh(client)
+    assert first.status_code == 200
+    t1 = first.cookies.get(PATIENT_SESSION_COOKIE_NAME)
+    grace = get_settings().PATIENT_SESSION_ROTATION_GRACE_SECONDS
+    async with sessionmaker() as session, session.begin():
+        row = await session.get(
+            MessagePatientSession, uuid.UUID(decode_token(login["access_token"])["sid"])
+        )
+        row.rotated_at = datetime.now(UTC) - timedelta(seconds=grace + 1)
+    client.cookies.clear()
+
+    replay = await _refresh(client, cookie=t0)
+    assert replay.status_code == 401
+    assert "max-age=0" in replay.headers["set-cookie"].lower()
+    # The account is gone: the login, the fresh token, the linked clinic, the sibling's
+    # own login at its clinic — the address is the account.
+    for token in (
+        login["access_token"],
+        first.json()["access_token"],
+        linked["access_token"],
+        first.json()["linked_sessions"][0]["access_token"],
+        sibling["access_token"],
+    ):
+        assert (await _threads(client, token)).status_code == 401
+    assert (await _refresh(client, cookie=t1)).status_code == 401
+
+
+async def test_a_first_link_on_an_old_session_still_needs_a_fresh_code(pclient):
+    """Risk C, decided: a refresh proves the cookie, not the inbox, so `created_at` stays
+    put and a FIRST link past the window is refused even on a freshly renewed session.
+    Once linked (with a fresh code), the clinic rides every later refresh with no window."""
+    from brain_api.config import get_settings
+
+    client, sessionmaker, seed = pclient
+    login, _ = await _two_clinic_account(client, sessionmaker, seed)
+    window = get_settings().PATIENT_LINK_CONFIRM_WINDOW_MINUTES
+    stale = datetime.now(UTC) - timedelta(minutes=window, seconds=1)
+    async with sessionmaker() as session, session.begin():
+        row = await session.get(
+            MessagePatientSession, uuid.UUID(decode_token(login["access_token"])["sid"])
+        )
+        row.created_at = stale
+
+    refreshed = (await _refresh(client)).json()
+    assert refreshed["sibling_candidates"][0]["already_linked"] is False
+    resp = await _confirm(client, refreshed["access_token"], seed.only_secretaria)
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "reauthentication_required"
+    async with sessionmaker() as session:
+        assert await session.scalar(_link_events()) == 0
+
+    # A fresh code reopens that door...
+    again = (await _login(client, sessionmaker, seed.both)).json()
+    assert (await _confirm(client, again["access_token"], seed.only_secretaria)).status_code == 200
+    # ...and from then on the clinic needs no window at all: age this login too, refresh.
+    async with sessionmaker() as session, session.begin():
+        row = await session.get(
+            MessagePatientSession, uuid.UUID(decode_token(again["access_token"])["sid"])
+        )
+        row.created_at = stale
+    body = (await _refresh(client)).json()
+    assert [s["tenant_id"] for s in body["linked_sessions"]] == [str(seed.only_secretaria)]
+    assert (await _threads(client, body["linked_sessions"][0]["access_token"])).status_code == 200
+
+
+async def test_refresh_logs_ids_only(pclient, caplog, capsys):
+    """Neither cookie value nor the address may reach a log line — same rule as the code.
+
+    Two captures: `caplog` for stdlib records (the driver's DEBUG echo of bound parameters
+    included), `capsys` for structlog's console output, which does not pass through stdlib
+    logging in this app."""
+    client, sessionmaker, seed = pclient
+    await _login(client, sessionmaker, seed.both)
+    t0 = client.cookies.get(PATIENT_SESSION_COOKIE_NAME)
+    capsys.readouterr()  # drop the login's output; only the refresh is under test
+    with caplog.at_level(logging.DEBUG):
+        resp = await _refresh(client)
+    assert resp.status_code == 200
+    t1 = resp.cookies.get(PATIENT_SESSION_COOKIE_NAME)
+    console = capsys.readouterr().out
+    everything = console + "\n".join(r.getMessage() for r in caplog.records)
+    assert t0 not in everything and t1 not in everything, "a session token leaked into a log"
+    app_logs = console + "\n".join(
+        r.getMessage()
+        for r in caplog.records
+        if not r.name.startswith(("aiosqlite", "sqlalchemy"))
+    )
+    assert PATIENT_EMAIL not in app_logs
+    assert "patient_session_refreshed" in console

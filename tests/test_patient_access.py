@@ -1387,7 +1387,9 @@ async def test_the_cookie_alone_reopens_the_login_clinic(pclient):
     assert body["patient_ref"] == login["patient_ref"]
     assert body["clinic_name"] == CLINIC_BOTH
     assert body["linked_sessions"] == []
-    assert body["access_token"] != login["access_token"]
+    # (No "token differs from the login token" check: a JWT is a pure function of its
+    # claims, and a refresh inside the same second as the login legitimately yields the
+    # same bytes. What matters is below: the row, the rotation, and that it opens.)
     claims = decode_token(body["access_token"])
     assert claims["scope"] == PATIENT_TOKEN_SCOPE
     # The SAME session row — the id every token of the account is bound to did not move.

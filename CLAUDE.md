@@ -59,9 +59,32 @@ errado; documentar depois garante que o doc descreve o que realmente está no ar
   por e-mail (`find_sibling_candidates`) + confirmação explícita nomeada (nunca vínculo
   silencioso por e-mail sozinho, padrão OWASP de account-linking) antes de mintar qualquer
   sessão nova; logout revoga a conta inteira; nota de risco aceito sobre e-mail OTP não
-  atender NIST SP 800-63B Rev. 4 AAL2. Sem migração. Depende do frontend
-  (`PROMPT_BRAIN_MESSAGE_PORTAL_MULTI_CLINICA_FRONTEND.md`, Brain-Message-Frontend) rodar
-  depois. **NÃO EXECUTADO ainda.**
+  atender NIST SP 800-63B Rev. 4 AAL2. Sem migração. Roda nesta mesma branch
+  (`feature/whatsapp-patient-vision`, decisão do dono em 2026-09-12 — não abrir branch nova
+  aqui). Depende do frontend (`PROMPT_BRAIN_MESSAGE_PORTAL_MULTI_CLINICA_FRONTEND.md`,
+  Brain-Message-Frontend) rodar depois. **EXECUTADO em 2026-09-12, commitado (`54bffe4`)
+  em 2026-09-14 junto com o merge de `feature/whatsapp-patient-vision` pra `main` — ainda não
+  deployado** (sem migração): estado, contrato HTTP pro frontend, as decisões tomadas sem
+  consulta — incluindo dois desvios do texto (o JWT do paciente ganhou `sid`/`login_sid`
+  conferidos em `get_current_patient`, e confirmar exige o cookie do próprio login + login
+  recente) —, a revisão de segurança com o tratamento de cada achado e a nota de risco
+  aceito NIST SP 800-63B-4 estão em `docs/CHECKPOINT_conta_unica_multi_clinica.md`. Padrão
+  registrado como skill: `TECH/.claude/skills/cross-tenant-account-linking/`. O `pytest` não
+  precisa de Docker/Postgres local — a suíte usa SQLite em memória (`tests/conftest.py`).
+- `z_prompts/PROMPT_BRAIN_MESSAGE_PATIENT_SESSION_REFRESH_BACKEND.md` (raiz de BRAIN, gerado
+  2026-09-14 via `/prompt-generator`) — fecha a lacuna que a conta única multi-clínica acima
+  deixou aberta: `__Host-patient_session` existe (`verify_otp`) mas nunca é lido pra emitir
+  um access token novo (`PATIENT_TOKEN_EXPIRE_MINUTES=30`, sem rota de refresh —
+  `config.py:359-361` já admite isso no comentário). Pede `POST /patient-access/refresh`
+  espelhando `api/auth.py::refresh`/`rotate_refresh_token` (padrão já documentado em
+  `TECH/.claude/skills/auth-jwt-multitenant/`), teto de sessão subindo de 30 pra **90 dias**
+  deslizantes (decisão do dono, 2026-09-14), e resolvendo três riscos concretos achados na
+  investigação: girar o `id` da sessão de login invalidaria `login_sid` de clínicas-irmãs já
+  vinculadas; polling concorrente pode disparar a detecção de reuso do rotate-on-use e
+  derrubar a conta inteira; `session_is_recent`/`created_at` (usado por `confirm_sibling`)
+  fica preso aos 30 minutos do login original se a sessão renovar indefinidamente. Depende
+  do frontend (`..._FRONTEND.md`, Brain-Message-Frontend) rodar DEPOIS e só contra produção
+  deployada. **NÃO EXECUTADO ainda.**
 
 ## graphify
 

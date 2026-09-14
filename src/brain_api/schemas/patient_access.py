@@ -39,8 +39,26 @@ class OtpVerifyIn(BaseModel):
     code: str = Field(min_length=1, max_length=32)
 
 
+class SiblingCandidateOut(BaseModel):
+    """Another clinic where the SAME address is already a Brain-Message patient.
+
+    A question for the patient, not a session: there is deliberately NO token here. The
+    only way to one is `POST /patient-access/siblings/{tenant_id}/confirm`, after the
+    patient confirms — by name — that this clinic's conversation is theirs. An address
+    alone never links two clinics: it can be shared by a family or reassigned.
+    """
+
+    tenant_id: UUID
+    clinic_name: str
+    # True when this account already confirmed this clinic in an earlier login (a
+    # `brain_message_account_link` consent event exists). The client may then call confirm
+    # without asking again — the call is idempotent and records nothing new.
+    already_linked: bool = False
+
+
 class PatientSessionOut(BaseModel):
-    """What `verify-otp` returns: the in-memory access leg + who it belongs to.
+    """What `verify-otp` returns: the in-memory access leg, whose it is, and the other
+    clinics that know the same address.
 
     The revocable leg is NOT in this body — it is set as the `__Host-patient_session`
     HttpOnly cookie, which is the entire point of the split (see `core/cookies.py`).
@@ -51,6 +69,44 @@ class PatientSessionOut(BaseModel):
     expires_in: int
     tenant_id: UUID
     # `MessagePatient.id` — the same handle secretarIA and PreCheck know this patient by.
+    patient_ref: UUID
+    # The clinic this session opens, so a client holding several sessions can label each
+    # one without another round trip (`/threads` has no name to give when it is empty).
+    clinic_name: str
+    # Clinics to ASK about, without tokens (see `SiblingCandidateOut`). Empty for a patient
+    # of a single clinic — today's body plus one empty list.
+    sibling_candidates: list[SiblingCandidateOut] = Field(default_factory=list)
+
+
+class ConfirmSiblingIn(BaseModel):
+    """`POST /patient-access/siblings/{tenant_id}/confirm`.
+
+    Names the clinic being confirmed AGAIN, and the router refuses a body that disagrees
+    with the path. The echo makes the request a statement ("I confirm THIS clinic")
+    rather than a bare POST to a URL, so a client bug that confirms the wrong row fails
+    loudly instead of linking silently. Either way the id is only an input to a lookup
+    scoped by the AUTHENTICATED address — never an authority.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: UUID
+
+
+class ClinicSessionOut(BaseModel):
+    """A session at a clinic the patient linked by confirmation.
+
+    The same access leg as `PatientSessionOut` (a scoped JWT for ONE tenant, held in
+    memory) with the same kind of server-side row behind it, which is what a logout
+    revokes. What it lacks is a cookie: `__Host-patient_session` is one flat cookie and
+    stays the login session's, so this session's revocable leg is its row alone (`sid`).
+    """
+
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    tenant_id: UUID
+    clinic_name: str
     patient_ref: UUID
 
 

@@ -24,6 +24,17 @@ number for a patient at all, so there is no attribute to link on even if we want
 Merging the two identities is a product decision with an LGPD dimension (it joins two
 consent trails), and nothing in the code today asks for it.
 
+ONE ACCOUNT, MANY CLINICS — LINKED BY CONSENT, NEVER MERGED (2026-09-12)
+The owner did ask for the Brain-Message-to-Brain-Message version of that join: whoever
+proved an address at one clinic sees every clinic that knows the address, without a new
+code per clinic. No row below changed for it. Each clinic keeps its own `MessagePatient`
+(its own handle, its own consent trail); what joins them is an explicit, named
+confirmation recorded as a `CONSENT_KIND_ACCOUNT_LINK` event on the linked clinic, plus a
+session of its own there. The address alone never links anything — it can be shared by a
+family or reassigned to someone else (OpenID Connect Core §5.7 says the same of the
+`email` claim) — so a match only DISCOVERS a candidate the patient then accepts or not
+(`services/patient_access.py::find_sibling_candidates` / `confirm_sibling_link`).
+
 NOTHING HERE IS EVER STORED IN THE CLEAR EXCEPT THE E-MAIL
 The OTP is a credential: only its SHA-256 lands in `code_hash`, the same discipline
 `users.reset_token_hash` and `refresh_tokens.token_hash` already follow
@@ -52,6 +63,12 @@ from brain_api.core.database import Base
 #: ("first_contact_service" recorded ONCE at patient creation, never per message).
 CONSENT_KIND_CHANNEL_ACCESS = "brain_message_channel_access"
 
+#: The patient, logged in at ANOTHER clinic with the same e-mail, explicitly confirmed that
+#: THIS clinic's conversation is theirs (the multi-clinic account, 2026-09-12). Recorded
+#: once per linked identity, on the LINKED clinic's tenant, and never inferred from the
+#: address alone — see `services/patient_access.py::confirm_sibling_link`.
+CONSENT_KIND_ACCOUNT_LINK = "brain_message_account_link"
+
 #: Same placeholder secretarIA records today, and for the same reason: which LGPD basis
 #: applies (execução de contrato vs. consentimento) is pending a lawyer's sign-off, and a
 #: confidently-wrong basis in an audit trail is worse than an honest marker.
@@ -69,7 +86,9 @@ class MessagePatient(Base):
 
     Scoped by (tenant_id, email): the SAME human mailing two different clinics is two
     independent patients with two independent handles. That is the tenant isolation
-    boundary in the data model, before any query ever runs.
+    boundary in the data model, before any query ever runs — and the multi-clinic account
+    keeps it: linking adds a consent event and a session, it never rewrites a row or
+    hands one clinic's handle to another.
     """
 
     __tablename__ = "message_patients"
@@ -129,8 +148,13 @@ class MessagePatientSession(Base):
 
     Same scheme, same reasons: an opaque high-entropy value handed to the browser once,
     only its SHA-256 stored, so a DB read never yields a usable credential. The short leg
-    is a scoped JWT (`core/security.py::create_patient_token`) that nothing can revoke;
-    THIS row is what a logout kills.
+    is a scoped JWT (`core/security.py::create_patient_token`) whose `sid` claim names
+    THIS row, so a logout that kills the row kills the JWT on its next request too.
+
+    A clinic linked by confirmation (`services/patient_access.py::confirm_sibling_link`)
+    gets a row of its own whose opaque token is never handed out — the cookie is flat and
+    stays the login session's — so for that session the row is purely the revocation
+    handle its JWT's `sid` points at.
 
     `tenant_id` is denormalized off the patient on purpose: every lookup in this vertical
     is "this session, for this tenant", and carrying the scope on the row means the
@@ -168,6 +192,8 @@ class PatientConsentEvent(Base):
 
     Recorded exactly ONCE per patient, at the moment the identity is first minted
     (`verify-otp`), never per message — secretarIA's "first_contact_service" rule.
+    `CONSENT_KIND_ACCOUNT_LINK` follows the same once-only rule per linked identity: a
+    second confirmation of the same clinic records nothing new.
     """
 
     __tablename__ = "patient_consent_events"

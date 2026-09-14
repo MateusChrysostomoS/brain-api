@@ -110,8 +110,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/core/security.py": {
-    "mtime": 1789264128.338275,
-    "ast_hash": "97e76632ceb27c598b66b9a83426786e",
+    "mtime": 1789263081.7051744,
+    "ast_hash": "86211ca8647f50a37bcdaa4a57f52a82",
     "semantic_hash": ""
   },
   "src/brain_api/core/__init__.py": {
@@ -780,8 +780,8 @@
     "semantic_hash": ""
   },
   "src/brain_api/api/patient_access.py": {
-    "mtime": 1789264121.5779104,
-    "ast_hash": "4db60572eb9a1490ab612464c19ba75e",
+    "mtime": 1789263108.7904704,
+    "ast_hash": "86dbb9b8bcf08fba849fdc75e9d72821",
     "semantic_hash": ""
   },
   "src/brain_api/models/patient_access.py": {
@@ -800,18 +800,18 @@
     "semantic_hash": ""
   },
   "src/brain_api/services/patient_access.py": {
-    "mtime": 1789264131.1128366,
-    "ast_hash": "8eb88bc630e80d4f8757f30a9b399aef",
+    "mtime": 1789263116.207818,
+    "ast_hash": "b596e5753e8c14b1c7f96122d3b99850",
     "semantic_hash": ""
   },
   "tests/test_patient_access.py": {
-    "mtime": 1789264137.0780222,
-    "ast_hash": "b52a2caade988d1a23358121147f5d59",
+    "mtime": 1789263158.4710941,
+    "ast_hash": "7c0e1d0e23fa63e729e7887c72c9d382",
     "semantic_hash": ""
   },
   "docs/CHECKPOINT_conta_unica_multi_clinica.md": {
-    "mtime": 1789264169.494995,
-    "ast_hash": "75a5f83ab6831fb27aef6a5e82dff6ae",
+    "mtime": 1789263654.0739477,
+    "ast_hash": "fd7e753b100c729abb35b14bc358e273",
     "semantic_hash": ""
   },
   "docs/CHECKPOINT_cortesia.md": {

@@ -18,7 +18,7 @@ rejects ANY token carrying a `scope` claim, so the token minted here cannot open
 route even by accident. Neither direction depends on a reviewer noticing.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import (
@@ -44,14 +44,18 @@ from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.core.ratelimit import SlidingWindowLimiter, client_ip
 from brain_api.core.security import create_patient_token, decode_patient_token
-from brain_api.models.patient_access import MessagePatient
+from brain_api.models import Tenant
+from brain_api.models.patient_access import MessagePatient, MessagePatientSession
 from brain_api.schemas.patient_access import (
+    ClinicSessionOut,
+    ConfirmSiblingIn,
     MessageOut,
     OtpRequestIn,
     OtpVerifyIn,
     PatientMessageIn,
     PatientSessionOut,
     RelayOut,
+    SiblingCandidateOut,
     ThreadListOut,
     ThreadOut,
 )
@@ -72,6 +76,15 @@ _email_limiter = SlidingWindowLimiter(
 _verify_limiter = SlidingWindowLimiter(
     "patient_otp_verify", lambda: get_settings().PATIENT_VERIFY_RATE_LIMIT_PER_MIN
 )
+# A fourth bucket, for the multi-clinic account: confirming a sibling clinic is the one
+# AUTHENTICATED route that mints a session, so it is metered like verify — but keyed by the
+# ACCOUNT (the authenticated address), not by IP. Behind the portal's same-origin proxy the
+# first X-Forwarded-For hop is either client-controlled or the proxy's own address, so a
+# per-IP key would be spoofable or one bucket for every patient; an authenticated key is
+# neither (docs/CHECKPOINT_conta_unica_multi_clinica.md).
+_link_limiter = SlidingWindowLimiter(
+    "patient_account_link", lambda: get_settings().PATIENT_LINK_RATE_LIMIT_PER_MIN
+)
 
 # The e-mail template secretarIA renders. brain-api owns no SMTP of its own: every
 # transactional e-mail in this repo is delegated to secretarIA's
@@ -86,39 +99,94 @@ _OTP_REQUEST_MESSAGE = "Se a clínica atender por aqui, enviamos um código para
 # Same message for a wrong code, an expired one, one already used, and one that never
 # existed. Distinguishing them would confirm which addresses have a live challenge.
 _OTP_INVALID = "Código inválido ou expirado"
+# Linking needs the login that the code opened, in THIS browser, recently. Every failure
+# of that proof reads the same and means the same thing to the client: prove the address
+# again, then retry.
+_REAUTH_REQUIRED = "reauthentication_required"
+# One answer for every reason a sibling does not exist for this account.
+_SIBLING_NOT_FOUND = "sibling_not_found"
+
+
+async def _authenticate_patient(
+    authorization: str | None, session: AsyncSession
+) -> tuple[MessagePatient, MessagePatientSession] | None:
+    """The live identity + session row behind a patient bearer token, or `None`.
+
+    Three checks, all fail-closed and indistinguishable to the caller:
+
+    1. the token decodes AND carries exactly `scope=patient_message` plus a `sid`
+       (`decode_patient_token` refuses a staff or hub token, and a pre-`sid` one);
+    2. the session row it names is live — not revoked, not expired — and belongs to the
+       same patient and tenant the token claims, and so is the LOGIN it descends from
+       (`login_sid`, which differs from `sid` only for a clinic linked by confirmation).
+       This is what makes a logout end the access leg too, not only the cookie (OWASP
+       ASVS 5.0 7.4.1), and ending a login end the clinics it opened;
+    3. the identity still exists with that SAME tenant. The tenant is re-read from the
+       rows, never trusted from the claim — a token is a fact about the past, and this is
+       the auth-jwt-multitenant rule that mutable state is looked up server-side.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    claims = decode_patient_token(authorization[7:].strip())
+    if claims is None:
+        return None
+    try:
+        patient_ref = UUID(str(claims["sub"]))
+        tenant_id = UUID(str(claims["tenant_id"]))
+        session_id = UUID(str(claims["sid"]))
+        login_session_id = UUID(str(claims["login_sid"]))
+    except (ValueError, KeyError):
+        return None
+
+    row = await patient_access.find_live_session(session, session_id)
+    if row is None or row.patient_id != patient_ref or row.tenant_id != tenant_id:
+        return None
+    if login_session_id != session_id and (
+        await patient_access.find_live_session(session, login_session_id) is None
+    ):
+        # A linked clinic's session lives only as long as the login that opened it — the
+        # guard that also catches a confirmation whose insert landed after a logout.
+        return None
+    patient = await session.get(MessagePatient, patient_ref)
+    if patient is None or patient.tenant_id != tenant_id:
+        # A patient deleted, or a token whose tenant no longer matches the row: refuse.
+        # Answering with the ROW's tenant instead would let a stale token follow an
+        # identity that was moved.
+        return None
+    return patient, row
 
 
 async def get_current_patient(
     authorization: str | None = Header(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> MessagePatient:
-    """Turn a scoped patient bearer token into the live `MessagePatient` row.
+    """Turn a scoped patient bearer token into the live `MessagePatient` row, or 401.
 
-    Two checks, and the second is the one that matters: the token must decode AND carry
-    exactly `scope=patient_message` (`decode_patient_token` refuses a staff or hub token),
-    and the identity it names must still exist with the SAME tenant the token claims. The
-    tenant is re-read from the ROW, never trusted from the claim — a token is a fact about
-    the past, and this is the auth-jwt-multitenant rule that mutable state is looked up
-    server-side.
+    The checks live in `_authenticate_patient`. The tenant every thread route acts on is
+    the one returned here — derived from the validated token and its rows, never from a
+    header, a query string, a cookie or a body — which is why a session minted for a
+    linked clinic opens those routes unchanged, and only for that clinic.
     """
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
-    claims = decode_patient_token(authorization[7:].strip())
-    if claims is None:
+    found = await _authenticate_patient(authorization, session)
+    if found is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
-    try:
-        patient_ref = UUID(str(claims["sub"]))
-        tenant_id = UUID(str(claims["tenant_id"]))
-    except (ValueError, KeyError):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token") from None
+    return found[0]
 
-    patient = await session.get(MessagePatient, patient_ref)
-    if patient is None or patient.tenant_id != tenant_id:
-        # A patient deleted, or a token whose tenant no longer matches the row: refuse.
-        # Answering with the ROW's tenant instead would let a stale token follow an
-        # identity that was moved.
+
+async def get_current_patient_login(
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> tuple[MessagePatient, MessagePatientSession]:
+    """`get_current_patient`, plus the session row the token is bound to — for the one
+    route that has to reason about the session itself (`confirm_sibling`)."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
+    found = await _authenticate_patient(authorization, session)
+    if found is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
-    return patient
+    return found
 
 
 @router.post(
@@ -197,6 +265,10 @@ async def verify_otp(
     `__Host-patient_session` HttpOnly cookie (unreadable by page JavaScript), and the
     short scoped JWT in the body for the client to hold IN MEMORY. Same split, same
     reasoning as the staff session — one XSS must not yield a long-lived credential.
+
+    It also names the other clinics where this address already is a patient, as
+    `sibling_candidates` WITHOUT tokens: discovery happens here, access only through
+    `confirm_sibling`, one named clinic at a time.
     """
     if not _verify_limiter.allow(client_ip(request)):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
@@ -207,7 +279,7 @@ async def verify_otp(
     if patient is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, _OTP_INVALID)
 
-    raw_session = await patient_access.issue_patient_session(session, patient)
+    raw_session, session_id = await patient_access.issue_patient_session(session, patient)
     set_patient_session_cookie(response, raw_session)
     settings = get_settings()
     logger.info(
@@ -215,39 +287,192 @@ async def verify_otp(
         tenant_id=str(patient.tenant_id),
         patient_ref=str(patient.id),
     )
+
+    # The multi-clinic account, AFTER the unchanged session above: which other clinics is
+    # this just-proven address already a patient of? Only asked about — nothing is minted
+    # for them here, because the address alone must never authorize a link.
+    clinic = await session.get(Tenant, patient.tenant_id)
+    siblings = await patient_access.find_sibling_candidates(
+        session, patient.email, exclude_tenant_id=patient.tenant_id
+    )
+    linked = await patient_access.linked_identities(session, [p for p, _ in siblings])
+    # Tenant and a count only — never the address, never a clinic's name.
+    logger.info(
+        "patient_sibling_candidates_found",
+        tenant_id=str(patient.tenant_id),
+        count=len(siblings),
+    )
     return PatientSessionOut(
         access_token=create_patient_token(
-            tenant_id=str(patient.tenant_id), patient_ref=str(patient.id)
+            tenant_id=str(patient.tenant_id),
+            patient_ref=str(patient.id),
+            session_id=str(session_id),
+            # A login descends from no other login.
+            login_session_id=str(session_id),
         ),
         expires_in=settings.PATIENT_TOKEN_EXPIRE_MINUTES * 60,
         tenant_id=patient.tenant_id,
         patient_ref=patient.id,
+        clinic_name=clinic.clinic_name if clinic is not None else "",
+        sibling_candidates=[
+            SiblingCandidateOut(
+                tenant_id=tenant.id,
+                clinic_name=tenant.clinic_name,
+                already_linked=sibling.id in linked,
+            )
+            for sibling, tenant in siblings
+        ],
     )
 
 
 @router.post(
     "/logout",
     response_model=MessageOut,
-    summary="End the patient session",
+    summary="End the patient session — the whole account when a bearer is sent",
 )
 async def logout(
     request: Request,
     response: Response,
+    authorization: str | None = Header(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> MessageOut:
-    """Revoke the server-side row and clear the cookie. Always 200.
+    """Revoke server-side sessions and clear the cookie. Always 200.
 
-    Idempotent and unauthenticated on purpose: the credential IS the cookie, and a logout
-    that could fail is a logout a patient cannot trust. An absent or already-dead session
-    is simply nothing to revoke.
+    Two scopes, chosen by what the caller proves:
+
+    - WITH a valid patient bearer: the whole ACCOUNT ends — every live session of the
+      authenticated address, at every clinic and on every device
+      (`revoke_account_sessions`). A multi-clinic "sair" that left the other clinics'
+      sessions alive would not be a logout (OWASP ASVS 5.0 7.4.1), and because every
+      access token is bound to its row by `sid`, those tokens die too.
+    - WITHOUT one (or with a dead one): only the session in this browser's cookie, exactly
+      as before — the fallback a single-clinic client already relies on.
+
+    Never refused, on purpose: a logout that could fail is a logout a patient cannot
+    trust, and the worst a forged one achieves is signing someone out — which is also why
+    there is no CSRF header here (auth-jwt-multitenant: "Do NOT check it on logout").
+
+    ORDER MATTERS: the bearer is resolved BEFORE the cookie's row is revoked. In the
+    common case both name the same session, and revoking it first would make the bearer
+    look dead and quietly shrink an account logout into a device logout.
     """
+    authenticated = await _authenticate_patient(authorization, session)
+
     raw = read_patient_session_cookie(request)
     if raw:
         found = await patient_access.find_patient_session(session, raw)
         if found is not None:
             await patient_access.revoke_patient_session(session, found[0])
+
+    if authenticated is not None:
+        patient = authenticated[0]
+        count = await patient_access.revoke_account_sessions(session, patient.email)
+        # Tenant and a count only — never the address.
+        logger.info(
+            "patient_account_sessions_revoked",
+            tenant_id=str(patient.tenant_id),
+            count=count,
+        )
     clear_patient_session_cookie(response)
     return MessageOut(detail="Sessão encerrada")
+
+
+@router.post(
+    "/siblings/{tenant_id}/confirm",
+    response_model=ClinicSessionOut,
+    summary="Confirm, by name, that another clinic's conversation is yours",
+    description=(
+        "Links a clinic from `verify-otp`'s `sibling_candidates` to the account and opens "
+        "a session there without a new code. Needs the bearer of the session the code "
+        "opened AND that session's cookie, shortly after the code. Idempotent."
+    ),
+    responses={
+        401: {
+            "description": (
+                "Missing/invalid token, a token not bound to this browser's login, or a "
+                "login too old to link (`reauthentication_required`)."
+            )
+        },
+        404: {"description": "No such sibling for this account — one answer for every reason."},
+        422: {"description": "The body names a different clinic than the path."},
+        429: {"description": "Rate limited (per-account link budget)."},
+    },
+)
+async def confirm_sibling(
+    payload: ConfirmSiblingIn,
+    request: Request,
+    tenant_id: UUID,
+    login: tuple[MessagePatient, MessagePatientSession] = Depends(get_current_patient_login),
+    session: AsyncSession = Depends(get_session),
+) -> ClinicSessionOut:
+    """The explicit act that turns a discovered clinic into a session.
+
+    Why each gate is here (TECH skill `cross-tenant-account-linking`):
+
+    1. A valid patient bearer, whose ADDRESS is the only thing the lookup is scoped by.
+       The path picks which clinic, never whose identity: another address's patient at
+       that clinic is unreachable, and so is a clinic this address never verified at.
+    2. This browser's `__Host-patient_session` cookie must resolve to the very session the
+       bearer is bound to. The bearer lives in page memory and is the easy leg to copy;
+       the cookie is HttpOnly. Needing both keeps a leaked access token from being turned
+       into sessions at other clinics from another device — and, since the flat cookie
+       holds the LOGIN session, a linked clinic's token cannot chain further links.
+    3. That login must be recent (`PATIENT_LINK_CONFIRM_WINDOW_MINUTES`): linking changes
+       what one proof reaches, which OWASP ASVS 5.0 7.5.1 treats as needing fresh
+       authentication.
+    4. The body must name the same clinic as the path (`ConfirmSiblingIn`).
+    5. A per-account budget (`_link_limiter`), counted only once 1–3 hold — so a leaked
+       bearer replayed without the cookie cannot spend the patient's budget.
+    6. The linked token names this login as its `login_sid`, so it dies with the login —
+       a logout that commits between the checks above and the insert below included.
+
+    Then the consent event is written (once — a replay records nothing) and committed
+    BEFORE the session is issued, `verify-otp`'s own order. One 404 answers every "no such
+    sibling" reason, so the route cannot tell anyone which clinics know an address.
+    """
+    if payload.tenant_id != tenant_id:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "tenant_mismatch")
+    patient, login_row = login
+
+    raw = read_patient_session_cookie(request)
+    cookie_session = await patient_access.find_patient_session(session, raw) if raw else None
+    if cookie_session is None or cookie_session[0].id != login_row.id:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, _REAUTH_REQUIRED)
+    settings = get_settings()
+    if not patient_access.session_is_recent(
+        login_row, settings.PATIENT_LINK_CONFIRM_WINDOW_MINUTES
+    ):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, _REAUTH_REQUIRED)
+    # Counted only now: a bearer that fails the cookie or recency check above must not be
+    # able to spend the account's budget and lock the real patient out of linking.
+    if not _link_limiter.allow(patient.email):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
+
+    linked = await patient_access.confirm_sibling_link(session, patient, tenant_id)
+    if linked is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _SIBLING_NOT_FOUND)
+    sibling, clinic = linked
+
+    # The linked row's opaque token is dropped on purpose: the cookie is flat and stays the
+    # login's. The row exists so the JWT below has something to be revoked through, which
+    # is also why it lives exactly as long as that JWT and not a login's 30 days.
+    _, sibling_session_id = await patient_access.issue_patient_session(
+        session,
+        sibling,
+        lifetime=timedelta(minutes=settings.PATIENT_TOKEN_EXPIRE_MINUTES),
+    )
+    return ClinicSessionOut(
+        access_token=create_patient_token(
+            tenant_id=str(sibling.tenant_id),
+            patient_ref=str(sibling.id),
+            session_id=str(sibling_session_id),
+            login_session_id=str(login_row.id),
+        ),
+        expires_in=settings.PATIENT_TOKEN_EXPIRE_MINUTES * 60,
+        tenant_id=sibling.tenant_id,
+        clinic_name=clinic.clinic_name,
+        patient_ref=sibling.id,
+    )
 
 
 @router.get(

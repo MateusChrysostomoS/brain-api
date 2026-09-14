@@ -84,7 +84,7 @@ errado; documentar depois garante que o doc descreve o que realmente está no ar
   derrubar a conta inteira; `session_is_recent`/`created_at` (usado por `confirm_sibling`)
   fica preso aos 30 minutos do login original se a sessão renovar indefinidamente. Depende
   do frontend (`..._FRONTEND.md`, Brain-Message-Frontend) rodar DEPOIS e só contra produção
-  deployada. **EXECUTADO em 2026-09-14, commit `__COMMIT__` — migração
+  deployada. **EXECUTADO em 2026-09-14, commit `c6cede8` — migração
   `0019_patient_session_rotation` NÃO aplicada em produção, não deployado.** `POST
   /patient-access/refresh` renova a linha de login IN PLACE (id estável, só o valor gira, teto de
   90 dias deslizante), reemite as clínicas já vinculadas (`linked_sessions`), aceita o cookie

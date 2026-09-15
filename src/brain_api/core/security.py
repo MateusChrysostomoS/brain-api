@@ -222,9 +222,10 @@ def create_patient_token(
     the session"). Without it a 30-minute bearer outlives the logout that was meant to
     end it — and with a multi-clinic account, one logout would leave N of them alive.
 
-    `login_sid` names the session the patient's CODE opened. For that session's own token
-    it equals `sid`; for a clinic linked by confirmation it is the login the link was made
-    from, and `get_current_patient` requires that row to be live too. So ending a login —
+    `login_sid` names the session the patient's CODE opened. Every clinic token minted since
+    the account model (2026-09-15) names that login row as both `sid` and `login_sid`; a
+    token issued before it may still name a per-clinic row as `sid` and the login as
+    `login_sid`, and `get_current_patient` requires both rows to be live. So ending a login —
     by either kind of logout — ends every clinic it opened, including a link whose insert
     raced the logout's revoke. Required, never defaulted to `sid`: a linked token minted
     without it would silently outlive the login it came from.
@@ -259,5 +260,44 @@ def decode_patient_token(token: str) -> dict[str, Any] | None:
     # minutes at deploy time) would reopen exactly the hole the claims close. Cost: one
     # re-login.
     if not all(claims.get(key) for key in ("sub", "tenant_id", "sid", "login_sid")):
+        return None
+    return claims
+
+
+# --- Patient ACCOUNT token (the account's own login, not a clinic's) --------------------
+
+# E-mail + code open the ACCOUNT (2026-09-15); a clinic enters it only by invite. This token
+# authenticates the routes that act on the account — adding a clinic
+# (`POST /patient-access/clinics`) and ending it — and nothing else: its scope is not
+# `patient_message`, so every thread route (`decode_patient_token`) refuses it, and like
+# every scoped token it is refused by `api/deps.py::get_current_principal`.
+PATIENT_ACCOUNT_TOKEN_SCOPE = "patient_account"
+
+
+def create_patient_account_token(*, account_id: str, session_id: str) -> str:
+    """Mint the short-lived token of one patient ACCOUNT login.
+
+    `sub` is `message_patient_accounts.id`; `sid` is the login's session row, re-read on every
+    request so a logout ends this leg too. No tenant and no e-mail: the account's clinics are
+    looked up server-side, and the address is personal data a base64 JWT would expose.
+    """
+    settings = get_settings()
+    now = datetime.now(UTC)
+    claims: dict[str, Any] = {
+        "sub": account_id,
+        "sid": session_id,
+        "scope": PATIENT_ACCOUNT_TOKEN_SCOPE,
+        "iat": now,
+        "exp": now + timedelta(minutes=settings.PATIENT_TOKEN_EXPIRE_MINUTES),
+    }
+    return jwt.encode(claims, settings.SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_patient_account_token(token: str) -> dict[str, Any] | None:
+    """Validate an account token: signature/expiry, the EXACT account scope, `sub` and `sid`."""
+    claims = decode_token(token)
+    if claims is None or claims.get("scope") != PATIENT_ACCOUNT_TOKEN_SCOPE:
+        return None
+    if not all(claims.get(key) for key in ("sub", "sid")):
         return None
     return claims

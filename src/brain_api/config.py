@@ -361,11 +361,11 @@ class Settings(BaseSettings):
     # a client legitimately requests once and verifies once, and sharing a bucket would
     # let a burst of requests lock a patient out of finishing their own login.
     PATIENT_VERIFY_RATE_LIMIT_PER_MIN: int = 10
-    # Per-ACCOUNT budget (the authenticated address) for
-    # POST /patient-access/siblings/{tenant_id}/confirm, the multi-clinic account.
-    # Authenticated, but it is the route that CREATES a session, so it gets the verify
-    # route's care — on its own bucket, keyed by the account rather than the IP (see
-    # api/patient_access.py `_link_limiter` for why an IP key fails behind the portal proxy).
+    # Per-ACCOUNT budget for the authenticated routes that hand out a clinic session without
+    # a code: POST /patient-access/clinics (the invite) and the transition-only
+    # POST /patient-access/siblings/{tenant_id}/confirm. Keyed by the account, not the IP
+    # (api/patient_access.py `_link_limiter` says why an IP key fails behind the portal
+    # proxy). The name predates the invite model; kept so no deployed env var changes.
     PATIENT_LINK_RATE_LIMIT_PER_MIN: int = 10
     # How long after the CODE that opened the login session a sibling clinic can still be
     # confirmed for the FIRST time. Linking changes what one credential reaches, so it is
@@ -376,7 +376,14 @@ class Settings(BaseSettings):
     # "link at any time in the next 90 days". A clinic ALREADY linked is a different case
     # and needs no window: the refresh reopens it on the strength of the recorded consent
     # (`PatientRefreshOut.linked_sessions`). Equal to PATIENT_TOKEN_EXPIRE_MINUTES today.
+    # NO LONGER READ since the invite model (2026-09-15): a clinic enters an account by the
+    # patient's gesture (its link or pasted code), never by a recent-login confirmation.
+    # Still declared only so a deployed env var stays harmless.
     PATIENT_LINK_CONFIRM_WINDOW_MINUTES: int = 30
+    # Public base URL of the Brain-Message patient portal (e.g. `https://portal.example`),
+    # used ONLY to build the invite link a clinic reads (`core/invite_codes.py::invite_link`).
+    # Not a secret. Empty = no link; the short code alone still works.
+    BRAIN_MESSAGE_PORTAL_URL: str = ""
 
     @property
     def cors_origins(self) -> list[str]:

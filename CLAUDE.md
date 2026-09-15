@@ -93,7 +93,32 @@ errado; documentar depois garante que o doc descreve o que realmente está no ar
   Estado, contrato HTTP pro frontend, as três escolhas dos riscos e as decisões sem consulta em
   `docs/CHECKPOINT_patient_session_refresh.md`. Skill `auth-jwt-multitenant` estendida com a
   seção "The patient population". **Ordem de deploy: `alembic upgrade head` → brain-api → só
-  então o prompt irmão do frontend.**
+  então o prompt irmão do frontend.** **Atualização 2026-09-14 (noite): deployado e PROVADO em
+  produção** com contas reais (F5, aba fechada/reaberta, 2 clínicas, renovação automática com a aba
+  aberta) — ver a memória/relatório "Auditoria do Portal em Produção".
+- `z_prompts/PROMPT_BRAIN_MESSAGE_PORTAL_CLINICAS_BACKEND.md` (raiz de BRAIN, gerado 2026-09-14 via
+  `/prompt-generator`, com decisões fechadas com o dono) — **reverte parte da conta multi-clínica**:
+  o login passa a ser **só por e-mail** (hoje `issue_otp` exige `tenant_id`), a descoberta de
+  clínicas-irmãs por e-mail + `POST /siblings/{tenant_id}/confirm` SAI, e uma clínica só entra na conta
+  por convite (link da clínica, ou link/código curto colado pela paciente), sem pedir código de novo
+  para quem já tem conta. Inclui `tenants.patient_invite_code`, compatibilidade com o frontend atual
+  (corpo antigo com `tenant_id` = login + convite) e a restrição de nunca mudar `MessagePatient.id`
+  (handle da secretarIA e do PreCheck). Resolve o bug de prioridade média da auditoria (link de outra
+  clínica ignorado com conta aberta). **EXECUTADO em 2026-09-15, UNCOMMITTED (sem hash: commit é
+  decisão do dono) e NÃO deployado — migração `0020_patient_accounts` NÃO aplicada em produção.** Conta =
+  `message_patient_accounts` (e-mail único) + `MessagePatient.account_id`; token de conta
+  (`scope=patient_account`) + um token por clínica ligado à linha de login; `POST /patient-access/clinics`
+  (convite por UUID, código curto de 8 ou link); `GET /entitlements/patient-invite` (staff); corpo antigo
+  com `tenant_id` segue valendo na janela. Estado, contrato HTTP com exemplos, compatibilidade, decisões
+  sem consulta, revisão e provas (migração provada em `postgres:16` descartável) em
+  `docs/CHECKPOINT_portal_clinicas_convite.md`; skill `cross-tenant-account-linking` reescrita para o
+  modelo de convite. Deploy: `alembic upgrade head` → brain-api → só então o irmão
+  `PROMPT_BRAIN_MESSAGE_PORTAL_CLINICAS_FRONTEND.md`.
+- `z_prompts/PROMPT_BRAIN_MESSAGE_PRECHECK_PARIDADE_4_EXAMES_BRAIN_API.md` (raiz de BRAIN, gerado 2026-09-14;
+  **Opus 5, esforço alto**) — parte 4 da série de paridade do PreCheck no Portal: `PatientMessageIn`
+  (`extra="forbid"`) passa a aceitar anexo só no produto precheck, com validação de tipo real/tamanho antes de
+  repassar ao PreCheck, e uma rota autenticada para a mídia do transcript chegar ao Portal sem afrouxar a CSP.
+  Depende da parte 3 (PreCheck) deployada; depois vem a parte 5 (frontend). **NÃO EXECUTADO.**
 
 ## graphify
 

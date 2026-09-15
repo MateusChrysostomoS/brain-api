@@ -965,8 +965,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\config.py": {
-    "mtime": 1789398109.0812478,
-    "ast_hash": "9db64a5ec8884bcb28c7725801bc10f0",
+    "mtime": 1789442552.8412845,
+    "ast_hash": "697c5a487ba47e2257ab8930216d84d8",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\main.py": {
@@ -1010,8 +1010,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\entitlements.py": {
-    "mtime": 1781828015.661892,
-    "ast_hash": "9815156883edc72cbd78f2042def99d3",
+    "mtime": 1789445581.614594,
+    "ast_hash": "2eb1476904ad14217e8fe94207a26233",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\health.py": {
@@ -1035,8 +1035,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\patient_access.py": {
-    "mtime": 1789398322.1291876,
-    "ast_hash": "4d583aefbd70975bd844b40d7e686e2c",
+    "mtime": 1789445576.7399335,
+    "ast_hash": "abbb1e797fbd41898ed7a3fe54dba97e",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\api\\privacy.py": {
@@ -1085,8 +1085,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\core\\security.py": {
-    "mtime": 1789397005.721562,
-    "ast_hash": "97e76632ceb27c598b66b9a83426786e",
+    "mtime": 1789442534.7609344,
+    "ast_hash": "b1e7507266b28f8c843c6c023cfd9b34",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\core\\__init__.py": {
@@ -1110,8 +1110,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\patient_access.py": {
-    "mtime": 1789398109.0842102,
-    "ast_hash": "6f63a0b1a4d3761bf528fe713bb66314",
+    "mtime": 1789445597.929224,
+    "ast_hash": "0cd28bda0c47a35f433b93bd5a73f799",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\precheck_link.py": {
@@ -1150,8 +1150,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\tenant.py": {
-    "mtime": 1788878322.216085,
-    "ast_hash": "dd4d83585227285cbc71c978542f3f17",
+    "mtime": 1789442542.6600096,
+    "ast_hash": "35bac7727a25e6781eeb6996157099ed",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\usage_event.py": {
@@ -1170,8 +1170,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\models\\__init__.py": {
-    "mtime": 1788902402.5976248,
-    "ast_hash": "fbc529a6aac57ddf9f14894fd30be378",
+    "mtime": 1789442559.9925115,
+    "ast_hash": "ae7a935d0b8946c45a11d0522bb7d048",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\admin.py": {
@@ -1200,8 +1200,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\entitlement.py": {
-    "mtime": 1788878322.216085,
-    "ast_hash": "c61124e8cf16a880200ffa5915f09c2c",
+    "mtime": 1789442566.3160622,
+    "ast_hash": "2b4f70e5d27fe96ec6d3cb4e0cc10355",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\internal.py": {
@@ -1220,8 +1220,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\patient_access.py": {
-    "mtime": 1789398322.1265154,
-    "ast_hash": "d25feadada474cba38e6a0a99663284d",
+    "mtime": 1789445593.2078462,
+    "ast_hash": "7bb1bdd2dcc5b16363697db077d31f2f",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\schemas\\privacy.py": {
@@ -1315,8 +1315,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\patient_access.py": {
-    "mtime": 1789399085.0056915,
-    "ast_hash": "5bf151e489cf1454a4d625178c3f6df7",
+    "mtime": 1789445323.0354986,
+    "ast_hash": "be13291de757f8fc706397a02198e02b",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\services\\precheck_billing.py": {
@@ -1385,8 +1385,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\tests\\conftest.py": {
-    "mtime": 1789397005.7268667,
-    "ast_hash": "b3aedcc0a5eae2a0756285dab92ab2f3",
+    "mtime": 1789443477.772478,
+    "ast_hash": "22bcb4e7663bb859e87bc62b71ab5979",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\tests\\test_admin_tenant_delete.py": {
@@ -1465,8 +1465,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\tests\\test_patient_access.py": {
-    "mtime": 1789399003.9088833,
-    "ast_hash": "0594c26583f9b3a6b65ea963360ca5a2",
+    "mtime": 1789445782.5135758,
+    "ast_hash": "857e132e722d579af076b83b24e80991",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\tests\\test_precheck_billing.py": {
@@ -1540,8 +1540,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\CLAUDE.md": {
-    "mtime": 1789399334.8783388,
-    "ast_hash": "318a32dbcc316e6302e10d3e20bc87de",
+    "mtime": 1789444004.4745934,
+    "ast_hash": "d9f203fb3998b1181b2fe8bda376dedc",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\CONTRACTS.md": {
@@ -1600,8 +1600,8 @@
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_patient_session_refresh.md": {
-    "mtime": 1789399256.4213424,
-    "ast_hash": "27f09063a80d232bed39baa0af5ca3b6",
+    "mtime": 1789400330.1580086,
+    "ast_hash": "7ef072d70721815914966a024ca783f4",
     "semantic_hash": ""
   },
   "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_portal_interactive_tap.md": {
@@ -1662,6 +1662,31 @@
   "C:\\TECH\\BRAIN\\brain-api\\docs\\key-rotation.md": {
     "mtime": 1784235214.6629224,
     "ast_hash": "18f207fc266eeae4065e5b00e7cc0c27",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\migrations\\versions\\0020_patient_accounts.py": {
+    "mtime": 1789445634.5134845,
+    "ast_hash": "c2877079911f5c2a45d2eee3ac1480ba",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\src\\brain_api\\core\\invite_codes.py": {
+    "mtime": 1789442554.573709,
+    "ast_hash": "0f3f70a142ca2f74619e39b7d53d3b04",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_migration_0020_patient_accounts.py": {
+    "mtime": 1789445778.987497,
+    "ast_hash": "78c4bae497d11e744bec718ba20bbc2d",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\tests\\test_patient_account_invites.py": {
+    "mtime": 1789445731.2690394,
+    "ast_hash": "e1eed8e007802ab1fbaeeac916b6fa74",
+    "semantic_hash": ""
+  },
+  "C:\\TECH\\BRAIN\\brain-api\\docs\\CHECKPOINT_portal_clinicas_convite.md": {
+    "mtime": 1789446080.494653,
+    "ast_hash": "7e01c2a2a6a644c6e4659cd2da57ba2b",
     "semantic_hash": ""
   }
 }

@@ -78,6 +78,7 @@ os.environ.setdefault(
 # name (pytest injection) without importing it — avoids the F811 "redefinition" lint that
 # importing a fixture and shadowing it as a parameter would otherwise trigger.
 from brain_api.core.database import Base  # noqa: E402
+from tests.test_patient_access import pclient  # noqa: E402, F401
 from tests.test_rbac import client  # noqa: E402, F401
 
 

@@ -1,18 +1,26 @@
-"""Schemas for the patient side of the Brain-Message channel.
+"""Schemas for the patient side of the Brain-Message channel (account model, 2026-09-15).
 
-The clinic is named by `tenant_id`, NOT by a slug. brain-api has no slug: `tenants` is
-keyed by UUID, `EntitlementOut.tenant_id` is a UUID, secretarIA's internal routes take
-`tenant_id: UUID` and PreCheck's take the brain tenant id as a string. Minting a second
-public identifier would mean a new column, a uniqueness policy, a backfill and a
-rename-collision story, all so that the one handle every other surface already uses could
-be spelled twice. The UUID is opaque and unguessable, which is the property a public
-identifier actually needs here.
+Two kinds of field live here:
+
+- the ACCOUNT contract: e-mail + code open an account; a clinic enters it by invite (its
+  link, its short code `tenants.patient_invite_code`, or its UUID);
+- TRANSITION fields, marked DEPRECATED, that the portal deployed on 2026-09-14 still sends or
+  reads (`tenant_id` on the login bodies; `access_token`/`tenant_id`/`patient_ref`/
+  `clinic_name`/`sibling_candidates`/`linked_sessions` on the answers). The backend deploys
+  first, so they must keep working until the portal that no longer uses them is live
+  (docs/CHECKPOINT_portal_clinicas_convite.md, frozen-contract-migration).
 """
 
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+
+from brain_api.core.invite_codes import MAX_INVITE_LENGTH
+
+# OpenAPI marker for the transition fields. Schema only: Pydantic's own `deprecated=` would
+# warn on every read the transition code itself has to do.
+_DEPRECATED = {"deprecated": True}
 
 
 class OtpRequestIn(BaseModel):
@@ -20,10 +28,12 @@ class OtpRequestIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    tenant_id: UUID
     # `EmailStr` (the repo already depends on email-validator) so a malformed address is
     # a 422 here rather than a delivery failure three hops later.
     email: EmailStr
+    # DEPRECATED (transition): the pre-account login body. When present the code is sent
+    # only while that clinic has the channel on — exactly the old behaviour.
+    tenant_id: UUID | None = Field(default=None, json_schema_extra=_DEPRECATED)
 
 
 class OtpVerifyIn(BaseModel):
@@ -31,98 +41,106 @@ class OtpVerifyIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    tenant_id: UUID
     email: EmailStr
     # Bounded so a multi-megabyte "code" cannot be posted at the hashing path; the real
-    # check is the constant-time comparison, which a wrong LENGTH fails like any other
-    # wrong value.
+    # check is the constant-time comparison.
     code: str = Field(min_length=1, max_length=32)
+    # The clinic's link, short code or UUID, as the patient arrived with it: the account
+    # comes back with that clinic in it. An invite that names nothing usable does not fail a
+    # correct code — `invited_tenant_id` just comes back null.
+    invite: str | None = Field(default=None, min_length=1, max_length=MAX_INVITE_LENGTH)
+    # DEPRECATED (transition): the pre-account body, read as login + invite of that clinic.
+    # As before, a clinic with the channel off fails the verification (400).
+    tenant_id: UUID | None = Field(default=None, json_schema_extra=_DEPRECATED)
+
+    @model_validator(mode="after")
+    def _one_way_to_name_a_clinic(self) -> "OtpVerifyIn":
+        if self.invite is not None and self.tenant_id is not None:
+            raise ValueError("send invite or tenant_id, not both")
+        return self
 
 
-class SiblingCandidateOut(BaseModel):
-    """Another clinic where the SAME address is already a Brain-Message patient.
+class ClinicInviteIn(BaseModel):
+    """`POST /patient-access/clinics` — the clinic's link, short code or UUID, as pasted."""
 
-    A question for the patient, not a session: there is deliberately NO token here. The
-    only way to one is `POST /patient-access/siblings/{tenant_id}/confirm`, after the
-    patient confirms — by name — that this clinic's conversation is theirs. An address
-    alone never links two clinics: it can be shared by a family or reassigned.
-    """
+    model_config = ConfigDict(extra="forbid")
 
-    tenant_id: UUID
-    clinic_name: str
-    # True when this account already confirmed this clinic in an earlier login (a
-    # `brain_message_account_link` consent event exists). The client may then call confirm
-    # without asking again — the call is idempotent and records nothing new.
-    already_linked: bool = False
+    invite: str = Field(min_length=1, max_length=MAX_INVITE_LENGTH)
 
 
-class PatientSessionOut(BaseModel):
-    """What `verify-otp` returns: the in-memory access leg, whose it is, and the other
-    clinics that know the same address.
-
-    The revocable leg is NOT in this body — it is set as the `__Host-patient_session`
-    HttpOnly cookie, which is the entire point of the split (see `core/cookies.py`).
-    """
+class ClinicSessionOut(BaseModel):
+    """One clinic of the account with its own access token: scope `patient_message`, ONE
+    tenant, held in memory. Every thread route takes this token, never the account's."""
 
     access_token: str
     token_type: str = "bearer"
     expires_in: int
     tenant_id: UUID
+    clinic_name: str
     # `MessagePatient.id` — the same handle secretarIA and PreCheck know this patient by.
     patient_ref: UUID
-    # The clinic this session opens, so a client holding several sessions can label each
-    # one without another round trip (`/threads` has no name to give when it is empty).
+
+
+class SiblingCandidateOut(BaseModel):
+    """DEPRECATED (transition): another clinic ALREADY IN the account.
+
+    For the portal deployed on 2026-09-14, which reopens every candidate marked
+    `already_linked` through `POST /siblings/{tenant_id}/confirm`. It never lists a clinic
+    the account does not have — there is no discovery by e-mail any more — so
+    `already_linked` is always true.
+    """
+
+    tenant_id: UUID
     clinic_name: str
-    # Clinics to ASK about, without tokens (see `SiblingCandidateOut`). Empty for a patient
-    # of a single clinic — today's body plus one empty list.
-    sibling_candidates: list[SiblingCandidateOut] = Field(default_factory=list)
+    already_linked: bool = True
+
+
+class PatientAccountOut(BaseModel):
+    """What `verify-otp` and `refresh` return: the account leg and every clinic of the account.
+
+    The revocable leg is NOT in this body — it is the `__Host-patient_session` HttpOnly
+    cookie, which is the entire point of the split (see `core/cookies.py`).
+    """
+
+    # Scope `patient_account`: adds clinics (`POST /clinics`) and ends the account; opens no
+    # thread.
+    account_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    # Every clinic of the account whose Brain-Message channel is on, ordered by name.
+    clinics: list[ClinicSessionOut] = Field(default_factory=list)
+    # `verify-otp` only: the clinic the login's invite resolved to (null without an invite, or
+    # when it named nothing usable — the same answer for every reason).
+    invited_tenant_id: UUID | None = None
+
+    # --- DEPRECATED (transition), for the portal deployed on 2026-09-14 -------------------
+    # The clinic this login is pinned to (`services/patient_access.py::login_clinic`): the one
+    # it came in through, else its first — stable across renewals. Null while the account has
+    # no clinic.
+    access_token: str | None = Field(default=None, json_schema_extra=_DEPRECATED)
+    tenant_id: UUID | None = Field(default=None, json_schema_extra=_DEPRECATED)
+    patient_ref: UUID | None = Field(default=None, json_schema_extra=_DEPRECATED)
+    clinic_name: str | None = Field(default=None, json_schema_extra=_DEPRECATED)
+    # The account's OTHER clinics, each `already_linked`.
+    sibling_candidates: list[SiblingCandidateOut] = Field(
+        default_factory=list, json_schema_extra=_DEPRECATED
+    )
+    # `refresh`: every clinic of the account (the same list as `clinics`).
+    linked_sessions: list[ClinicSessionOut] = Field(
+        default_factory=list, json_schema_extra=_DEPRECATED
+    )
 
 
 class ConfirmSiblingIn(BaseModel):
-    """`POST /patient-access/siblings/{tenant_id}/confirm`.
+    """DEPRECATED (transition): `POST /patient-access/siblings/{tenant_id}/confirm`.
 
-    Names the clinic being confirmed AGAIN, and the router refuses a body that disagrees
-    with the path. The echo makes the request a statement ("I confirm THIS clinic")
-    rather than a bare POST to a URL, so a client bug that confirms the wrong row fails
-    loudly instead of linking silently. Either way the id is only an input to a lookup
-    scoped by the AUTHENTICATED address — never an authority.
+    Names the clinic AGAIN, and the router refuses a body that disagrees with the path, so a
+    client bug that asks for the wrong clinic fails loudly.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     tenant_id: UUID
-
-
-class ClinicSessionOut(BaseModel):
-    """A session at a clinic the patient linked by confirmation.
-
-    The same access leg as `PatientSessionOut` (a scoped JWT for ONE tenant, held in
-    memory) with the same kind of server-side row behind it, which is what a logout
-    revokes. What it lacks is a cookie: `__Host-patient_session` is one flat cookie and
-    stays the login session's, so this session's revocable leg is its row alone (`sid`).
-    """
-
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
-    tenant_id: UUID
-    clinic_name: str
-    patient_ref: UUID
-
-
-class PatientRefreshOut(PatientSessionOut):
-    """What `POST /patient-access/refresh` returns: `verify-otp`'s body, plus the clinics
-    this account already linked, each with a session of its own — so a reopened portal
-    comes back with EVERY clinic it had, not only the one the code was typed at.
-
-    `sibling_candidates` still lists every other clinic that knows the address (with
-    `already_linked` set), so the client can offer the unlinked ones; `linked_sessions`
-    carries the tokens for the linked ones, minted on the strength of the consent event
-    their confirmation recorded. The cookie, when the presented one was rotated, travels
-    in `Set-Cookie` as always — never in this body.
-    """
-
-    linked_sessions: list[ClinicSessionOut] = Field(default_factory=list)
 
 
 class ThreadOut(BaseModel):

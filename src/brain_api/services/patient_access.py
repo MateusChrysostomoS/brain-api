@@ -1,31 +1,31 @@
-"""Patient-access service — the OTP challenge, the identity it mints, the session.
+"""Patient-access service — the account, its code, its clinics, its sessions.
 
-The three things this module owns, and the rule each one follows:
+The rules each part follows:
 
-1. THE CODE IS A CREDENTIAL. It is generated with `secrets`, hashed with SHA-256 before
-   it touches the database, compared in constant time, and never logged — the same
-   discipline `services/auth.py` applies to reset and refresh tokens, and what the
-   tenant-secrets-encryption skill asks of anything secret-shaped. The ONE place the
-   plaintext exists after generation is the e-mail body; the router hands it straight to
-   the mail delegate and keeps no other reference.
+1. THE CODE IS A CREDENTIAL. It is generated with `secrets`, stored only as SHA-256, compared
+   in constant time and never logged. Every guess is SPENT by one conditional UPDATE before
+   the comparison, so parallel guesses cannot outrun `PATIENT_OTP_MAX_ATTEMPTS`; a right code
+   is burned by a compare-and-swap, so two requests carrying it open the account once.
 
-2. NOTHING HERE DISTINGUISHES AN UNKNOWN SUBJECT. Every helper returns `None` for an
-   unknown tenant, an unknown address, a wrong code and an expired code alike. Telling
-   those apart is how a login form becomes a patient-list oracle for whoever can type an
-   e-mail. The ROUTER answers identically for all of them — do not "improve" these
-   helpers by raising a specific error, exactly as the password-reset helpers warn.
+2. NOTHING HERE DISTINGUISHES AN UNKNOWN SUBJECT. Every helper answers `None`/`False` alike
+   for an unknown address, a wrong code, an expired code, an unknown clinic and a clinic with
+   the channel off. The ROUTER answers identically for all of them.
 
-3. THE TENANT IS THE OUTER SCOPE OF EVERY QUERY. Not a filter applied afterwards: the
-   `(tenant_id, email)` pair is the key of both the challenge and the identity, so the
-   same human writing to two clinics is two rows that cannot see each other.
+3. THE ACCOUNT IS THE ADDRESS; A CLINIC ENTERS IT ONLY BY A GESTURE AIMED AT THAT CLINIC
+   (2026-09-15, replacing discovery by e-mail). Membership is `MessagePatient.account_id`. A
+   clinic joins by an invite (`add_clinic`). A row from before the account joins only when
+   its OWN login session is used again, or when its identity carries a confirmed link
+   (`_adopt`, migration 0020's rule) — never because the address matches. A first-contact
+   consent cannot be the test either: every pre-account identity carries one.
 
-   EXACTLY TWO DELIBERATE EXCEPTIONS, both added for the multi-clinic account
-   (2026-09-12), and both keyed by the address on a row the caller already PROVED —
-   never by an address or a tenant taken from a request: `find_sibling_candidates`
-   (discovery: reads, mints nothing) and `revoke_account_sessions` (logout: can only
-   take access away). The step that turns a discovered row into access,
-   `confirm_sibling_link`, is back inside one tenant. See the
-   cross-tenant-account-linking skill before adding a third.
+4. A CLINIC IDENTITY'S ID NEVER CHANGES. Adding a clinic reuses the row that clinic already
+   had for the address: `MessagePatient.id` is secretarIA's `external_id` and PreCheck's
+   `session_ref`, and the conversation history lives under it.
+
+5. NO ROLLBACK INSIDE A HELPER. A rollback expires every instance the CALLER holds, and
+   reading an expired attribute is implicit IO that async SQLAlchemy refuses (a 500). Races on
+   unique keys are settled by `INSERT ... ON CONFLICT` (`_upsert`) instead, and nothing
+   commits while the row lock a rotation takes is held.
 """
 
 import secrets
@@ -33,10 +33,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, insert, literal, or_, select, update
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
+from brain_api.core.invite_codes import parse_invite
 from brain_api.core.logging import get_logger
 from brain_api.core.security import generate_refresh_token, hash_refresh_token
 from brain_api.models import Tenant
@@ -45,7 +47,8 @@ from brain_api.models.patient_access import (
     CONSENT_KIND_CHANNEL_ACCESS,
     CONSENT_LEGAL_BASIS_PENDING,
     MessagePatient,
-    MessagePatientOtp,
+    MessagePatientAccount,
+    MessagePatientAccountOtp,
     MessagePatientSession,
     PatientConsentEvent,
 )
@@ -61,19 +64,17 @@ def normalize_email(raw: str) -> str:
 def generate_otp_code() -> str:
     """A zero-padded decimal code of `PATIENT_OTP_LENGTH` digits, from `secrets`.
 
-    Zero-padding matters: dropping a leading zero would shrink the space AND produce a
-    code the patient cannot retype as shown. `randbelow` over the full range keeps every
-    value equally likely (a `%`-based fold would not).
+    Zero-padding matters: dropping a leading zero would shrink the space AND produce a code
+    the patient cannot retype as shown. `randbelow` over the full range keeps every value
+    equally likely.
     """
     digits = max(4, get_settings().PATIENT_OTP_LENGTH)
     return f"{secrets.randbelow(10**digits):0{digits}d}"
 
 
 def _hash_code(code: str) -> str:
-    """SHA-256 hex, the storage form. Fast is correct here for the same reason it is for
-    refresh tokens — but NOT for the same reason: a 6-digit code IS guessable, so what
-    protects it is `PATIENT_OTP_MAX_ATTEMPTS` plus the short expiry, never the hash's
-    cost. Stretching would only slow the honest patient down."""
+    """SHA-256 hex, the storage form. A 6-digit code IS guessable, so what protects it is
+    `PATIENT_OTP_MAX_ATTEMPTS` plus the short expiry, never the hash's cost."""
     return hash_refresh_token(code)
 
 
@@ -82,13 +83,21 @@ def _as_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
+def _upsert(session: AsyncSession, model: type):
+    """An INSERT that can say ON CONFLICT — Postgres in production, SQLite in the suite."""
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        return postgresql.insert(model)
+    if dialect == "sqlite":
+        return sqlite.insert(model)
+    raise NotImplementedError(f"no ON CONFLICT insert for dialect {dialect!r}")
+
+
 async def channel_open_tenant(session: AsyncSession, tenant_id: UUID) -> Tenant | None:
     """The tenant, iff it exists AND has the Brain-Message channel switched on.
 
-    Fail CLOSED at the front door: a clinic that never enabled the channel must not be
-    able to receive a patient login at all, let alone one that later gets an empty thread
-    list. `tenants.brain_message_enabled` is the same flag `GET /entitlements` projects as
-    `channels.brain_message`, so the login gate and the thread gate cannot drift apart.
+    `tenants.brain_message_enabled` is the same flag `GET /entitlements` projects as
+    `channels.brain_message`, so the invite gate and the thread gate cannot drift apart.
     """
     tenant = await session.get(Tenant, tenant_id)
     if tenant is None or not tenant.brain_message_enabled:
@@ -96,176 +105,318 @@ async def channel_open_tenant(session: AsyncSession, tenant_id: UUID) -> Tenant 
     return tenant
 
 
-async def issue_otp(session: AsyncSession, tenant_id: UUID, email: str) -> str | None:
-    """Mint a code for `(tenant_id, email)`, persisting only its hash.
+# --- The code: it opens the ACCOUNT ------------------------------------------------------
 
-    Returns the RAW code so the caller can e-mail it, or `None` when the tenant does not
-    exist or has the channel off — the caller must answer identically either way.
 
-    Issuing OVERWRITES any live challenge for the same pair and resets `attempts`: one
-    code at a time, and a patient who asks for a fresh one is not punished for the
-    guesses spent on the old one. (The reset is also why re-requesting cannot be used to
-    farm attempts: the row that is reset is the row that is replaced.)
+async def issue_account_otp(session: AsyncSession, email: str) -> str:
+    """Mint a code for the address, persisting only its hash; return the RAW code to e-mail.
+
+    One statement, `INSERT ... ON CONFLICT (email) DO UPDATE`: a double submit of the first
+    request for an address cannot collide on the unique key. Issuing OVERWRITES any live
+    challenge and resets `attempts` — a new code is a new secret, so the guesses spent on the
+    old one taught nothing about it. No account is created here; only a verified code does.
     """
-    if await channel_open_tenant(session, tenant_id) is None:
-        return None
-
     address = normalize_email(email)
     code = generate_otp_code()
-    expires_at = datetime.now(UTC) + timedelta(
-        minutes=get_settings().PATIENT_OTP_EXPIRE_MINUTES
+    fresh = {
+        "code_hash": _hash_code(code),
+        "expires_at": datetime.now(UTC)
+        + timedelta(minutes=get_settings().PATIENT_OTP_EXPIRE_MINUTES),
+        "attempts": 0,
+        "consumed_at": None,
+    }
+    await session.execute(
+        _upsert(session, MessagePatientAccountOtp)
+        .values(id=uuid4(), email=address, **fresh)
+        .on_conflict_do_update(index_elements=["email"], set_=fresh)
     )
-
-    challenge = await session.scalar(
-        select(MessagePatientOtp).where(
-            MessagePatientOtp.tenant_id == tenant_id,
-            MessagePatientOtp.email == address,
-        )
-    )
-    if challenge is None:
-        challenge = MessagePatientOtp(tenant_id=tenant_id, email=address, code_hash="")
-        session.add(challenge)
-    challenge.code_hash = _hash_code(code)
-    challenge.expires_at = expires_at
-    challenge.attempts = 0
-    challenge.consumed_at = None
     await session.commit()
-
-    # Tenant only. The address is personal data and the code is a credential; neither
-    # belongs in a log line, and together they would be a working login.
-    logger.info("patient_otp_issued", tenant_id=str(tenant_id))
+    # Neither the address (personal data) nor the code (a credential) belongs in a log line.
+    logger.info("patient_otp_issued")
     return code
 
 
-async def verify_otp(
-    session: AsyncSession, tenant_id: UUID, email: str, code: str
-) -> MessagePatient | None:
-    """Consume a code and return the patient identity it unlocks, or `None`.
+async def verify_account_otp(session: AsyncSession, email: str, code: str) -> bool:
+    """Burn a correct code for the address; `False` for every failure, alike.
 
-    `None` covers every failure — unknown tenant, channel off, no challenge, wrong code,
-    expired, already consumed, out of attempts — because the caller must not be able to
-    tell them apart.
-
-    The comparison is `secrets.compare_digest` over the two HASHES. Comparing hashes
-    rather than codes is what keeps the timing signal independent of how many leading
-    digits happened to match, and `compare_digest` removes what is left.
-
-    A wrong guess costs an attempt and is committed even though the verification failed:
-    a counter that only persists on success counts nothing.
+    The attempt is SPENT before the comparison, by one conditional UPDATE
+    (`attempts = attempts + 1 WHERE attempts < ceiling AND code_hash = <the one read>`): N
+    guesses racing each other get at most `PATIENT_OTP_MAX_ATTEMPTS` comparisons between
+    them, where incrementing a value read in Python let them overwrite each other's count.
+    Naming the hash that was read also refuses a code re-issued mid-request. A correct guess
+    is then burned by a compare-and-swap on `consumed_at`, so it opens the account once.
     """
-    if await channel_open_tenant(session, tenant_id) is None:
-        return None
-
     address = normalize_email(email)
+    now = datetime.now(UTC)
+    ceiling = get_settings().PATIENT_OTP_MAX_ATTEMPTS
     challenge = await session.scalar(
-        select(MessagePatientOtp).where(
-            MessagePatientOtp.tenant_id == tenant_id,
-            MessagePatientOtp.email == address,
-        )
+        select(MessagePatientAccountOtp).where(MessagePatientAccountOtp.email == address)
     )
     if challenge is None or challenge.consumed_at is not None:
-        return None
-    if _as_utc(challenge.expires_at) <= datetime.now(UTC):
-        return None
-    if challenge.attempts >= get_settings().PATIENT_OTP_MAX_ATTEMPTS:
-        return None
+        return False
+    if _as_utc(challenge.expires_at) <= now or challenge.attempts >= ceiling:
+        return False
+    challenge_id, expected = challenge.id, challenge.code_hash
 
-    if not secrets.compare_digest(challenge.code_hash, _hash_code(code)):
-        challenge.attempts += 1
-        await session.commit()
-        logger.info("patient_otp_rejected", tenant_id=str(tenant_id))
-        return None
-
-    challenge.consumed_at = datetime.now(UTC)
-    patient = await _resolve_patient(session, tenant_id, address)
+    spent = await session.execute(
+        update(MessagePatientAccountOtp)
+        .where(
+            MessagePatientAccountOtp.id == challenge_id,
+            MessagePatientAccountOtp.code_hash == expected,
+            MessagePatientAccountOtp.consumed_at.is_(None),
+            MessagePatientAccountOtp.attempts < ceiling,
+        )
+        .values(attempts=MessagePatientAccountOtp.attempts + 1)
+        .execution_options(synchronize_session=False)
+    )
     await session.commit()
-    logger.info(
-        "patient_otp_verified", tenant_id=str(tenant_id), patient_ref=str(patient.id)
+    if spent.rowcount != 1:
+        return False
+    if not secrets.compare_digest(expected, _hash_code(code)):
+        logger.info("patient_otp_rejected")
+        return False
+
+    burned = await session.execute(
+        update(MessagePatientAccountOtp)
+        .where(
+            MessagePatientAccountOtp.id == challenge_id,
+            MessagePatientAccountOtp.code_hash == expected,
+            MessagePatientAccountOtp.consumed_at.is_(None),
+        )
+        .values(consumed_at=now)
+        .execution_options(synchronize_session=False)
     )
-    return patient
+    await session.commit()
+    return burned.rowcount == 1
 
 
-async def _resolve_patient(
-    session: AsyncSession, tenant_id: UUID, address: str
-) -> MessagePatient:
-    """Get-or-create the identity for `(tenant_id, address)` — and, on create, its consent
-    row. Does NOT commit; `verify_otp` owns the single commit that also burns the code.
+# --- The account -------------------------------------------------------------------------
 
-    A returning patient keeps the SAME `id`, which is what makes their secretarIA
-    conversation and their PreCheck session survive a re-login: both services key off
-    that string, so a fresh id would silently start a brand-new conversation and lose the
-    history the patient can still see on their screen.
 
-    The consent row is written in the same breath as the identity, and only then, which
-    is what makes "recorded exactly once, at patient creation" true rather than
-    aspirational (secretarIA's own "first_contact_service" rule).
+async def _ensure_account(session: AsyncSession, address: str) -> MessagePatientAccount:
+    """The account row of an address, created if missing. No commit, and no rollback: a
+    concurrent creation of the same account is absorbed by `ON CONFLICT DO NOTHING`."""
+    await session.execute(
+        _upsert(session, MessagePatientAccount)
+        .values(id=uuid4(), email=address)
+        .on_conflict_do_nothing(index_elements=["email"])
+    )
+    account = await session.scalar(
+        select(MessagePatientAccount).where(MessagePatientAccount.email == address)
+    )
+    if account is None:  # pragma: no cover - the row was just inserted or already there
+        raise RuntimeError("patient account vanished after its upsert")
+    return account
+
+
+async def open_account(session: AsyncSession, email: str) -> MessagePatientAccount:
+    """Get-or-create the account of an address a code JUST proved, stamp it, commit.
+
+    Adopts the address's pre-account identities that carry a confirmed link — nothing else
+    (`_adopt`). The clinic the patient came in through is added by the caller (`add_clinic`).
     """
-    patient = await session.scalar(
-        select(MessagePatient).where(
-            MessagePatient.tenant_id == tenant_id,
-            MessagePatient.email == address,
-        )
-    )
-    now = datetime.now(UTC)
-    if patient is not None:
-        patient.last_seen_at = now
-        return patient
+    account = await _ensure_account(session, normalize_email(email))
+    account.last_seen_at = datetime.now(UTC)
+    await _adopt(session, account, own=None)
+    await session.commit()
+    return account
 
-    patient = MessagePatient(tenant_id=tenant_id, email=address, last_seen_at=now)
-    session.add(patient)
-    # `flush` (not `commit`) so `patient.id` exists for the consent row's subject_ref
-    # while both stay inside the caller's single transaction.
-    await session.flush()
-    session.add(
-        PatientConsentEvent(
+
+async def _adopt(
+    session: AsyncSession, account: MessagePatientAccount, *, own: MessagePatient | None
+) -> None:
+    """Bring pre-account identities of the address into the account. No commit.
+
+    Exactly two kinds join (migration 0020 applies the same rule to the rows it finds):
+
+    - `own` — the identity of a pre-account login session that is being USED right now (its
+      cookie renewed). That login already opened this clinic, so it keeps opening it;
+    - an identity carrying a `brain_message_account_link` event: the patient confirmed it by
+      name, and every login of the address already reopened it.
+
+    Anything else that merely shares the address stays out, including a clinic the address
+    once logged in at separately: from this login it was an unanswered question (or a "no",
+    which the old portal never recorded). It comes back through its own session, or through
+    its link or code — with the same id and history. Then every session of the account's
+    identities is stamped with the account, so tokens issued before it keep working.
+    """
+    candidates = (
+        await session.scalars(
+            select(MessagePatient).where(
+                MessagePatient.email == account.email,
+                MessagePatient.account_id.is_(None),
+            )
+        )
+    ).all()
+    adopted: list[MessagePatient] = []
+    if candidates:
+        # Matched in Python, not with a SQL cast: `subject_ref` holds the hyphenated UUID
+        # string, which is not how every dialect renders a UUID column as text.
+        linked = {
+            (tenant_id, subject_ref)
+            for tenant_id, subject_ref in (
+                await session.execute(
+                    select(PatientConsentEvent.tenant_id, PatientConsentEvent.subject_ref).where(
+                        PatientConsentEvent.kind == CONSENT_KIND_ACCOUNT_LINK,
+                        PatientConsentEvent.subject_ref.in_([str(p.id) for p in candidates]),
+                    )
+                )
+            ).all()
+        }
+        adopted = [
+            p
+            for p in candidates
+            if (own is not None and p.id == own.id) or (p.tenant_id, str(p.id)) in linked
+        ]
+        for patient in adopted:
+            patient.account_id = account.id
+        if adopted:
+            await session.flush()
+    await session.execute(
+        update(MessagePatientSession)
+        .where(
+            MessagePatientSession.account_id.is_(None),
+            MessagePatientSession.patient_id.in_(
+                select(MessagePatient.id).where(MessagePatient.account_id == account.id)
+            ),
+        )
+        .values(account_id=account.id)
+        .execution_options(synchronize_session=False)
+    )
+    if adopted:
+        # A count only: tenant ids of several clinics on one line would join them.
+        logger.info("patient_account_identities_adopted", count=len(adopted))
+
+
+# --- Invites: a clinic enters the account ------------------------------------------------
+
+
+async def resolve_invite(session: AsyncSession, raw: str) -> Tenant | None:
+    """The open clinic a pasted link, short code or UUID names, or `None` for every failure.
+
+    Unparseable, unknown and channel-off answer the same `None`, so the invite routes cannot
+    tell anyone which clinics exist or use Brain-Message.
+    """
+    parsed = parse_invite(raw)
+    if parsed is None:
+        return None
+    if isinstance(parsed, UUID):
+        return await channel_open_tenant(session, parsed)
+    tenant = await session.scalar(select(Tenant).where(Tenant.patient_invite_code == parsed))
+    if tenant is None or not tenant.brain_message_enabled:
+        return None
+    return tenant
+
+
+async def add_clinic(
+    session: AsyncSession, account: MessagePatientAccount, tenant: Tenant
+) -> MessagePatient | None:
+    """Put `tenant` in the account and return the account's identity there. Idempotent.
+
+    The identity is the one that clinic ALREADY had for the address when there is one (its id
+    is the sibling services' handle), otherwise a new row — created with `ON CONFLICT DO
+    NOTHING`, so a double tap never fails on the unique `(tenant, e-mail)` key. Its
+    `brain_message_channel_access` consent is recorded exactly once, ever, by an
+    `INSERT ... SELECT ... WHERE NOT EXISTS` taken under the identity's row lock: atomic on
+    SQLite, serialized by the lock on Postgres. Commits. `None` only for an identity bound to
+    ANOTHER account, which the unique address makes unreachable; refused rather than moved.
+    """
+    now = datetime.now(UTC)
+    account_id, address, tenant_id = account.id, account.email, tenant.id
+    await session.execute(
+        _upsert(session, MessagePatient)
+        .values(
+            id=uuid4(),
             tenant_id=tenant_id,
-            subject_ref=str(patient.id),
-            kind=CONSENT_KIND_CHANNEL_ACCESS,
-            legal_basis=CONSENT_LEGAL_BASIS_PENDING,
+            email=address,
+            account_id=account_id,
+            last_seen_at=now,
+        )
+        .on_conflict_do_nothing(index_elements=["tenant_id", "email"])
+    )
+    patient = await session.scalar(
+        select(MessagePatient)
+        .where(MessagePatient.tenant_id == tenant_id, MessagePatient.email == address)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if patient is None or patient.account_id not in (None, account_id):
+        return None
+    patient.account_id = account_id
+    patient.last_seen_at = now
+    subject_ref = str(patient.id)
+
+    columns = PatientConsentEvent.__table__.c
+    recorded = await session.execute(
+        insert(PatientConsentEvent).from_select(
+            ["id", "tenant_id", "subject_ref", "kind", "legal_basis"],
+            select(
+                literal(uuid4(), columns.id.type),
+                literal(tenant_id, columns.tenant_id.type),
+                literal(subject_ref, columns.subject_ref.type),
+                literal(CONSENT_KIND_CHANNEL_ACCESS, columns.kind.type),
+                literal(CONSENT_LEGAL_BASIS_PENDING, columns.legal_basis.type),
+            ).where(
+                ~exists().where(
+                    columns.tenant_id == tenant_id,
+                    columns.subject_ref == subject_ref,
+                    columns.kind == CONSENT_KIND_CHANNEL_ACCESS,
+                )
+            ),
         )
     )
+    await session.commit()
+    # The clinic and a count only — no handle: add events seconds apart from one client would
+    # otherwise line up one person's handles across clinics.
     logger.info(
-        "patient_consent_recorded",
+        "patient_clinic_added",
         tenant_id=str(tenant_id),
-        patient_ref=str(patient.id),
-        kind=CONSENT_KIND_CHANNEL_ACCESS,
+        consent_events_recorded=1 if recorded.rowcount == 1 else 0,
     )
     return patient
 
 
-# --- The session (revocable leg) -------------------------------------------------------
+async def account_clinics(
+    session: AsyncSession, account: MessagePatientAccount, tenant_id: UUID | None = None
+) -> list[tuple[MessagePatient, Tenant]]:
+    """The account's clinics whose channel is on (optionally just `tenant_id`), by name."""
+    query = (
+        select(MessagePatient, Tenant)
+        .join(Tenant, Tenant.id == MessagePatient.tenant_id)
+        .where(
+            MessagePatient.account_id == account.id,
+            Tenant.brain_message_enabled.is_(True),
+        )
+        .order_by(Tenant.clinic_name, Tenant.id)
+    )
+    if tenant_id is not None:
+        query = query.where(MessagePatient.tenant_id == tenant_id)
+    return [(patient, tenant) for patient, tenant in (await session.execute(query)).all()]
+
+
+# --- The session (revocable leg) ---------------------------------------------------------
 
 
 async def issue_patient_session(
-    session: AsyncSession, patient: MessagePatient, *, lifetime: timedelta | None = None
+    session: AsyncSession,
+    account: MessagePatientAccount,
+    *,
+    opened_at: MessagePatient | None = None,
 ) -> tuple[str, UUID]:
-    """Create the server-side session row; return the RAW opaque token (once) and the row id.
+    """Create the account's login row; return the RAW opaque token (once) and the row id.
 
-    Byte-for-byte the `issue_refresh_token` scheme — high-entropy value out, SHA-256 in —
-    because a patient session leaking is the same class of problem as a doctor's, only
-    with a different blast radius.
-
-    The id comes back because the access JWT carries it as `sid`
-    (`core/security.py::create_patient_token`), which is what lets revoking this row
-    refuse that JWT too. It is minted here, not read back after the commit, so no caller
-    ever depends on a post-commit refresh.
-
-    `lifetime` defaults to `PATIENT_SESSION_EXPIRE_DAYS`, a login's. A clinic linked by
-    confirmation passes the access token's lifetime instead: its row is never presented
-    as a cookie, so it only has to outlive the one JWT that names it.
+    Byte-for-byte the `issue_refresh_token` scheme — high-entropy value out, SHA-256 in. Every
+    token of this login carries the id as `sid`. `opened_at` pins the clinic the transition
+    fields name (`login_clinic`).
     """
     raw = generate_refresh_token()
     row = MessagePatientSession(
         id=uuid4(),
-        patient_id=patient.id,
-        tenant_id=patient.tenant_id,
+        account_id=account.id,
+        patient_id=opened_at.id if opened_at is not None else None,
+        tenant_id=opened_at.tenant_id if opened_at is not None else None,
         token_hash=hash_refresh_token(raw),
-        expires_at=datetime.now(UTC)
-        + (
-            lifetime
-            if lifetime is not None
-            else timedelta(days=get_settings().PATIENT_SESSION_EXPIRE_DAYS)
-        ),
+        expires_at=datetime.now(UTC) + timedelta(days=get_settings().PATIENT_SESSION_EXPIRE_DAYS),
     )
     session.add(row)
     session_id = row.id
@@ -273,30 +424,118 @@ async def issue_patient_session(
     return raw, session_id
 
 
+async def pin_login_clinic(
+    session: AsyncSession, login_session_id: UUID, patient: MessagePatient
+) -> None:
+    """Pin a login that names no clinic yet to `patient`. Never re-pins. Commits."""
+    await session.execute(
+        update(MessagePatientSession)
+        .where(
+            MessagePatientSession.id == login_session_id,
+            MessagePatientSession.patient_id.is_(None),
+        )
+        .values(patient_id=patient.id, tenant_id=patient.tenant_id)
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+
+
+async def login_clinic(
+    session: AsyncSession, row: MessagePatientSession, account: MessagePatientAccount
+) -> MessagePatient | None:
+    """The clinic a login is pinned to — what the transition fields of the answers name.
+
+    A login keeps the clinic it came in through. One opened by e-mail alone is pinned to the
+    account's first clinic the first time it has one, and keeps it: the portal deployed on
+    2026-09-14 drops an account whose top-level clinic changes between renewals, and "the
+    first by name" would change whenever a clinic sorting earlier is added.
+    """
+    if row.patient_id is not None:
+        patient = await session.get(MessagePatient, row.patient_id)
+        if patient is not None and patient.account_id == account.id:
+            return patient
+        return None
+    clinics = await account_clinics(session, account)
+    if not clinics:
+        return None
+    patient = clinics[0][0]
+    await pin_login_clinic(session, row.id, patient)
+    return patient
+
+
+def _is_live(row: MessagePatientSession, now: datetime) -> bool:
+    return row.revoked_at is None and _as_utc(row.expires_at) > now
+
+
+async def _row_account(
+    session: AsyncSession, row: MessagePatientSession, *, adopt: bool
+) -> MessagePatientAccount | None:
+    """The account a session row belongs to. No commit.
+
+    A row issued before the account model names only its identity. With `adopt`, the row
+    is being USED (its cookie renewed): its identity joins its address's account, created if
+    needed (`_adopt`). Without it, the address's account is only looked up.
+    """
+    if row.account_id is not None:
+        return await session.get(MessagePatientAccount, row.account_id)
+    if row.patient_id is None:
+        return None
+    patient = await session.get(MessagePatient, row.patient_id)
+    if patient is None or patient.tenant_id != row.tenant_id:
+        return None
+    if patient.account_id is not None:
+        account = await session.get(MessagePatientAccount, patient.account_id)
+    elif adopt:
+        account = await _ensure_account(session, patient.email)
+    else:
+        account = await session.scalar(
+            select(MessagePatientAccount).where(MessagePatientAccount.email == patient.email)
+        )
+    if account is not None and adopt:
+        await _adopt(session, account, own=patient)
+    return account
+
+
+async def session_account(
+    session: AsyncSession, row: MessagePatientSession
+) -> MessagePatientAccount | None:
+    """The account a live row belongs to, without adopting anything (read-only callers)."""
+    return await _row_account(session, row, adopt=False)
+
+
+async def _row_email(session: AsyncSession, row: MessagePatientSession) -> str | None:
+    """The address a row belongs to — the key an account-wide revocation needs."""
+    if row.account_id is not None:
+        account = await session.get(MessagePatientAccount, row.account_id)
+        return account.email if account is not None else None
+    if row.patient_id is not None:
+        patient = await session.get(MessagePatient, row.patient_id)
+        return patient.email if patient is not None else None
+    return None
+
+
 async def find_patient_session(
     session: AsyncSession, raw_token: str
-) -> tuple[MessagePatientSession, MessagePatient] | None:
-    """Resolve a raw session token to its live row + patient, or `None`.
-
-    `None` for unknown, expired and revoked alike. The patient is loaded in the same call
-    because every caller needs the tenant off it, and a second lookup is a second place
-    the scope could be forgotten.
-    """
+) -> MessagePatientSession | None:
+    """The live row a raw cookie value names; `None` for unknown, expired and revoked alike."""
     row = await session.scalar(
         select(MessagePatientSession).where(
             MessagePatientSession.token_hash == hash_refresh_token(raw_token)
         )
     )
-    if row is None or row.revoked_at is not None:
+    if row is None or not _is_live(row, datetime.now(UTC)):
         return None
-    if _as_utc(row.expires_at) <= datetime.now(UTC):
+    return row
+
+
+async def find_live_session(
+    session: AsyncSession, session_id: UUID
+) -> MessagePatientSession | None:
+    """The row a token's `sid` names, iff it is neither revoked nor expired."""
+    row = await session.get(MessagePatientSession, session_id)
+    if row is None or not _is_live(row, datetime.now(UTC)):
         return None
-    patient = await session.get(MessagePatient, row.patient_id)
-    if patient is None or patient.tenant_id != row.tenant_id:
-        # Belt and braces: the denormalized scope disagreeing with the identity's own
-        # tenant means something rewrote one of them. Refuse rather than pick a side.
-        return None
-    return row, patient
+    return row
 
 
 async def revoke_patient_session(session: AsyncSession, row: MessagePatientSession) -> None:
@@ -306,98 +545,38 @@ async def revoke_patient_session(session: AsyncSession, row: MessagePatientSessi
         await session.commit()
 
 
-async def find_live_session(
-    session: AsyncSession, session_id: UUID
-) -> MessagePatientSession | None:
-    """The row an access token's `sid` names, iff it is neither revoked nor expired.
-
-    The bearer-side twin of `find_patient_session` (which starts from the raw cookie
-    value instead). `None` for unknown, revoked and expired alike.
-    """
-    row = await session.get(MessagePatientSession, session_id)
-    if row is None or row.revoked_at is not None:
-        return None
-    if _as_utc(row.expires_at) <= datetime.now(UTC):
-        return None
-    return row
-
-
-def session_is_recent(row: MessagePatientSession, minutes: int) -> bool:
-    """True while `row` — opened by a verified code — is younger than `minutes`.
-
-    Measures `created_at`, the moment of the CODE, and a refresh never moves it
-    (`rotate_patient_session`). So on a long, renewed session this goes false and stays
-    false: confirming a clinic for the FIRST time then needs a fresh code, while clinics
-    already linked keep reopening through the refresh. That split is the decision, not an
-    oversight — see `config.py::PATIENT_LINK_CONFIRM_WINDOW_MINUTES`.
-    """
-    return _as_utc(row.created_at) + timedelta(minutes=minutes) > datetime.now(UTC)
-
-
 @dataclass(frozen=True)
 class PatientSessionRenewal:
     """What `rotate_patient_session` hands back for a cookie it accepted.
 
     `new_raw_token` is `None` when the presented value was the one a refresh moments ago
-    already replaced (inside the grace window): the browser is holding the successor
-    from that response, and writing another cookie here would only race it.
+    already replaced (inside the grace window): the browser holds the successor from that
+    response, and writing another cookie here would only race it.
     """
 
     row: MessagePatientSession
-    patient: MessagePatient
+    account: MessagePatientAccount
     new_raw_token: str | None
-
-
-async def _live_row_patient(
-    session: AsyncSession, row: MessagePatientSession, now: datetime
-) -> MessagePatient | None:
-    """The patient behind a row that is neither revoked nor expired, else `None`."""
-    if row.revoked_at is not None or _as_utc(row.expires_at) <= now:
-        return None
-    patient = await session.get(MessagePatient, row.patient_id)
-    if patient is None or patient.tenant_id != row.tenant_id:
-        return None
-    return patient
 
 
 async def rotate_patient_session(
     session: AsyncSession, raw_token: str
 ) -> PatientSessionRenewal | None:
-    """Renew the login session a cookie names — IN PLACE — or `None` (the caller 401s).
+    """Renew the login a cookie names — IN PLACE — or `None` (the caller 401s).
 
-    The staff twin, `services/auth.py::rotate_refresh_token`, inserts a successor row and
-    revokes the presented one. That cannot be copied here: `MessagePatientSession.id` is
-    the `sid` of the login's access token AND the `login_sid` of every linked clinic's
-    token (`api/patient_access.py::_authenticate_patient` checks both against a LIVE row),
-    so a new row per refresh would sign the patient out of every other clinic on the very
-    request meant to keep them in. So the row keeps its `id`; what rotates is the VALUE:
-    a fresh opaque token replaces `token_hash`, the old hash moves to
+    The row keeps its `id` (every token of the login is bound to it); what rotates is the
+    VALUE: a fresh opaque token replaces `token_hash`, the old hash moves to
     `previous_token_hash` with `rotated_at`, and `expires_at` slides forward by
-    `PATIENT_SESSION_EXPIRE_DAYS` — the sliding renewal. `created_at` is left alone on
-    purpose (`session_is_recent`).
+    `PATIENT_SESSION_EXPIRE_DAYS`. Three outcomes for a presented value:
 
-    Three outcomes for a presented value:
-
-    1. It is the CURRENT value of a live row → rotate as above, return the new raw token.
-       The rotation is a compare-and-swap: `UPDATE ... WHERE token_hash = <presented>`,
-       and only a rowcount of 1 counts. Two requests carrying the same value can both
-       READ the row before either writes; only one UPDATE can match, and the other falls
-       through to case 2 instead of rotating a second time and leaving the browser with a
-       cookie the DB never kept. (The select also takes `FOR UPDATE`, which on Postgres
-       makes the second request wait and re-read; the CAS is what makes the outcome the
-       same on a database that ignores the lock, SQLite included — the suite proved the
-       lock alone was not enough.)
-    2. It is the PREVIOUS value and the rotation is younger than
-       `PATIENT_SESSION_ROTATION_GRACE_SECONDS` → accept: a renewal that was already in
-       flight when another one landed (the portal polls several threads and clinics at
-       once). Returns the row with `new_raw_token=None`: no second rotation, no cookie.
-    3. It is the PREVIOUS value and the window has closed → the reuse/theft signal, the
-       staff route's semantics: a value this browser was told to discard is being
-       presented again from somewhere. Every live session of the ACCOUNT is revoked
-       (`revoke_account_sessions` — the address is the account), a warning is logged with
-       ids only, and `None` comes back. The legitimate patient re-proves the inbox.
-
-    Unknown, revoked and expired values are `None` alike; nothing here distinguishes them.
+    1. the CURRENT value of a live row → attach the account (a pre-account row adopts its own
+       identity here), then rotate by compare-and-swap (`UPDATE ... WHERE token_hash =
+       <presented>`, only rowcount 1 counts — `FOR UPDATE` alone was not enough on a
+       database that ignores it) and commit ONCE, so nothing commits while the lock is held;
+    2. the PREVIOUS value, rotated less than `PATIENT_SESSION_ROTATION_GRACE_SECONDS` ago →
+       accept without rotating again (a renewal that was already in flight);
+    3. the PREVIOUS value after that window → the reuse/theft signal: every session of the
+       ADDRESS is revoked and `None` comes back.
     """
     now = datetime.now(UTC)
     presented = hash_refresh_token(raw_token)
@@ -409,8 +588,10 @@ async def rotate_patient_session(
         .with_for_update()
     )
     if row is not None:
-        patient = await _live_row_patient(session, row, now)
-        if patient is None:
+        if not _is_live(row, now):
+            return None
+        account = await _row_account(session, row, adopt=True)
+        if account is None:
             return None
         new_raw = generate_refresh_token()
         swapped = await session.execute(
@@ -428,212 +609,59 @@ async def rotate_patient_session(
             .execution_options(synchronize_session=False)
         )
         if swapped.rowcount == 1:
-            # The patient is back — the fact `_resolve_patient` stamps on a login.
-            patient.last_seen_at = now
+            account.last_seen_at = now
             await session.commit()
             await session.refresh(row)
-            return PatientSessionRenewal(row=row, patient=patient, new_raw_token=new_raw)
-        # Lost the race: another renewal rotated this same value between our read and
-        # our write. The UPDATE matched nothing, so there is nothing to undo — and no
-        # rollback on purpose: `presented` is now the row's PREVIOUS value, and the lookup
-        # below must see the winner's write, committed or (under a shared connection)
-        # still in flight.
+            return PatientSessionRenewal(row=row, account=account, new_raw_token=new_raw)
+        # Lost the race to another renewal of this same value: nothing to undo, and no
+        # rollback on purpose — the lookup below must see the winner's write.
 
     row = await session.scalar(
         select(MessagePatientSession)
         .where(MessagePatientSession.previous_token_hash == presented)
-        # Re-read the columns even if this session already holds the instance: a request
-        # that lost the compare-and-swap above still has the PRE-rotation attributes in its
-        # identity map, and deciding grace-vs-theft on those would call the winner a thief.
+        # The loser of the swap above still holds the PRE-rotation instance; deciding
+        # grace-vs-theft on those attributes would call the winner a thief.
         .execution_options(populate_existing=True)
     )
-    if row is None:
-        return None
-    patient = await _live_row_patient(session, row, now)
-    if patient is None:
+    if row is None or not _is_live(row, now):
         return None
     grace = timedelta(seconds=settings.PATIENT_SESSION_ROTATION_GRACE_SECONDS)
     if row.rotated_at is not None and _as_utc(row.rotated_at) + grace > now:
-        return PatientSessionRenewal(row=row, patient=patient, new_raw_token=None)
+        account = await _row_account(session, row, adopt=True)
+        if account is None:
+            return None
+        await session.commit()
+        await session.refresh(row)
+        return PatientSessionRenewal(row=row, account=account, new_raw_token=None)
 
-    count = await revoke_account_sessions(session, patient.email)
-    # Tenant and a count only — never the address, never a token value.
-    logger.warning(
-        "patient_session_reuse_detected",
-        tenant_id=str(patient.tenant_id),
-        count=count,
-    )
+    email = await _row_email(session, row)
+    count = await revoke_account_sessions(session, email) if email is not None else 0
+    # A count only — never the address, never a token value.
+    logger.warning("patient_session_reuse_detected", count=count)
     return None
 
 
-async def reopen_linked_clinic(session: AsyncSession, sibling: MessagePatient) -> UUID:
-    """A fresh session row for a clinic the account ALREADY linked; returns its id.
-
-    The refresh's answer to the multi-clinic account: a patient who confirmed a sibling
-    clinic must not be asked to confirm it again — or type a code for it — just because
-    the portal was reopened. The authority is the `CONSENT_KIND_ACCOUNT_LINK` event that
-    confirmation recorded; the CALLER must have checked it (`linked_identities`) — this
-    helper mints, it does not decide. No recency gate, because nothing new is being
-    granted: the clinic was already reachable by this account.
-
-    Same row `confirm_sibling` issues — the access token's lifetime, no cookie, so the
-    row is only the revocation handle its JWT's `sid` points at — and the same
-    `last_seen_at` stamp.
-    """
-    sibling.last_seen_at = datetime.now(UTC)
-    _, session_id = await issue_patient_session(
-        session,
-        sibling,
-        lifetime=timedelta(minutes=get_settings().PATIENT_TOKEN_EXPIRE_MINUTES),
-    )
-    return session_id
-
-
-# --- The multi-clinic account (discover, confirm by name, end it whole) ----------------
-
-
-async def find_sibling_candidates(
-    session: AsyncSession, email: str, exclude_tenant_id: UUID
-) -> list[tuple[MessagePatient, Tenant]]:
-    """Every OTHER clinic where this address is already a Brain-Message patient.
-
-    DISCOVERY ONLY — a pure read that mints no session, no token and no identity. The
-    address is the one attribute two clinics share, and it cannot by itself authorize a
-    link: it can be shared by a family or reassigned to someone else (OpenID Connect Core
-    §5.7 says as much of the `email` claim). So this returns QUESTIONS for the patient,
-    never grants; the grant is `confirm_sibling_link`, one named clinic at a time.
-
-    Only identities that already exist come back — a `MessagePatient` row is created by a
-    verified code and nothing else — so the account can rediscover a clinic the address
-    once proved itself at, never invent one. The channel gate is `channel_open_tenant`'s,
-    applied in the same query: a clinic that switched Brain-Message off is not offered.
-
-    `email` must come off a row the patient already proved (the authenticated
-    `MessagePatient.email`), never from a request. Ordered by clinic name so the client
-    shows the same list every time.
-    """
-    rows = await session.execute(
-        select(MessagePatient, Tenant)
-        .join(Tenant, Tenant.id == MessagePatient.tenant_id)
-        .where(
-            MessagePatient.email == normalize_email(email),
-            MessagePatient.tenant_id != exclude_tenant_id,
-            Tenant.brain_message_enabled.is_(True),
-        )
-        .order_by(Tenant.clinic_name, Tenant.id)
-    )
-    return [(patient, tenant) for patient, tenant in rows.all()]
-
-
-async def linked_identities(session: AsyncSession, patients: list[MessagePatient]) -> set[UUID]:
-    """Which of these identities the account already linked by an explicit confirmation.
-
-    One query for the whole candidate list. A link counts only under the identity AND its
-    own tenant — the pair the consent row is written with — so an event that somehow
-    disagreed with its identity's tenant would not read as consent.
-    """
-    if not patients:
-        return set()
-    rows = await session.execute(
-        select(PatientConsentEvent.tenant_id, PatientConsentEvent.subject_ref).where(
-            PatientConsentEvent.kind == CONSENT_KIND_ACCOUNT_LINK,
-            PatientConsentEvent.subject_ref.in_([str(p.id) for p in patients]),
-        )
-    )
-    recorded = {(tenant_id, subject_ref) for tenant_id, subject_ref in rows.all()}
-    return {p.id for p in patients if (p.tenant_id, str(p.id)) in recorded}
-
-
-async def confirm_sibling_link(
-    session: AsyncSession, patient: MessagePatient, tenant_id: UUID
-) -> tuple[MessagePatient, Tenant] | None:
-    """Link clinic `tenant_id` to the account `patient` is logged into — by consent.
-
-    Resolves the SAME address's identity at that clinic, scoped to that one tenant AND to
-    the address on the authenticated row, so no input reaches anybody else's identity;
-    then records the patient's explicit confirmation as a `CONSENT_KIND_ACCOUNT_LINK`
-    event on THAT clinic's tenant.
-
-    `None` for the patient's own clinic, an unknown clinic, a clinic with the channel off
-    and a clinic where the address never verified, alike: the router answers one 404 for
-    all of them, so the route is no oracle for which clinics know an address.
-
-    Idempotent: a second confirmation records nothing, and the row lock serializes two
-    concurrent ones on Postgres (SQLite ignores `FOR UPDATE`; the suite is sequential), so
-    a double tap cannot write two events. Commits BEFORE the caller issues the session —
-    `verify-otp`'s order: the consent trail must not depend on the session insert.
-    """
-    if tenant_id == patient.tenant_id:
-        return None
-    found = (
-        await session.execute(
-            select(MessagePatient, Tenant)
-            .join(Tenant, Tenant.id == MessagePatient.tenant_id)
-            .where(
-                MessagePatient.tenant_id == tenant_id,
-                MessagePatient.email == patient.email,
-                Tenant.brain_message_enabled.is_(True),
-            )
-            .with_for_update(of=MessagePatient)
-        )
-    ).first()
-    if found is None:
-        return None
-    sibling, tenant = found
-
-    already = await session.scalar(
-        select(PatientConsentEvent.id)
-        .where(
-            PatientConsentEvent.tenant_id == sibling.tenant_id,
-            PatientConsentEvent.subject_ref == str(sibling.id),
-            PatientConsentEvent.kind == CONSENT_KIND_ACCOUNT_LINK,
-        )
-        .limit(1)
-    )
-    if already is None:
-        session.add(
-            PatientConsentEvent(
-                tenant_id=sibling.tenant_id,
-                subject_ref=str(sibling.id),
-                kind=CONSENT_KIND_ACCOUNT_LINK,
-                legal_basis=CONSENT_LEGAL_BASIS_PENDING,
-            )
-        )
-    # The patient is back at this clinic, without a code — the fact `_resolve_patient`
-    # stamps on a login.
-    sibling.last_seen_at = datetime.now(UTC)
-    await session.commit()
-    # Tenant and a count only: never the address, never the clinic's name, and not the
-    # identity handle either — one line carrying two tenants' handles for the same human
-    # is exactly the cross-tenant join the per-clinic rows exist to avoid.
-    logger.info(
-        "patient_account_link_confirmed",
-        tenant_id=str(sibling.tenant_id),
-        consent_events_recorded=0 if already is not None else 1,
-    )
-    return sibling, tenant
-
-
 async def revoke_account_sessions(session: AsyncSession, email: str) -> int:
-    """End the whole account: every live session of the address, at every clinic, on
-    every device. Returns how many rows it revoked.
+    """End the whole account of an address: every live session, every clinic, every device.
 
-    Joined by ADDRESS, never by tenant: the account IS the address, so ending it must
-    reach the clinics the patient linked AND any other clinic that address signed into —
-    a live token for this account could open those anyway. It can only take access away.
-    Tokens bound to these rows by `sid` die on their next request
-    (`api/patient_access.py::get_current_patient`).
-
-    Rows already revoked keep their first stamp (`revoked_at IS NULL`), the idempotency
-    `revoke_patient_session` promises for one row. `email` must come off an AUTHENTICATED
-    patient row, never from a request.
+    Covers the account's rows AND every row still bound to an identity of the address that
+    was never adopted — whoever proved that inbox reaches those anyway, and a logout can only
+    take access away. `email` must come off an AUTHENTICATED row, never from a request.
+    Tokens bound to these rows by `sid` die on their next request. Rows already revoked keep
+    their first stamp.
     """
+    address = normalize_email(email)
     result = await session.execute(
         update(MessagePatientSession)
         .where(
             MessagePatientSession.revoked_at.is_(None),
-            MessagePatientSession.patient_id.in_(
-                select(MessagePatient.id).where(MessagePatient.email == normalize_email(email))
+            or_(
+                MessagePatientSession.account_id.in_(
+                    select(MessagePatientAccount.id).where(MessagePatientAccount.email == address)
+                ),
+                MessagePatientSession.patient_id.in_(
+                    select(MessagePatient.id).where(MessagePatient.email == address)
+                ),
             ),
         )
         .values(revoked_at=datetime.now(UTC))

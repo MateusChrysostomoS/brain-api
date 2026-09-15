@@ -9,6 +9,8 @@ from brain_api.models.demo_request import DemoRequest
 from brain_api.models.entitlement import Entitlement
 from brain_api.models.patient_access import (
     MessagePatient,
+    MessagePatientAccount,
+    MessagePatientAccountOtp,
     MessagePatientOtp,
     MessagePatientSession,
     PatientConsentEvent,
@@ -30,6 +32,8 @@ __all__ = [
     "DemoRequest",
     "Entitlement",
     "MessagePatient",
+    "MessagePatientAccount",
+    "MessagePatientAccountOtp",
     "MessagePatientOtp",
     "MessagePatientSession",
     "PatientConsentEvent",

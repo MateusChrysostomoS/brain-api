@@ -39,6 +39,19 @@ class ChannelsOut(BaseModel):
     brain_message: bool
 
 
+class PatientInviteOut(BaseModel):
+    """`GET /entitlements/patient-invite` — what a clinic hands its patients so they can add
+    it to their Brain-Message account: the short code and, once `BRAIN_MESSAGE_PORTAL_URL`
+    is set, the link. Neither is a secret (both only NAME the clinic), but they are the
+    clinic's own, so the tenant comes from the staff token like every route here."""
+
+    tenant_id: UUID
+    invite_code: str
+    # Whether a patient could use it right now — the gate the invite route applies.
+    brain_message_enabled: bool
+    invite_link: str | None = None
+
+
 class EntitlementOut(BaseModel):
     """`GET /entitlements` payload — resolved entitlement state for one tenant.
 

@@ -16,10 +16,12 @@ mode each test exists to catch:
   secrets under different names, and swapping them authenticates nothing.
 - Tenant isolation is structural here: the tenant is read off the session, never from
   input. The tests prove the structure holds even when a token is forged to disagree.
-- The multi-clinic account links by CONSENT, never by address: discovery hands out clinic
-  names without tokens, a confirmation needs the login's own cookie and a recent code, a
-  logout with a bearer ends every session of the ADDRESS (never of the clinic), and every
-  access token dies with the session row its `sid` names.
+- The account model (2026-09-15; its own tests live in tests/test_patient_account_invites.py):
+  the code opens an account and a clinic joins only by invite. What stays here is the
+  transition contract the portal of 2026-09-14 still speaks (old bodies,
+  `sibling_candidates`, the reopen-only confirm), a logout with a bearer that ends every
+  session of the ADDRESS (never of the clinic), and access tokens that die with the session
+  row their `sid` names.
 """
 
 import asyncio
@@ -55,7 +57,7 @@ from brain_api.models.patient_access import (
     CONSENT_KIND_ACCOUNT_LINK,
     CONSENT_KIND_CHANNEL_ACCESS,
     MessagePatient,
-    MessagePatientOtp,
+    MessagePatientAccountOtp,
     MessagePatientSession,
     PatientConsentEvent,
 )
@@ -137,11 +139,10 @@ async def _peek_code(sessionmaker, tenant_id, email=PATIENT_EMAIL) -> str:
     in a test hook) keeps the production path free of any "return the plaintext" branch.
     """
     async with sessionmaker() as session:
+        # The challenge is the ACCOUNT's, keyed by address; `tenant_id` stays in the
+        # signature only because callers name the clinic they log in through.
         row = await session.scalar(
-            select(MessagePatientOtp).where(
-                MessagePatientOtp.tenant_id == tenant_id,
-                MessagePatientOtp.email == email,
-            )
+            select(MessagePatientAccountOtp).where(MessagePatientAccountOtp.email == email)
         )
     assert row is not None, "no challenge was issued"
     for candidate in range(10**6):
@@ -302,7 +303,7 @@ async def test_wrong_code_is_rejected_and_costs_an_attempt(pclient):
 
     async with sessionmaker() as session:
         row = await session.scalar(
-            select(MessagePatientOtp).where(MessagePatientOtp.tenant_id == seed.both)
+            select(MessagePatientAccountOtp).where(MessagePatientAccountOtp.email == PATIENT_EMAIL)
         )
         assert row.attempts == 1, "a failed guess that is not counted is not rate-limited"
         # And no identity was minted for a failed verification.
@@ -319,7 +320,7 @@ async def test_expired_code_is_rejected(pclient):
     code = await _peek_code(sessionmaker, seed.both)
     async with sessionmaker() as session, session.begin():
         row = await session.scalar(
-            select(MessagePatientOtp).where(MessagePatientOtp.tenant_id == seed.both)
+            select(MessagePatientAccountOtp).where(MessagePatientAccountOtp.email == PATIENT_EMAIL)
         )
         row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
@@ -409,7 +410,7 @@ async def test_no_plaintext_code_reaches_the_logs(pclient, caplog):
     assert PATIENT_EMAIL not in app_logs, "the patient e-mail leaked into a log line"
     # And it is not in the database in the clear either.
     async with sessionmaker() as session:
-        row = await session.scalar(select(MessagePatientOtp))
+        row = await session.scalar(select(MessagePatientAccountOtp))
         assert row.code_hash != code
         assert row.code_hash == hash_refresh_token(code)
 
@@ -421,25 +422,21 @@ async def test_request_otp_never_reveals_whether_the_clinic_is_reachable(pclient
     """Same status AND same body for a real clinic, a channel-off one, and a made-up id."""
     client, sessionmaker, seed = pclient
     bodies = []
-    for tenant_id in (seed.both, seed.channel_off, uuid.uuid4()):
+    for tenant_id in (seed.channel_off, uuid.uuid4()):
         resp = await client.post(
             "/patient-access/request-otp",
             json={"tenant_id": str(tenant_id), "email": PATIENT_EMAIL},
         )
         assert resp.status_code == 200
         bodies.append(resp.json())
-    assert bodies[0] == bodies[1] == bodies[2]
-
-    # And a channel-off clinic issued no challenge at all — the answer was a pure façade.
+    # The old body naming a channel-off or unknown clinic issued no challenge at all.
     async with sessionmaker() as session:
-        rows = (
-            await session.scalars(
-                select(MessagePatientOtp).where(
-                    MessagePatientOtp.tenant_id == seed.channel_off
-                )
-            )
-        ).all()
-        assert rows == []
+        assert (await session.scalars(select(MessagePatientAccountOtp))).all() == []
+    for body in ({"tenant_id": str(seed.both), "email": PATIENT_EMAIL}, {"email": PATIENT_EMAIL}):
+        resp = await client.post("/patient-access/request-otp", json=body)
+        assert resp.status_code == 200
+        bodies.append(resp.json())
+    assert bodies[0] == bodies[1] == bodies[2] == bodies[3]
 
 
 async def test_request_otp_rate_limit_trips_per_ip(pclient, monkeypatch):
@@ -952,37 +949,6 @@ async def _seed_identity(sessionmaker, tenant_id, email=PATIENT_EMAIL):
         return patient.id
 
 
-async def test_verify_otp_names_a_sibling_clinic_without_its_token(pclient):
-    """Two open clinics, one address: the login at one lists the other — as a question."""
-    client, sessionmaker, seed = pclient
-    sibling = (await _login(client, sessionmaker, seed.only_secretaria)).json()
-    async with sessionmaker() as session:
-        sessions_before = await session.scalar(
-            select(func.count()).select_from(MessagePatientSession)
-        )
-
-    resp = await _login(client, sessionmaker, seed.both)
-    assert resp.status_code == 200, resp.text
-    login = resp.json()
-
-    # The exact shape IS the assertion: a name to ask about, and nothing that opens it.
-    assert login["sibling_candidates"] == [
-        {
-            "tenant_id": str(seed.only_secretaria),
-            "clinic_name": CLINIC_ONLY_SECRETARIA,
-            "already_linked": False,
-        }
-    ]
-    assert login["patient_ref"] != sibling["patient_ref"]
-    async with sessionmaker() as session:
-        # Discovery minted nothing for the sibling: the one new row is the login's own.
-        assert (
-            await session.scalar(select(func.count()).select_from(MessagePatientSession))
-            == sessions_before + 1
-        )
-        assert await session.scalar(_link_events()) == 0
-
-
 async def test_a_clinic_with_the_channel_off_is_never_a_candidate(pclient):
     client, sessionmaker, seed = pclient
     await _seed_identity(sessionmaker, seed.channel_off)
@@ -1011,17 +977,20 @@ async def test_a_clinic_the_address_never_verified_at_is_never_a_candidate(pclie
     assert rows == [], "neither discovery nor a confirm attempt may mint an identity"
 
 
-@pytest.mark.parametrize("reason", ["another_address", "own_clinic", "unknown_clinic"])
+@pytest.mark.parametrize("reason", ["another_address", "not_in_account", "unknown_clinic"])
 async def test_confirm_without_a_matching_candidate_is_refused(pclient, reason):
     """One 404 for every reason — and nothing recorded, nothing minted."""
     client, sessionmaker, seed = pclient
     if reason == "another_address":
         # That clinic knows a DIFFERENT address: its patient is not this account's.
         await _seed_identity(sessionmaker, seed.only_secretaria, email=OTHER_EMAIL)
+    if reason == "not_in_account":
+        # Same address, no gesture at that clinic: an e-mail match is not membership.
+        await _seed_identity(sessionmaker, seed.only_secretaria)
     login = (await _login(client, sessionmaker, seed.both)).json()
     target = {
         "another_address": seed.only_secretaria,
-        "own_clinic": seed.both,
+        "not_in_account": seed.only_secretaria,
         "unknown_clinic": uuid.uuid4(),
     }[reason]
 
@@ -1033,62 +1002,6 @@ async def test_confirm_without_a_matching_candidate_is_refused(pclient, reason):
         assert (
             await session.scalar(select(func.count()).select_from(MessagePatientSession)) == 1
         ), "a refused confirmation must not mint a session"
-
-
-async def test_confirm_opens_the_existing_identity_and_records_the_link_once(pclient):
-    from brain_api.config import get_settings
-
-    client, sessionmaker, seed = pclient
-    login, sibling = await _two_clinic_account(client, sessionmaker, seed)
-
-    first = await _confirm(client, login["access_token"], seed.only_secretaria)
-    assert first.status_code == 200, first.text
-    body = first.json()
-    assert body["tenant_id"] == str(seed.only_secretaria)
-    assert body["clinic_name"] == CLINIC_ONLY_SECRETARIA
-    # The identity that ALREADY existed there (the handle secretarIA knows), not a new one.
-    assert body["patient_ref"] == sibling["patient_ref"]
-    claims = decode_token(body["access_token"])
-    assert claims["scope"] == PATIENT_TOKEN_SCOPE
-    assert claims["tenant_id"] == str(seed.only_secretaria)
-    assert claims["sub"] == sibling["patient_ref"]
-    # No cookie for it: the one flat cookie stays the login's.
-    assert PATIENT_SESSION_COOKIE_NAME not in first.cookies
-    async with sessionmaker() as session:
-        row = await session.get(MessagePatientSession, uuid.UUID(claims["sid"]))
-    assert row is not None and row.revoked_at is None
-    assert str(row.patient_id) == sibling["patient_ref"]
-    assert row.tenant_id == seed.only_secretaria
-    # Descends from the login it was confirmed from, and lives only as long as its JWT.
-    assert claims["login_sid"] == decode_token(login["access_token"])["sid"]
-    assert patient_access._as_utc(row.expires_at) <= datetime.now(UTC) + timedelta(
-        minutes=get_settings().PATIENT_TOKEN_EXPIRE_MINUTES, seconds=5
-    )
-
-    second = await _confirm(client, login["access_token"], seed.only_secretaria)
-    assert second.status_code == 200, second.text
-    async with sessionmaker() as session:
-        links = (
-            await session.scalars(
-                select(PatientConsentEvent).where(
-                    PatientConsentEvent.kind == CONSENT_KIND_ACCOUNT_LINK
-                )
-            )
-        ).all()
-    assert len(links) == 1, "a second confirmation must not duplicate the consent trail"
-    assert links[0].tenant_id == seed.only_secretaria
-    assert links[0].subject_ref == sibling["patient_ref"]
-    assert links[0].legal_basis
-
-    # The next login remembers the answer, so the client does not have to ask again.
-    again = (await _login(client, sessionmaker, seed.both)).json()
-    assert again["sibling_candidates"] == [
-        {
-            "tenant_id": str(seed.only_secretaria),
-            "clinic_name": CLINIC_ONLY_SECRETARIA,
-            "already_linked": True,
-        }
-    ]
 
 
 async def test_a_sibling_token_opens_that_clinic_and_only_that_clinic(pclient, monkeypatch):
@@ -1147,8 +1060,8 @@ async def test_logout_with_a_bearer_ends_every_session_of_the_account(pclient):
         rows = (await session.scalars(select(MessagePatientSession))).all()
     mine = [r for r in rows if str(r.patient_id) in account]
     theirs = [r for r in rows if str(r.patient_id) == bystander["patient_ref"]]
-    # The sibling's own earlier login, the login, and the linked session: all three.
-    assert len(mine) == 3
+    # The sibling's own earlier login and the login: a clinic token names its login's row.
+    assert len(mine) == 2
     assert all(r.revoked_at is not None for r in mine)
     assert len(theirs) == 1 and theirs[0].revoked_at is None
 
@@ -1179,41 +1092,13 @@ async def test_logout_without_a_bearer_still_ends_only_the_cookie_session(pclien
     async with sessionmaker() as session:
         rows = (await session.scalars(select(MessagePatientSession))).all()
     assert [r.id for r in rows if r.revoked_at is not None] == [login_sid]
-    assert len(rows) == 3
+    assert len(rows) == 2
     assert (
         await client.get("/patient-access/threads", headers=_bearer(linked["access_token"]))
     ).status_code == 401
     assert (
         await client.get("/patient-access/threads", headers=_bearer(sibling["access_token"]))
     ).status_code == 200
-
-
-async def test_a_link_that_races_a_logout_dies_with_the_login(pclient, monkeypatch):
-    """The interleaving the security review traced: confirm authenticates, a logout
-    commits on another connection, THEN confirm inserts its session row. The row is live
-    — the logout's UPDATE could not see it — so what must die is the token, by `login_sid`.
-    """
-    client, sessionmaker, seed = pclient
-    login, _ = await _two_clinic_account(client, sessionmaker, seed)
-    real_link = patient_access.confirm_sibling_link
-
-    async def _link_then_concurrent_logout(session, patient, tenant_id):
-        linked = await real_link(session, patient, tenant_id)
-        async with sessionmaker() as other:  # the logout, on its own session
-            assert await patient_access.revoke_account_sessions(other, patient.email) >= 1
-        return linked
-
-    monkeypatch.setattr(patient_access, "confirm_sibling_link", _link_then_concurrent_logout)
-    resp = await _confirm(client, login["access_token"], seed.only_secretaria)
-    assert resp.status_code == 200, resp.text
-
-    claims = decode_token(resp.json()["access_token"])
-    async with sessionmaker() as session:
-        row = await session.get(MessagePatientSession, uuid.UUID(claims["sid"]))
-    assert row.revoked_at is None, "precondition: the insert really landed after the revoke"
-    assert (
-        await client.get("/patient-access/threads", headers=_bearer(resp.json()["access_token"]))
-    ).status_code == 401
 
 
 async def test_confirm_needs_the_login_cookie_not_just_a_bearer(pclient):
@@ -1230,26 +1115,6 @@ async def test_confirm_needs_the_login_cookie_not_just_a_bearer(pclient):
     # own earlier login) confirm anything.
     resp = await _confirm(client, sibling["access_token"], seed.both)
     assert resp.status_code == 401
-    async with sessionmaker() as session:
-        assert await session.scalar(_link_events()) == 0
-
-
-async def test_confirm_needs_a_recent_login(pclient):
-    """Linking is a sensitive account change: an old login must prove the address again."""
-    from brain_api.config import get_settings
-
-    client, sessionmaker, seed = pclient
-    login, _ = await _two_clinic_account(client, sessionmaker, seed)
-    window = get_settings().PATIENT_LINK_CONFIRM_WINDOW_MINUTES
-    async with sessionmaker() as session, session.begin():
-        row = await session.get(
-            MessagePatientSession, uuid.UUID(decode_token(login["access_token"])["sid"])
-        )
-        row.created_at = datetime.now(UTC) - timedelta(minutes=window, seconds=1)
-
-    resp = await _confirm(client, login["access_token"], seed.only_secretaria)
-    assert resp.status_code == 401
-    assert resp.json()["detail"] == "reauthentication_required"
     async with sessionmaker() as session:
         assert await session.scalar(_link_events()) == 0
 
@@ -1310,39 +1175,6 @@ async def test_a_bearer_without_the_cookie_cannot_spend_the_link_budget(pclient,
     assert mine.status_code == 200, mine.text
 
 
-async def test_discovery_and_linking_log_tenants_and_counts_only(pclient, monkeypatch):
-    """What the call sites HAND the logger. structlog prints (PrintLoggerFactory), so
-    caplog never sees these events — recording the calls is the only honest check."""
-    from brain_api.api import patient_access as router_mod
-
-    events: list[tuple[str, dict]] = []
-
-    class _Recorder:
-        def info(self, event, **fields):
-            events.append((event, fields))
-
-        warning = error = debug = info
-
-    monkeypatch.setattr(router_mod, "logger", _Recorder())
-    monkeypatch.setattr(patient_access, "logger", _Recorder())
-
-    client, sessionmaker, seed = pclient
-    login, _ = await _two_clinic_account(client, sessionmaker, seed)
-    await _confirm(client, login["access_token"], seed.only_secretaria)
-    await client.post("/patient-access/logout", headers=_bearer(login["access_token"]))
-
-    last = {name: fields for name, fields in events}
-    assert last["patient_sibling_candidates_found"] == {"tenant_id": str(seed.both), "count": 1}
-    assert last["patient_account_link_confirmed"] == {
-        "tenant_id": str(seed.only_secretaria),
-        "consent_events_recorded": 1,
-    }
-    assert set(last["patient_account_sessions_revoked"]) == {"tenant_id", "count"}
-    rendered = repr(events)
-    for personal in (PATIENT_EMAIL, CLINIC_ONLY_SECRETARIA, CLINIC_BOTH):
-        assert personal not in rendered
-
-
 # --- 8) Silent renewal: the cookie alone reopens the account -------------------------------
 #
 # The symptom this closes: reload the portal and you are asked for a code again, because
@@ -1386,7 +1218,7 @@ async def test_the_cookie_alone_reopens_the_login_clinic(pclient):
     assert body["tenant_id"] == str(seed.both)
     assert body["patient_ref"] == login["patient_ref"]
     assert body["clinic_name"] == CLINIC_BOTH
-    assert body["linked_sessions"] == []
+    assert [s["tenant_id"] for s in body["linked_sessions"]] == [str(seed.both)]
     # (No "token differs from the login token" check: a JWT is a pure function of its
     # claims, and a refresh inside the same second as the login legitimately yields the
     # same bytes. What matters is below: the row, the rotation, and that it opens.)
@@ -1483,83 +1315,6 @@ async def test_a_missing_or_dead_cookie_is_refused_and_expired(pclient, reason):
     assert PATIENT_SESSION_COOKIE_NAME.lower() in set_cookie and "max-age=0" in set_cookie
 
 
-async def test_a_linked_clinic_survives_a_refresh(pclient):
-    """Risk A. The sibling's token names the login row by `login_sid`; a refresh that
-    replaced that row would kill it. Both the token minted BEFORE and the one the refresh
-    reissues must open the linked clinic — with no confirmation and no code in between."""
-    client, sessionmaker, seed = pclient
-    login, sibling = await _two_clinic_account(client, sessionmaker, seed)
-    linked = (await _confirm(client, login["access_token"], seed.only_secretaria)).json()
-
-    resp = await _refresh(client)
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-
-    # (1) The pre-refresh sibling token still works: its `login_sid` still names a live row.
-    before = await _threads(client, linked["access_token"])
-    assert before.status_code == 200, before.text
-    assert before.json()["data"] == [
-        {"product": "secretaria", "clinic_name": CLINIC_ONLY_SECRETARIA}
-    ]
-
-    # (2) The refresh brought the linked clinic back on its own — the reload case, where
-    # the page holds nothing and the pre-refresh token is gone.
-    assert [s["tenant_id"] for s in body["linked_sessions"]] == [str(seed.only_secretaria)]
-    reissued = body["linked_sessions"][0]
-    assert reissued["clinic_name"] == CLINIC_ONLY_SECRETARIA
-    assert reissued["patient_ref"] == sibling["patient_ref"]
-    claims = decode_token(reissued["access_token"])
-    assert claims["tenant_id"] == str(seed.only_secretaria)
-    assert claims["sub"] == sibling["patient_ref"]
-    assert claims["login_sid"] == decode_token(login["access_token"])["sid"]
-    assert claims["sid"] != decode_token(linked["access_token"])["sid"], "a row of its own"
-    after = await _threads(client, reissued["access_token"])
-    assert after.status_code == 200, after.text
-    assert after.json()["data"] == before.json()["data"]
-    # Still only that clinic: the login's PreCheck does not leak into the linked token.
-    assert (
-        await client.post(
-            "/patient-access/threads/precheck/messages",
-            headers=_bearer(reissued["access_token"]),
-            json={"text": "oi"},
-        )
-    ).status_code == 403
-
-    # Remembered as linked, and the consent trail did not grow.
-    assert body["sibling_candidates"] == [
-        {
-            "tenant_id": str(seed.only_secretaria),
-            "clinic_name": CLINIC_ONLY_SECRETARIA,
-            "already_linked": True,
-        }
-    ]
-    async with sessionmaker() as session:
-        assert await session.scalar(_link_events()) == 1
-
-
-async def test_refresh_never_mints_a_session_for_a_clinic_that_was_only_discovered(pclient):
-    """Discovery is not consent: a candidate the patient never confirmed gets no token."""
-    client, sessionmaker, seed = pclient
-    login, sibling = await _two_clinic_account(client, sessionmaker, seed)
-
-    body = (await _refresh(client)).json()
-    assert body["linked_sessions"] == []
-    assert body["sibling_candidates"] == [
-        {
-            "tenant_id": str(seed.only_secretaria),
-            "clinic_name": CLINIC_ONLY_SECRETARIA,
-            "already_linked": False,
-        }
-    ]
-    async with sessionmaker() as session:
-        rows = await session.scalar(
-            select(func.count())
-            .select_from(MessagePatientSession)
-            .where(MessagePatientSession.patient_id == uuid.UUID(sibling["patient_ref"]))
-        )
-    assert rows == 1, "only the sibling's own login row — nothing minted by the refresh"
-
-
 async def test_two_refreshes_with_the_same_cookie_do_not_lock_the_patient_out(pclient):
     """Risk B, sequentially. The portal polls several threads and clinics at once, so a
     second renewal carrying the value a first one just replaced is a request that was in
@@ -1587,7 +1342,8 @@ async def test_two_refreshes_with_the_same_cookie_do_not_lock_the_patient_out(pc
     assert (await _threads(client, second.json()["access_token"])).status_code == 200
     # The linked clinic came back on BOTH answers.
     assert [s["tenant_id"] for s in second.json()["linked_sessions"]] == [
-        str(seed.only_secretaria)
+        str(seed.both),
+        str(seed.only_secretaria),
     ]
 
     # Nothing was revoked, and the newest cookie renews normally afterwards.
@@ -1657,44 +1413,6 @@ async def test_the_replaced_cookie_is_theft_once_the_window_closes(pclient):
     ):
         assert (await _threads(client, token)).status_code == 401
     assert (await _refresh(client, cookie=t1)).status_code == 401
-
-
-async def test_a_first_link_on_an_old_session_still_needs_a_fresh_code(pclient):
-    """Risk C, decided: a refresh proves the cookie, not the inbox, so `created_at` stays
-    put and a FIRST link past the window is refused even on a freshly renewed session.
-    Once linked (with a fresh code), the clinic rides every later refresh with no window."""
-    from brain_api.config import get_settings
-
-    client, sessionmaker, seed = pclient
-    login, _ = await _two_clinic_account(client, sessionmaker, seed)
-    window = get_settings().PATIENT_LINK_CONFIRM_WINDOW_MINUTES
-    stale = datetime.now(UTC) - timedelta(minutes=window, seconds=1)
-    async with sessionmaker() as session, session.begin():
-        row = await session.get(
-            MessagePatientSession, uuid.UUID(decode_token(login["access_token"])["sid"])
-        )
-        row.created_at = stale
-
-    refreshed = (await _refresh(client)).json()
-    assert refreshed["sibling_candidates"][0]["already_linked"] is False
-    resp = await _confirm(client, refreshed["access_token"], seed.only_secretaria)
-    assert resp.status_code == 401
-    assert resp.json()["detail"] == "reauthentication_required"
-    async with sessionmaker() as session:
-        assert await session.scalar(_link_events()) == 0
-
-    # A fresh code reopens that door...
-    again = (await _login(client, sessionmaker, seed.both)).json()
-    assert (await _confirm(client, again["access_token"], seed.only_secretaria)).status_code == 200
-    # ...and from then on the clinic needs no window at all: age this login too, refresh.
-    async with sessionmaker() as session, session.begin():
-        row = await session.get(
-            MessagePatientSession, uuid.UUID(decode_token(again["access_token"])["sid"])
-        )
-        row.created_at = stale
-    body = (await _refresh(client)).json()
-    assert [s["tenant_id"] for s in body["linked_sessions"]] == [str(seed.only_secretaria)]
-    assert (await _threads(client, body["linked_sessions"][0]["access_token"])).status_code == 200
 
 
 async def test_refresh_logs_ids_only(pclient, caplog, capsys):

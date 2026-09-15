@@ -17,6 +17,7 @@ from sqlalchemy import Boolean, DateTime, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from brain_api.core.database import Base
+from brain_api.core.invite_codes import generate_invite_code
 from brain_api.services import onboarding
 
 
@@ -110,6 +111,16 @@ class Tenant(Base):
     )
     brain_message_enabled: Mapped[bool] = mapped_column(
         Boolean, server_default=text("false"), default=False
+    )
+
+    # --- Patient invite (migration 0020_patient_accounts) ------------------------------
+    # The short, typeable code a clinic hands its patients so they can add it to their
+    # Brain-Message account (`core/invite_codes.py`). It only NAMES the clinic; the channel
+    # gate still decides. Nullable in the database on purpose: a tenant inserted by the
+    # previous brain-api during the deploy window has none, and `GET
+    # /entitlements/patient-invite` mints it on first read. 0020 backfilled every tenant.
+    patient_invite_code: Mapped[str | None] = mapped_column(
+        String(16), unique=True, nullable=True, default=generate_invite_code
     )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

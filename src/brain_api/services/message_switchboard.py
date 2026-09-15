@@ -244,11 +244,9 @@ async def list_messages(
     request rate and the "reply appears up to one interval late" feel — and it is NOT a
     requirement of this round. Recorded here so it is a decision, not an oversight.
 
-    secretarIA REQUIRES `tenant_id` as a query parameter ("an `external_id` alone is a
-    bearer-like handle") — that requirement is the reason a guessed id is not a
-    cross-tenant read over there. PreCheck's route takes only `session_ref`, scoping by
-    the address derived from it; brain-api still resolves that ref from the session, so
-    the scope holds on this side regardless.
+    Both GET routes carry the tenant determined by the authenticated patient
+    session. PreCheck filters the bm: session by clinic as well as reference;
+    references shared across clinics therefore cannot cross the boundary.
     """
     if product == PRODUCT_SECRETARIA:
         params: dict[str, Any] = {"tenant_id": str(tenant_id)}
@@ -261,7 +259,9 @@ async def list_messages(
             params=params,
         )
 
-    params = {"since": since} if since else {}
+    params = {"tenant_id": str(tenant_id)}
+    if since:
+        params["since"] = since
     return await _call(
         product,
         "GET",

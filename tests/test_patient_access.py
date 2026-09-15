@@ -702,7 +702,7 @@ async def test_the_tap_id_is_bounded_and_the_body_stays_closed(pclient, monkeypa
 
 
 async def test_poll_relays_to_each_products_own_read_route(pclient, monkeypatch):
-    """secretarIA needs `tenant_id` as a query param; PreCheck scopes by the ref alone."""
+    """Both product polls carry the authenticated tenant scope."""
     client, sessionmaker, seed = pclient
     _configure_mesh(monkeypatch)
     calls = _spy_transport(monkeypatch, payload={"data": []})
@@ -721,6 +721,7 @@ async def test_poll_relays_to_each_products_own_read_route(pclient, monkeypatch)
     assert calls[0]["params"]["tenant_id"] == str(seed.both)
     assert calls[0]["params"]["since"] == "2026-09-08T00:00:00Z"
     assert calls[1]["url"] == f"/internal/brain-message/sessions/{ref}/messages"
+    assert calls[1]["params"]["tenant_id"] == str(seed.both)
 
 
 async def test_relay_to_an_unowned_product_is_refused_before_any_network_call(pclient, monkeypatch):

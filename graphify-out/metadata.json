@@ -1,0 +1,11 @@
+﻿{
+    "metadata_schema":  "brain.graphify-metadata/v1",
+    "repository":  "brain-api",
+    "repository_path":  "C:\\TECH\\BRAIN\\brain-api",
+    "branch":  "main",
+    "commit":  "d82162c3063579eb90cadd8113bbe6dec7f51f87",
+    "generated_at":  "2026-09-16T17:53:02.6482671Z",
+    "graphify_version":  "0.9.5",
+    "graph_schema":  "networkx-node-link (unversioned upstream)",
+    "graph_sha256":  "f9f6b2c5e5fee5024a1d902e5906432312ed1efa106f44d53ea32ffc77ace764"
+}

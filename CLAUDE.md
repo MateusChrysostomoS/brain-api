@@ -1,21 +1,9 @@
 # brain-api
 
-## Documentação — manter em dia (obrigatório)
+## Documentação
 
-Os arquivos em `docs/` são a **fonte de verdade pra entender o projeto** — o objetivo é que uma
-sessão nova do Claude Code (ou qualquer pessoa) entenda tudo, profundamente, só lendo `docs/`.
-Por isso eles **têm que refletir o estado real** do projeto.
-
-**Quando atualizar:** ao fazer mudanças numa sessão, atualize os docs afetados — **não
-necessariamente na hora de cada mudança, mas no FIM da sessão**, depois que tudo foi **validado e
-verificado** (testes passando, deploy/migração confirmados). Documentar antes de validar gera doc
-errado; documentar depois garante que o doc descreve o que realmente está no ar.
-
-**Regras:**
-- Feature grande/multi-camada → um `docs/CHECKPOINT_<FEATURE>.md` (estado, o que entrou onde,
-  deployado/testado, pendências) + 1 linha de ponteiro nos docs relevantes.
-- Cite âncoras estáveis (nome de função/módulo), não números de linha frágeis, quando possível.
-- Mantenha o `CHECKPOINT_*` da feature em dia até ela ser 100% concluída/encerrada; aí vira histórico.
+`docs/` é a fonte de verdade deste repo. Regra geral de quando/como atualizar (CHECKPOINT,
+âncoras estáveis) em `AI_WORKFLOW.md` — aqui só o que diverge, se houver.
 
 ## Prompts pendentes
 
@@ -104,8 +92,10 @@ errado; documentar depois garante que o doc descreve o que realmente está no ar
   para quem já tem conta. Inclui `tenants.patient_invite_code`, compatibilidade com o frontend atual
   (corpo antigo com `tenant_id` = login + convite) e a restrição de nunca mudar `MessagePatient.id`
   (handle da secretarIA e do PreCheck). Resolve o bug de prioridade média da auditoria (link de outra
-  clínica ignorado com conta aberta). **EXECUTADO em 2026-09-15, UNCOMMITTED (sem hash: commit é
-  decisão do dono) e NÃO deployado — migração `0020_patient_accounts` NÃO aplicada em produção.** Conta =
+  clínica ignorado com conta aberta). **EXECUTADO em 2026-09-15, COMMITADO em `main`
+  (`bc29f76 Add comprehensive tests for patient account invites and clinic associations`, confirmado
+  2026-09-16) — deploy em produção segue NÃO confirmado (migração `0020_patient_accounts`, sem forma
+  de checar por código; não presuma aplicada).** Conta =
   `message_patient_accounts` (e-mail único) + `MessagePatient.account_id`; token de conta
   (`scope=patient_account`) + um token por clínica ligado à linha de login; `POST /patient-access/clinics`
   (convite por UUID, código curto de 8 ou link); `GET /entitlements/patient-invite` (staff); corpo antigo
@@ -113,7 +103,26 @@ errado; documentar depois garante que o doc descreve o que realmente está no ar
   sem consulta, revisão e provas (migração provada em `postgres:16` descartável) em
   `docs/CHECKPOINT_portal_clinicas_convite.md`; skill `cross-tenant-account-linking` reescrita para o
   modelo de convite. Deploy: `alembic upgrade head` → brain-api → só então o irmão
-  `PROMPT_BRAIN_MESSAGE_PORTAL_CLINICAS_FRONTEND.md`.
+  `PROMPT_BRAIN_MESSAGE_PORTAL_CLINICAS_FRONTEND.md` (substituído, ver `PORTAL_CHAT_SEM_GATE.md` no
+  Brain-Message-Frontend).
+- `z_prompts/PROMPT_BRAIN_MESSAGE_PORTAL_SESSAO_PENDENTE.md` (raiz de BRAIN, gerado 2026-09-16 via
+  `/prompt-generator`, onda 1 de `PLANO_LOGIN_SEM_GATE_PACIENTE_NOVO.md`) — cria o conceito de sessão
+  pendente (identidade sem e-mail verificado, para o paciente conversar e agendar antes de confirmar
+  a conta) e o link direto ao PreCheck sem autenticação. Consome o modelo de conta do prompt acima
+  (nunca muda `MessagePatient.id`). **EXECUTADO em 2026-09-16, NÃO COMMITADO (sem hash: commit é
+  decisão do dono, e há sessões paralelas nesta árvore) e não deployado — migração
+  `0021_patient_pending_sessions` NÃO aplicada em produção.** Uma visita
+  (`message_pending_sessions`) carrega a conversa antes de qualquer e-mail; a identidade nasce com
+  `MessagePatient.email` anulável e **mantém o mesmo id** depois do código. Quatro rotas novas
+  (`POST /patient-access/clinics/lookup`, `/pending`, `/pending/request-otp`,
+  `/pending/verify-otp`) + `POST /internal/brain-message/pending-email` (a secretarIA entrega o
+  e-mail pela perna de serviço — o navegador nunca nomeia a caixa que recebe o código). Terceiro
+  token do paciente (`scope=patient_pending`) + cookie `__Host-patient_pending`. Link direto do
+  PreCheck = `POST /pending` com `product: "precheck"`, aberto, sem gate de agendamento em lugar
+  nenhum. Contrato HTTP completo, formato do token, 9 decisões sem consulta, 6 riscos aceitos,
+  ordem de deploy e provas em `docs/CHECKPOINT_portal_sessao_pendente.md`; skill
+  `cross-tenant-account-linking` estendida com a seção "identidade antes do atributo". **Ordem de
+  deploy: `alembic upgrade head` → brain-api → só então secretarIA (onda 2) → frontend (onda 3).**
 - `z_prompts/PROMPT_BRAIN_MESSAGE_PRECHECK_PARIDADE_4_EXAMES_BRAIN_API.md` (raiz de BRAIN, gerado 2026-09-14;
   **Opus 5, esforço alto**) — parte 4 da série de paridade do PreCheck no Portal: `PatientMessageIn`
   (`extra="forbid"`) passa a aceitar anexo só no produto precheck, com validação de tipo real/tamanho antes de

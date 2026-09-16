@@ -33,6 +33,11 @@ os.environ.setdefault("PATIENT_OTP_RATE_LIMIT_PER_MIN", "0")
 os.environ.setdefault("PATIENT_OTP_EMAIL_RATE_LIMIT_PER_MIN", "0")
 os.environ.setdefault("PATIENT_VERIFY_RATE_LIMIT_PER_MIN", "0")
 os.environ.setdefault("PATIENT_LINK_RATE_LIMIT_PER_MIN", "0")
+# Same reasoning for the fifth bucket, the one the UNAUTHENTICATED pending routes share
+# (tests/test_patient_pending_session.py opens a visit in nearly every test, from one fake IP,
+# against a budget that is deliberately the tightest in the app); its own rate-limit test
+# monkeypatches the limiter instance.
+os.environ.setdefault("PATIENT_PENDING_RATE_LIMIT_PER_MIN", "0")
 
 # Mesh upstreams are UNSET in tests: the proxy / internal-data clients then degrade to an
 # empty page with no network. Force-empty here (real env beats the .env file in

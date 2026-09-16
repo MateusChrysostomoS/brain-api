@@ -12,14 +12,20 @@ authenticate an end user. The patient's own leg uses purpose-scoped JWTs instead
 `api/deps.py::get_current_principal` rejects ANY token carrying a `scope`, so neither kind
 below can open a staff route.
 
-TWO PATIENT TOKENS SINCE THE ACCOUNT MODEL (2026-09-15):
-- the ACCOUNT token (`scope=patient_account`): e-mail + code open the account; this token
-  adds clinics by invite (`POST /clinics`) and ends the account. It opens no thread.
-- one CLINIC token per clinic of the account (`scope=patient_message`, one tenant): the only
-  thing the thread routes accept.
-Both name the login's session row as `sid`, so a logout ends every leg. A clinic enters the
-account only by the patient's gesture — the clinic's link on login, or its link/code pasted
-later — never by an e-mail match (docs/CHECKPOINT_portal_clinicas_convite.md).
+THREE PATIENT TOKENS, EACH NARROWER THAN THE LAST:
+- the ACCOUNT token (`scope=patient_account`, since 2026-09-15): e-mail + code open the
+  account; this token adds clinics by invite (`POST /clinics`) and ends the account. It opens
+  no thread.
+- one CLINIC token per clinic of the account (`scope=patient_message`, one tenant): the
+  everyday credential of the thread routes.
+- the PENDING token (`scope=patient_pending`, since 2026-09-16): a visitor who has proven
+  NOTHING, talking to one clinic through the link they opened. It reaches the thread routes of
+  that clinic and its own four routes, and nothing else — no account exists to reach.
+The first two name the login's session row as `sid`, so a logout ends every leg; the third
+names a `message_pending_sessions` row instead, which is why no decoder accepts two of them.
+A clinic enters an account only by the patient's gesture — the clinic's link on login, or its
+link/code pasted later — never by an e-mail match
+(docs/CHECKPOINT_portal_clinicas_convite.md, docs/CHECKPOINT_portal_sessao_pendente.md).
 """
 
 from datetime import UTC, datetime
@@ -40,9 +46,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
 from brain_api.core.cookies import (
+    clear_patient_pending_cookie,
     clear_patient_session_cookie,
+    read_patient_pending_cookie,
     read_patient_session_cookie,
     require_client_header,
+    set_patient_pending_cookie,
     set_patient_session_cookie,
 )
 from brain_api.core.database import get_session
@@ -50,8 +59,10 @@ from brain_api.core.logging import get_logger
 from brain_api.core.ratelimit import SlidingWindowLimiter, client_ip
 from brain_api.core.security import (
     create_patient_account_token,
+    create_patient_pending_token,
     create_patient_token,
     decode_patient_account_token,
+    decode_patient_pending_token,
     decode_patient_token,
 )
 from brain_api.models import Tenant
@@ -59,9 +70,12 @@ from brain_api.models.patient_access import (
     MessagePatient,
     MessagePatientAccount,
     MessagePatientSession,
+    MessagePendingSession,
 )
 from brain_api.schemas.patient_access import (
     ClinicInviteIn,
+    ClinicLookupIn,
+    ClinicPublicOut,
     ClinicSessionOut,
     ConfirmSiblingIn,
     MessageOut,
@@ -69,6 +83,10 @@ from brain_api.schemas.patient_access import (
     OtpVerifyIn,
     PatientAccountOut,
     PatientMessageIn,
+    PendingSessionIn,
+    PendingSessionOut,
+    PendingVerifyIn,
+    PublicProductsOut,
     RelayOut,
     SiblingCandidateOut,
     ThreadListOut,
@@ -98,6 +116,15 @@ _verify_limiter = SlidingWindowLimiter(
 _link_limiter = SlidingWindowLimiter(
     "patient_account_link", lambda: get_settings().PATIENT_LINK_RATE_LIMIT_PER_MIN
 )
+# A fifth, for the two routes a stranger can reach with NO credential at all (the pending
+# visit and the pre-login clinic lookup). Keyed by IP because nothing else exists yet, and
+# deliberately the tightest budget in the file: `POST /pending` WRITES an identity and a
+# session per call, so this is what stands between a script and a table full of anonymous
+# rows. Same caveat as `_ip_limiter` behind the portal proxy, and the same answer: it is the
+# only key a request without a session has.
+_pending_limiter = SlidingWindowLimiter(
+    "patient_pending_open", lambda: get_settings().PATIENT_PENDING_RATE_LIMIT_PER_MIN
+)
 
 # The e-mail template secretarIA renders; brain-api owns no SMTP of its own.
 _OTP_EMAIL_TEMPLATE = "patient_access_otp"
@@ -110,6 +137,10 @@ _REAUTH_REQUIRED = "reauthentication_required"
 _SIBLING_NOT_FOUND = "sibling_not_found"
 # One answer for an unparseable invite, an unknown clinic and a clinic with the channel off.
 _INVITE_NOT_FOUND = "clinic_invite_not_found"
+# The pending visit has no address yet: secretarIA has not claimed one over the internal leg.
+# Named, not generic, because this is the one refusal a CLIENT can act on - it means "ask for
+# the e-mail in the chat first", not "you are not allowed".
+_PENDING_EMAIL_MISSING = "pending_email_missing"
 
 
 def _bearer_value(authorization: str | None) -> str | None:
@@ -239,6 +270,99 @@ async def get_current_account(
     if _bearer_value(authorization) is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
     found = await _authenticate_account(authorization, session)
+    if found is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
+    return found
+
+
+# --- The PENDING visit: chat first, e-mail later, code last (2026-09-16) -------------------
+#
+# A FOURTH surface next to the account's three, and the owner's flow is what forces it:
+#
+#     link -> chat -> e-mail (typed in the conversation) -> LGPD -> REAL appointment -> code
+#
+# Every step before the last one happens with nothing proven. The routes below are therefore
+# the only ones in this module that a stranger can reach with no credential at all, and each
+# one is narrowed by something other than authentication:
+#
+#   * `POST /clinics/lookup`  reads nothing but three fields the invite link already implies;
+#   * `POST /pending`         writes, so it is the tightest per-IP budget in the file;
+#   * `POST /pending/request-otp` and `/pending/verify-otp` need a pending token AND an address
+#     this repo received from secretarIA, never from the caller.
+#
+# What a pending token CANNOT do is as important as what it can: it is refused by
+# `decode_patient_token` and `decode_patient_account_token`, so it opens no account route, adds
+# no clinic, and reaches exactly one tenant — the one whose link minted it.
+
+
+async def _authenticate_pending(
+    authorization: str | None, session: AsyncSession
+) -> tuple[MessagePatient, MessagePendingSession] | None:
+    """The live identity + visit behind a PENDING token, or `None`. All failures alike.
+
+    Mirrors `_authenticate_patient` step for step, against the OTHER row type:
+
+    1. the token decodes with exactly `scope=patient_pending` and names `sub`, `tenant_id`, `sid`;
+    2. the `message_pending_sessions` row `sid` names is live — not expired, not revoked, and
+       not already turned into an account login (`_pending_is_live`);
+    3. the row's handle and clinic MATCH the claims, re-read from the row rather than trusted;
+    4. the identity exists with that clinic.
+    """
+    token = _bearer_value(authorization)
+    if token is None:
+        return None
+    claims = decode_patient_pending_token(token)
+    if claims is None:
+        return None
+    try:
+        patient_ref = UUID(str(claims["sub"]))
+        tenant_id = UUID(str(claims["tenant_id"]))
+        pending_id = UUID(str(claims["sid"]))
+    except (ValueError, KeyError):
+        return None
+
+    row = await patient_access.find_live_pending(session, pending_id)
+    if row is None or row.patient_id != patient_ref or row.tenant_id != tenant_id:
+        return None
+    patient = await session.get(MessagePatient, patient_ref)
+    if patient is None or patient.tenant_id != tenant_id:
+        return None
+    return patient, row
+
+
+async def get_thread_patient(
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> MessagePatient:
+    """The identity behind EITHER a clinic token or a pending token, or 401.
+
+    The thread routes take both because a thread is the one thing both populations do: a
+    logged-in patient of a clinic, and a visitor still in the conversation that will become
+    one. Everything those routes need — `tenant_id` and the handle — comes off the identity
+    either way, and neither token can name a clinic it was not minted for.
+
+    Order matters only for cost: a clinic token is the common case, and a pending token fails
+    `decode_patient_token` without a query.
+    """
+    if _bearer_value(authorization) is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
+    found = await _authenticate_patient(authorization, session)
+    if found is not None:
+        return found[0]
+    pending = await _authenticate_pending(authorization, session)
+    if pending is not None:
+        return pending[0]
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
+
+
+async def get_current_pending(
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> tuple[MessagePatient, MessagePendingSession]:
+    """Turn a PENDING token into its identity + visit, or 401 (a clinic token is refused)."""
+    if _bearer_value(authorization) is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
+    found = await _authenticate_pending(authorization, session)
     if found is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
     return found
@@ -637,7 +761,7 @@ async def confirm_sibling(
     responses={401: {"description": "Missing or invalid patient session."}},
 )
 async def list_threads(
-    patient: MessagePatient = Depends(get_current_patient),
+    patient: MessagePatient = Depends(get_thread_patient),
     session: AsyncSession = Depends(get_session),
 ) -> ThreadListOut:
     """Exactly `EntitlementOut.products` intersected with `channels.brain_message`.
@@ -673,7 +797,7 @@ async def send_thread_message(
     product: str = Path(
         description="secretaria | precheck — chosen by the CLIENT, never inferred."
     ),
-    patient: MessagePatient = Depends(get_current_patient),
+    patient: MessagePatient = Depends(get_thread_patient),
     session: AsyncSession = Depends(get_session),
 ) -> RelayOut:
     """Relay to the named product's internal inbound endpoint.
@@ -719,7 +843,7 @@ async def poll_thread_messages(
         default=None,
         description="Cursor: return only what the product recorded strictly after this instant.",
     ),
-    patient: MessagePatient = Depends(get_current_patient),
+    patient: MessagePatient = Depends(get_thread_patient),
     session: AsyncSession = Depends(get_session),
 ) -> RelayOut:
     """Poll the product's transcript for this patient.
@@ -737,3 +861,260 @@ async def poll_thread_messages(
         since=since,
     )
     return RelayOut(product=product, payload=result, at=datetime.now(UTC))
+
+
+async def _public_products(session: AsyncSession, tenant_id: UUID) -> PublicProductsOut:
+    """The clinic's products AS REACHABLE ON THIS CHANNEL — the same computation as `/threads`.
+
+    `available_products` is deliberately reused rather than reading `ent.products` directly:
+    it applies both gates (the product AND `channels.brain_message`), so what a visitor is
+    offered before logging in cannot disagree with the tabs they get after.
+    """
+    ent = await resolve_entitlement(session, tenant_id)
+    offered = set(message_switchboard.available_products(ent))
+    return PublicProductsOut(
+        secretaria=message_switchboard.PRODUCT_SECRETARIA in offered,
+        precheck=message_switchboard.PRODUCT_PRECHECK in offered,
+    )
+
+
+@router.post(
+    "/clinics/lookup",
+    response_model=ClinicPublicOut,
+    summary="What a clinic offers on this channel — before any login",
+    description=(
+        "Resolves the clinic's link, short code or id and answers with its name and the "
+        "products reachable on the Brain-Message channel. No session, no e-mail, no code: it "
+        "is what the portal needs to render the secretarIA/PreCheck toggle on a first visit."
+    ),
+    responses={
+        404: {"description": "No usable clinic — one answer for every reason."},
+        429: {"description": "Rate limited (per-IP budget)."},
+    },
+)
+async def lookup_clinic(
+    payload: ClinicLookupIn,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> ClinicPublicOut:
+    """The pre-login half of `GET /entitlements`, narrowed to what a visitor may know.
+
+    Three fields leave: the clinic's id, its name, and two booleans. Plan, status, limits,
+    usage and add-ons stay behind the staff token — a visitor has no business reading what a
+    clinic pays, and `false` for "never bought" is indistinguishable here from `false` for
+    "subscription lapsed", which is the honest answer either way.
+    """
+    if not _pending_limiter.allow(client_ip(request)):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
+    clinic = await patient_access.resolve_invite(session, payload.invite)
+    if clinic is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _INVITE_NOT_FOUND)
+    products = await _public_products(session, clinic.id)
+    logger.info("clinic_public_lookup", tenant_id=str(clinic.id))
+    return ClinicPublicOut(
+        tenant_id=clinic.id, clinic_name=clinic.clinic_name, products=products
+    )
+
+
+@router.post(
+    "/pending",
+    response_model=PendingSessionOut,
+    summary="Open (or resume) a conversation with no login at all",
+    description=(
+        "Mints the handle secretarIA and PreCheck will know this visitor by, plus a token "
+        "scoped to that one clinic and one HttpOnly cookie so a reload resumes the same "
+        "conversation. Presenting a live pending cookie for the SAME clinic resumes it "
+        "instead of minting a second one."
+    ),
+    responses={
+        403: {"description": "The clinic does not offer that product on this channel."},
+        404: {"description": "No usable clinic — one answer for every reason."},
+        429: {"description": "Rate limited (per-IP budget)."},
+    },
+)
+async def open_pending(
+    payload: PendingSessionIn,
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+) -> PendingSessionOut:
+    """The door a patient with no account walks through — for EITHER product.
+
+    `product` is checked with `require_product`, the same function the relay uses, so a direct
+    PreCheck link to a clinic without PreCheck is refused here rather than at the first
+    message. There is deliberately NO booking gate: the owner closed that on 2026-09-16
+    ("todos os produtos, sem gate"). Opening PreCheck automatically right after secretarIA
+    confirms an appointment stays a proactive behaviour elsewhere — it is not a condition of
+    access, and nothing in this file treats it as one.
+
+    NOTHING IS PRE-CREATED UPSTREAM. PreCheck's conductor opens its own session on the first
+    inbound message (`resolve_session` is idempotent by `session_ref`), so the only way to
+    pre-create one here would be to relay a synthetic message the patient never sent. The
+    handle is enough: the session is born on the first real turn.
+
+    RESUME, AND ITS ONE LIMIT: the cookie holds the most recent visit. Opening a DIFFERENT
+    clinic's link replaces it, and the previous conversation stops being reachable from this
+    browser (the row itself lives out its expiry). Accepted for this round — holding several
+    clinics at once is what the ACCOUNT does, and it needs a proven address to exist.
+    """
+    if not _pending_limiter.allow(client_ip(request)):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
+    clinic = await patient_access.resolve_invite(session, payload.invite)
+    if clinic is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _INVITE_NOT_FOUND)
+
+    ent = await resolve_entitlement(session, clinic.id)
+    if payload.product is not None:
+        message_switchboard.require_product(ent, payload.product)
+    offered = set(message_switchboard.available_products(ent))
+    products = PublicProductsOut(
+        secretaria=message_switchboard.PRODUCT_SECRETARIA in offered,
+        precheck=message_switchboard.PRODUCT_PRECHECK in offered,
+    )
+
+    raw_cookie = read_patient_pending_cookie(request)
+    pending = (
+        await patient_access.find_pending_by_token(session, raw_cookie) if raw_cookie else None
+    )
+    patient: MessagePatient | None = None
+    if pending is not None and pending.tenant_id == clinic.id:
+        patient = await session.get(MessagePatient, pending.patient_id)
+    resumed = patient is not None
+    if not resumed:
+        pending, patient, raw_cookie = await patient_access.open_pending_session(session, clinic)
+        set_patient_pending_cookie(response, raw_cookie)
+
+    # The clinic and whether this was a resume — never the handle, never the address.
+    logger.info("patient_pending_opened", tenant_id=str(clinic.id), resumed=resumed)
+    return PendingSessionOut(
+        pending_token=create_patient_pending_token(
+            tenant_id=str(clinic.id), patient_ref=str(patient.id), session_id=str(pending.id)
+        ),
+        expires_in=get_settings().PATIENT_TOKEN_EXPIRE_MINUTES * 60,
+        tenant_id=clinic.id,
+        clinic_name=clinic.clinic_name,
+        patient_ref=patient.id,
+        products=products,
+        email_claimed=pending.email is not None,
+    )
+
+
+@router.post(
+    "/pending/request-otp",
+    response_model=MessageOut,
+    summary="E-mail the code to the address THIS conversation captured",
+    description=(
+        "Takes no address: the one used is `message_pending_sessions.email`, written by "
+        "secretarIA over the internal leg when the patient typed it in the chat. Always the "
+        "same 200 body once the visit has one."
+    ),
+    responses={
+        401: {"description": "Missing or invalid pending token."},
+        409: {"description": "This conversation has not captured an e-mail yet."},
+        429: {"description": "Rate limited (per-IP and per-address budgets)."},
+    },
+)
+async def request_pending_otp(
+    request: Request,
+    visit: tuple[MessagePatient, MessagePendingSession] = Depends(get_current_pending),
+    session: AsyncSession = Depends(get_session),
+) -> MessageOut:
+    """Send the code that will turn this conversation into an account.
+
+    THE BODY IS EMPTY AND THAT IS THE POINT. A pending token proves only "this browser opened
+    this conversation"; letting it also NAME the inbox to be mailed would make it a way to
+    send a code anywhere. The address comes from the service leg
+    (`POST /internal/brain-message/pending-email`) or the route refuses.
+
+    Same OTP rules as the account login — the same generator, the same 10-minute expiry, the
+    same per-attempt ceiling, and both limiters (per-IP for the service, per address for the
+    inbox a distributed attacker would flood).
+    """
+    _, pending = visit
+    if pending.email is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, _PENDING_EMAIL_MISSING)
+    address = pending.email
+    if not _ip_limiter.allow(client_ip(request)) or not _email_limiter.allow(address):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
+
+    code = await patient_access.issue_account_otp(session, address)
+    # Fail-soft, like every transactional e-mail in this repo.
+    await secretaria_provisioning.send_notification_email(
+        address,
+        _OTP_EMAIL_TEMPLATE,
+        {"code": code, "ttl_minutes": get_settings().PATIENT_OTP_EXPIRE_MINUTES},
+    )
+    logger.info("patient_pending_otp_requested", tenant_id=str(pending.tenant_id))
+    return MessageOut(detail=_OTP_REQUEST_MESSAGE)
+
+
+@router.post(
+    "/pending/verify-otp",
+    response_model=PatientAccountOut,
+    summary="Turn the pending conversation into a real account session",
+    responses={
+        400: {"description": "Unknown, wrong, expired or already-used code."},
+        401: {"description": "Missing or invalid pending token."},
+        409: {"description": "This conversation has not captured an e-mail yet."},
+        429: {"description": "Rate limited (per-IP verify budget)."},
+    },
+)
+async def verify_pending_otp(
+    payload: PendingVerifyIn,
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+    visit: tuple[MessagePatient, MessagePendingSession] = Depends(get_current_pending),
+) -> PatientAccountOut:
+    """Burn the code, open the account, and KEEP THE HANDLE this conversation was born with.
+
+    The order is the whole feature, and each step is the account model's own code:
+
+    1. the clinic must still have the channel on — checked BEFORE the code is spent, exactly
+       as the deprecated `tenant_id` body does, so a closed clinic never burns a good code;
+    2. `verify_account_otp` on the CAPTURED address (never one from this body);
+    3. `open_account` — the address's account, created if this is its first;
+    4. `adopt_pending_identity` — the visitor's handle takes the address, so `patient_ref` is
+       the SAME before and after the code and the appointment booked minutes ago stays where
+       secretarIA put it. It declines only when this clinic ALREADY had an identity for the
+       address; then that row is the account's, this conversation's handle keeps its own id
+       (nothing is merged, ever) and the visit records the swap in `superseded_by`;
+    5. `add_clinic` — the clinic enters the account, and the `brain_message_channel_access`
+       consent is recorded exactly ONCE by the same `WHERE NOT EXISTS` every other path uses;
+    6. the full account session replaces the visit: account cookie set, pending cookie
+       cleared, pending row closed.
+
+    What comes back is the ordinary `verify-otp` body, so a client that already speaks the
+    account contract needs nothing new. When step 4 declined, the top-level `patient_ref` is
+    the clinic's pre-existing handle and differs from the pending one — that difference IS the
+    signal to switch threads.
+    """
+    _, pending = visit
+    if not _verify_limiter.allow(client_ip(request)):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
+    if pending.email is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, _PENDING_EMAIL_MISSING)
+
+    clinic = await patient_access.channel_open_tenant(session, pending.tenant_id)
+    if clinic is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _OTP_INVALID)
+    if not await patient_access.verify_account_otp(session, pending.email, payload.code):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _OTP_INVALID)
+
+    account = await patient_access.open_account(session, pending.email)
+    kept = await patient_access.adopt_pending_identity(session, pending, account.email)
+    canonical = await patient_access.add_clinic(session, account, clinic)
+    if canonical is None:  # pragma: no cover - unreachable: the address owns its account
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _OTP_INVALID)
+    await patient_access.close_pending_session(session, pending, canonical=canonical)
+
+    raw_session, session_id = await patient_access.issue_patient_session(
+        session, account, opened_at=canonical
+    )
+    set_patient_session_cookie(response, raw_session)
+    clear_patient_pending_cookie(response)
+    # The clinic and whether the handle survived — never the address, never a token.
+    logger.info("patient_pending_session_verified", tenant_id=str(clinic.id), handle_kept=kept)
+    return await _account_body(
+        session, account, session_id, canonical, invited_tenant_id=canonical.tenant_id
+    )

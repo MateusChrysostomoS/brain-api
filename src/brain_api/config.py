@@ -380,6 +380,22 @@ class Settings(BaseSettings):
     # patient's gesture (its link or pasted code), never by a recent-login confirmation.
     # Still declared only so a deployed env var stays harmless.
     PATIENT_LINK_CONFIRM_WINDOW_MINUTES: int = 30
+    # --- The PENDING visit (2026-09-16): chat first, e-mail later, code last -------------
+    # How long a visitor who has proven NOTHING can keep talking on one device. Hours, not
+    # the account cookie's months: what this carries is an unfinished conversation, and the
+    # owner's flow expects the code within the same sitting (greeting -> e-mail -> LGPD ->
+    # booking -> code). 24h leaves room for "I will finish this tonight" without leaving
+    # anonymous rows reachable for a season. Raising it costs storage and widens the window
+    # in which a stolen device resumes someone else's conversation; lowering it below a few
+    # hours starts dropping real bookings mid-flow.
+    PATIENT_PENDING_EXPIRE_HOURS: int = 24
+    # Per-IP budget for POST /patient-access/pending and POST /patient-access/clinics/lookup —
+    # the only two UNAUTHENTICATED routes that touch the database without a code. The first
+    # writes (an identity + a session per call), so its budget is what stops a script from
+    # filling `message_patients` with anonymous rows; the second only reads. Keyed by IP
+    # because there is nothing else to key by before a session exists — which is also why it
+    # is deliberately tighter than the OTP buckets.
+    PATIENT_PENDING_RATE_LIMIT_PER_MIN: int = 5
     # Public base URL of the Brain-Message patient portal (e.g. `https://portal.example`),
     # used ONLY to build the invite link a clinic reads (`core/invite_codes.py::invite_link`).
     # Not a secret. Empty = no link; the short code alone still works.

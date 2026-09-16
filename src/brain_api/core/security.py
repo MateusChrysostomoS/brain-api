@@ -301,3 +301,56 @@ def decode_patient_account_token(token: str) -> dict[str, Any] | None:
     if not all(claims.get(key) for key in ("sub", "sid")):
         return None
     return claims
+# --- Patient PENDING token (a visitor who has proven nothing yet) -----------------------
+
+# The owner's 2026-09-16 flow: a new patient reaches the chat with no login at all, gives an
+# e-mail mid-conversation and receives a code only after the appointment is booked. This is the
+# token that carries that visit. It is the MOST restricted of the three patient tokens, and the
+# restriction is structural rather than a checklist:
+#
+#   * ONE clinic (`tenant_id`), named by the link that opened the session and never widened;
+#   * it opens THREAD routes only — `POST /patient-access/clinics` takes the ACCOUNT scope, so a
+#     pending visitor cannot add a clinic to anything, and there is nothing to add it to;
+#   * it names a `message_pending_sessions` row (`sid`), NOT a login row, so it can never be
+#     mistaken for a session a code opened: `decode_patient_token` refuses this scope outright,
+#     and `_authenticate_patient` therefore never resolves one.
+#
+# What it proves is exactly one thing: "this browser is the one that opened this conversation".
+# Not an address (none is proven yet), not an account (there is none).
+PATIENT_PENDING_TOKEN_SCOPE = "patient_pending"
+
+
+def create_patient_pending_token(*, tenant_id: str, patient_ref: str, session_id: str) -> str:
+    """Mint the short-lived token of one PENDING visit.
+
+    `sub` is the `MessagePatient.id` minted for the visitor — already the handle secretarIA and
+    PreCheck will know them by, because that id must survive the whole flow unchanged. `sid` is
+    the `message_pending_sessions` row, re-read on every request so an expired or revoked visit
+    dies at once. No e-mail, claimed or otherwise: a JWT is base64, not encryption, and the
+    address here is not even proven.
+    """
+    settings = get_settings()
+    now = datetime.now(UTC)
+    claims: dict[str, Any] = {
+        "sub": patient_ref,
+        "tenant_id": tenant_id,
+        "sid": session_id,
+        "scope": PATIENT_PENDING_TOKEN_SCOPE,
+        "iat": now,
+        "exp": now + timedelta(minutes=settings.PATIENT_TOKEN_EXPIRE_MINUTES),
+    }
+    return jwt.encode(claims, settings.SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_patient_pending_token(token: str) -> dict[str, Any] | None:
+    """Validate a pending token: signature/expiry, the EXACT pending scope, and its three claims.
+
+    A clinic token, an account token and a staff token all fail here, and this one fails in all
+    of their decoders — the three patient populations cannot cross in any direction.
+    """
+    claims = decode_token(token)
+    if claims is None or claims.get("scope") != PATIENT_PENDING_TOKEN_SCOPE:
+        return None
+    if not all(claims.get(key) for key in ("sub", "tenant_id", "sid")):
+        return None
+    return claims

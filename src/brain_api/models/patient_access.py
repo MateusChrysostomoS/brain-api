@@ -29,6 +29,14 @@ patient who may be the same human: secretarIA looks its patients up by
 `(tenant_id, channel, external_id)`, brain-api holds no phone number to link on, and merging
 the two would join two consent trails — an LGPD decision nothing in the code asks for.
 
+THE CONVERSATION CAN START BEFORE THE ADDRESS (2026-09-16)
+A new patient now reaches the chat with no login at all: a `MessagePendingSession` carries
+the visit, its `MessagePatient` (`email = NULL`) carries the handle, and the address arrives
+mid-conversation — claimed first, proven by code only after the appointment is booked. The
+rule above is unchanged and is what makes this safe: the handle minted for the visitor is the
+one the account keeps. Nothing about membership moves earlier — an address still grants
+nothing until a code proves it.
+
 NOTHING HERE IS EVER STORED IN THE CLEAR EXCEPT THE E-MAIL
 The OTP is a credential: only its SHA-256 lands in `code_hash`, the same discipline
 `users.reset_token_hash` and `refresh_tokens.token_hash` already follow
@@ -152,7 +160,17 @@ class MessagePatient(Base):
     )
     # Lower-cased on write by the service, like `users.email`. Indexed (0020): the account's
     # adoption of pre-account rows looks identities up by address across clinics.
-    email: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    #
+    # NULLABLE SINCE 0021: a PENDING identity has no address yet. A visitor who opened the
+    # clinic's link and started talking gets this row (and therefore a handle) BEFORE typing
+    # an e-mail; the address is written exactly once, when a code proves it
+    # (`services/patient_access.py::adopt_pending_identity`). NULL is never an address: every
+    # lookup here is `email == <something>`, which no NULL row can satisfy in SQL, so a pending
+    # row is invisible to the account machinery until it is adopted. The unique
+    # `(tenant_id, email)` key keeps holding for real addresses — Postgres and SQLite both
+    # treat NULLs as distinct, so a clinic may have many pending rows at once and at most one
+    # identity per address.
+    email: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -233,6 +251,78 @@ class MessagePatientSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # The moment of the CODE; a refresh never moves it.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MessagePendingSession(Base):
+    """A visitor who is TALKING but has proven nothing yet (2026-09-16).
+
+    THE PROBLEM IT SOLVES. Until now every patient identity was born from a verified code:
+    no code, no `MessagePatient`, and therefore no handle to talk under. The owner reversed
+    the order — a new patient opens the clinic's link, lands straight in the chat, gives an
+    e-mail DURING the conversation, books a real appointment, and only then receives a code.
+    Something has to carry the conversation across all of that, and it cannot be the account
+    session: there is no account yet.
+
+    WHAT IT IS, AND WHAT IT IS NOT. This row is a SESSION, not an identity. The identity is
+    the `MessagePatient` it points at (`patient_id`), minted with `email = NULL` at the same
+    moment — that row's id is the handle the siblings see (`external_id` / `session_ref`), and
+    it never changes afterwards, exactly like every other identity here. Killing a pending
+    session never touches the identity or its conversation.
+
+    WHY ITS OWN TABLE AND NOT A `message_patient_sessions` ROW. Those rows with a NULL
+    `account_id` already MEAN something specific: a login from before the account model, whose
+    identity joins its address's account the moment its cookie is renewed
+    (`services/patient_access.py::_adopt`). A pending visitor has no address to join anything
+    by, and letting the two shapes share a table would make that distinction a matter of
+    reading three nullable columns in the right order. Here it is structural: a pending
+    session cannot be mistaken for a login, and `_authenticate_patient` / `/refresh` never see
+    one (auth-jwt-multitenant — a new kind of token gets a new kind of row).
+
+    `email` HERE IS CLAIMED, NEVER PROVEN. secretarIA writes it service-to-service when the
+    patient types it in the chat (`POST /internal/brain-message/pending-email`). It is a label
+    on the conversation and grants NOTHING: only `verify-otp` moves an address onto a
+    `MessagePatient` and into an account. Storing it here rather than on the identity is what
+    keeps an unproven address out of every query that means "this person's clinics".
+
+    Same credential discipline as its siblings: the browser gets a high-entropy opaque token
+    once, only its SHA-256 is stored (`token_hash`), and the short leg is a scoped JWT naming
+    this row as `sid`.
+    """
+
+    __tablename__ = "message_pending_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # The handle minted for this visitor. CASCADE because the identity is this session's whole
+    # reason to exist while it is pending; once adopted, the session is closed and the identity
+    # outlives it under the account.
+    patient_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("message_patients.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    # The ONE clinic this session may ever reach. Denormalized from the identity on purpose:
+    # every gate reads it off this row, so a token can never widen past the link that opened it.
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    # CLAIMED, not proven (see above). Lower-cased on write, like every address here.
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Stamped when a code turned this conversation into an account login. The row is revoked at
+    # the same moment; the stamp is kept so the trail of "this account started here" survives.
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The identity the account ended up using at this clinic, when it is NOT `patient_id` —
+    # i.e. the clinic ALREADY had an identity for the proven address, so this conversation's
+    # handle could not take the `(tenant_id, email)` slot. Nothing is merged and no id is
+    # rewritten (that rule has no exceptions); this column is how the answer tells the client
+    # which handle to carry on with. NULL in the ordinary case.
+    superseded_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("message_patients.id", ondelete="SET NULL"), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

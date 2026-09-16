@@ -4,8 +4,12 @@ Origem: `TECH/BRAIN/z_prompts/PROMPT_BRAIN_MESSAGE_PORTAL_CLINICAS_BACKEND.md` (
 dono em 2026-09-14). Irmão, a rodar DEPOIS do deploy deste: `PROMPT_BRAIN_MESSAGE_PORTAL_CLINICAS_FRONTEND.md`
 (Brain-Message-Frontend), que lê o contrato do §4.
 
-**Estado: BUILT, UNCOMMITTED, não deployado. Migração `0020_patient_accounts` NÃO aplicada em produção.**
-Commit é decisão do dono (`git add` só com caminhos explícitos — há sessões paralelas nesta árvore).
+**Estado: BUILT e COMMITADO em `main` — `bc29f76 Add comprehensive tests for patient account invites
+and clinic associations` (confirmado em 2026-09-16: `git log` mostra o commit e `git status` está limpo
+nos arquivos desta feature). NÃO deployado, e a migração `0020_patient_accounts` continua SEM
+confirmação de ter sido aplicada em produção** — não há como checar isso por código daqui, então fica
+registrado como pendência em aberto, não como "aplicada". Até 2026-09-16 este parágrafo dizia
+"UNCOMMITTED": era estado velho, corrigido pelo prompt da sessão pendente.
 Revisões e o que mudou por causa delas: §8. Provas com os comandos: §9.
 
 ## §1 — Causa raiz (reconfirmada no código antes de programar)

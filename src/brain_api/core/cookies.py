@@ -189,3 +189,60 @@ def read_patient_session_cookie(request: Request) -> str | None:
     """The patient session token the browser sent, or None. Never logged by callers."""
     value = request.cookies.get(PATIENT_SESSION_COOKIE_NAME)
     return value or None
+# --- The PENDING visit cookie (Brain-Message, 2026-09-16) ------------------------------
+#
+# A THIRD cookie, and the third name, for the same reason the patient's is not the doctor's:
+# a visit that has proven nothing must never be able to write — or be read as — a session a
+# code opened. `/patient-access/refresh` reads only `__Host-patient_session`, so a pending
+# value can never be spent as a login; `/patient-access/pending` reads only this one.
+#
+# It exists so a RELOAD does not lose the conversation. Everything that matters (the booking
+# secretarIA made, the handle the siblings know) hangs off the pending session's identity, and
+# the browser holds nothing else that can name it: page memory dies with the tab.
+#
+# Shorter-lived than the account cookie by design (`PATIENT_PENDING_EXPIRE_HOURS`, hours not
+# months): what it carries is an unfinished conversation, not a proven address, and an
+# abandoned one should stop being reachable from that device rather than linger for 90 days.
+
+PATIENT_PENDING_COOKIE_NAME = "__Host-patient_pending"
+
+
+def set_patient_pending_cookie(response: Response, raw_token: str) -> None:
+    """Attach the pending visit's opaque token as the hardened cookie.
+
+    Same three attributes as its siblings above, for the same three reasons (`__Host-` +
+    `Secure` + `HttpOnly`, `SameSite=Lax`). Its lifetime follows the server-side row.
+    """
+    settings = get_settings()
+    response.set_cookie(
+        key=PATIENT_PENDING_COOKIE_NAME,
+        value=raw_token,
+        max_age=settings.PATIENT_PENDING_EXPIRE_HOURS * 60 * 60,
+        path="/",  # mandated by the __Host- prefix
+        domain=None,  # ditto — host-locked, never sent to a sibling
+        secure=True,  # ditto
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def clear_patient_pending_cookie(response: Response) -> None:
+    """Expire the pending cookie — the visit ended, one way or another.
+
+    Called when a code turns the visit into an account login (the account cookie takes over)
+    and when a presented value is refused. Attributes MUST match the set.
+    """
+    response.delete_cookie(
+        key=PATIENT_PENDING_COOKIE_NAME,
+        path="/",
+        domain=None,
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def read_patient_pending_cookie(request: Request) -> str | None:
+    """The pending visit token the browser sent, or None. Never logged by callers."""
+    value = request.cookies.get(PATIENT_PENDING_COOKIE_NAME)
+    return value or None

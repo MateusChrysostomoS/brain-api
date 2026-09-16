@@ -201,3 +201,105 @@ class RelayOut(BaseModel):
     product: str
     payload: dict
     at: datetime
+
+
+# --- The PENDING visit (2026-09-16): chat first, e-mail later, code last -------------------
+#
+# A separate family of bodies on purpose. Nothing here carries an account, and the one thing
+# that WOULD be dangerous to accept from a browser — the address being verified — is absent by
+# design: it is claimed server-to-server by secretarIA from the conversation itself
+# (`schemas/internal.py::PendingEmailClaimIn`), so a client cannot aim a code at an inbox it
+# does not own.
+
+
+class PublicProductsOut(BaseModel):
+    """Per-product booleans, and nothing else (the pre-login shape of `ProductsOut`)."""
+
+    secretaria: bool
+    precheck: bool
+
+
+class ClinicLookupIn(BaseModel):
+    """`POST /patient-access/clinics/lookup` — what the portal knows before any login.
+
+    Body rather than a query string for the same reason the sibling invite routes use one: the
+    invite may be a whole pasted URL, and a URL inside a URL lands in every access log on the
+    way. The invite is not a credential (`core/invite_codes.py` says why), but there is no
+    reason to write it down either.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    invite: str = Field(min_length=1, max_length=MAX_INVITE_LENGTH)
+
+
+class ClinicPublicOut(BaseModel):
+    """The pre-login answer about ONE clinic: its name, and which products it offers here.
+
+    Deliberately three fields. `products` is `EntitlementOut.products` INTERSECTED with the
+    Brain-Message channel (`services/message_switchboard.py::available_products`), which is the
+    same computation `GET /patient-access/threads` does after login — so the toggle a visitor
+    sees before logging in cannot disagree with the tabs they get after. Plan, status, limits,
+    usage and add-ons stay behind the staff token: what a clinic PAYS is not a visitor's
+    business, and `false` for a product it never bought looks identical to `false` for one
+    whose subscription lapsed.
+
+    `clinic_name` is here because the portal must be able to say whose chat this is, and the
+    invite link already names the clinic to whoever holds it.
+    """
+
+    tenant_id: UUID
+    clinic_name: str
+    products: PublicProductsOut
+
+
+class PendingSessionIn(BaseModel):
+    """`POST /patient-access/pending` — open (or resume) a conversation with no login.
+
+    `product` is what the visitor arrived for: the secretarIA link, or the clinic's DIRECT
+    PreCheck link. It is checked against the clinic's entitlements HERE so a dead link fails
+    at the door with a clear answer, instead of at the first message with a 403 from the relay.
+    Optional, defaulting to secretarIA, because that is the link the clinic hands out by default.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    invite: str = Field(min_length=1, max_length=MAX_INVITE_LENGTH)
+    product: str | None = Field(default=None, min_length=1, max_length=32)
+
+
+class PendingSessionOut(BaseModel):
+    """What a pending visit hands the browser: a token, a handle, and what the clinic offers.
+
+    The opaque leg is NOT in this body — it is the `__Host-patient_pending` cookie, for the
+    same reason the account's is a cookie (`core/cookies.py`). What IS here is a 30-minute
+    scoped JWT for page memory, plus the facts the chat screen needs to render itself.
+    """
+
+    # Scope `patient_pending`: the thread routes of exactly this clinic, and nothing else.
+    pending_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    tenant_id: UUID
+    clinic_name: str
+    # `MessagePatient.id` — already the handle secretarIA and PreCheck will store, and the one
+    # the account will keep. Named `patient_ref` like everywhere else in this contract.
+    patient_ref: UUID
+    products: PublicProductsOut
+    # Whether secretarIA has already captured an address on this visit. The portal uses it to
+    # decide whether "enviar código" is even offered yet. The address itself is never returned:
+    # echoing it back would turn this route into a way to read what another visit captured.
+    email_claimed: bool = False
+
+
+class PendingVerifyIn(BaseModel):
+    """`POST /patient-access/pending/verify-otp` — the code, and only the code.
+
+    NO e-mail field, and that is the security property, not an omission: the address verified
+    is the one the CONVERSATION captured (`message_pending_sessions.email`). A body that could
+    name an address would let anyone holding a pending token point a code at any inbox.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=32)

@@ -40,12 +40,14 @@ from brain_api.schemas.internal import (
     InternalOnboardingTenantOut,
     InternalProfessionalEmailOut,
     InternalProfessionalEmailsOut,
+    PendingEmailClaimIn,
+    PendingEmailClaimOut,
     PrecheckHandoffIn,
     PrecheckHandoffOut,
     UsageEventIn,
     UsageEventOut,
 )
-from brain_api.services import onboarding_sync
+from brain_api.services import onboarding_sync, patient_access
 from brain_api.services.entitlements import ACTIVE_STATUSES, resolve_entitlement
 from brain_api.services.precheck_handoff import request_handoff
 from brain_api.services.usage import record_usage
@@ -280,6 +282,45 @@ async def precheck_handoff(
         booked_service=payload.booked_service,
     )
     return PrecheckHandoffOut(status=result["status"])
+
+
+@router.post(
+    "/brain-message/pending-email",
+    response_model=PendingEmailClaimOut,
+    summary="Record the e-mail a pending conversation captured (internal)",
+    responses={
+        **_INTERNAL_RESPONSES,
+        404: {
+            "description": (
+                "Not a live pending visit — one answer for an unknown handle, the wrong "
+                "clinic, an expired visit and one already turned into an account."
+            )
+        },
+    },
+)
+async def claim_pending_email(
+    payload: PendingEmailClaimIn,
+    session: AsyncSession = Depends(get_session),
+) -> PendingEmailClaimOut:
+    """secretarIA -> brain-api: the visitor typed an address into the chat.
+
+    The address is written on the VISIT (`message_pending_sessions.email`), never on the
+    identity and never on an account: it is claimed, not proven. The code that proves it is
+    requested by the browser afterwards, and that route takes no address — it reads this one.
+    That split is the whole point of doing this on the service leg (schemas/internal.py).
+
+    `tenant_id` and `external_id` must BOTH match the visit, so a clinic's key cannot move an
+    address onto another clinic's conversation.
+    """
+    pending = await patient_access.claim_pending_email(
+        session, payload.tenant_id, payload.external_id, payload.email
+    )
+    if pending is None:
+        logger.info("pending_email_claim_not_found", tenant_id=str(payload.tenant_id))
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "pending_session_not_found")
+    # The clinic only — never the address, never the handle (see the module's PII note).
+    logger.info("pending_email_claimed", tenant_id=str(payload.tenant_id))
+    return PendingEmailClaimOut(status="claimed")
 
 
 # --- Onboarding crons (CONTRACT_onboarding_v1.md §5 items 7-8; secretaria pulls/posts) ---

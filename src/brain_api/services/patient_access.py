@@ -22,7 +22,13 @@ The rules each part follows:
    had for the address: `MessagePatient.id` is secretarIA's `external_id` and PreCheck's
    `session_ref`, and the conversation history lives under it.
 
-5. NO ROLLBACK INSIDE A HELPER. A rollback expires every instance the CALLER holds, and
+5. A CONVERSATION MAY START BEFORE THE ADDRESS (2026-09-16). A visitor with no e-mail gets a
+   `MessagePendingSession` and an identity with `email = NULL`; the address is CLAIMED on the
+   visit by secretarIA mid-chat and only moves onto the identity when a code proves it. Rules
+   3 and 4 are untouched by this: nothing joins an account without a code, and the handle the
+   visitor was minted is the one the account keeps. See the last section of this module.
+
+6. NO ROLLBACK INSIDE A HELPER. A rollback expires every instance the CALLER holds, and
    reading an expired attribute is implicit IO that async SQLAlchemy refuses (a 500). Races on
    unique keys are settled by `INSERT ... ON CONFLICT` (`_upsert`) instead, and nothing
    commits while the row lock a rotation takes is held.
@@ -36,6 +42,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import exists, insert, literal, or_, select, update
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from brain_api.config import get_settings
 from brain_api.core.invite_codes import parse_invite
@@ -50,6 +57,7 @@ from brain_api.models.patient_access import (
     MessagePatientAccount,
     MessagePatientAccountOtp,
     MessagePatientSession,
+    MessagePendingSession,
     PatientConsentEvent,
 )
 
@@ -483,6 +491,11 @@ async def _row_account(
     patient = await session.get(MessagePatient, row.patient_id)
     if patient is None or patient.tenant_id != row.tenant_id:
         return None
+    if patient.email is None:
+        # A PENDING identity (no address proven yet, 0021). It has no `MessagePatientSession`
+        # of its own, so this is unreachable today; the guard is here because the fallback
+        # below would otherwise open an account keyed by `None`.
+        return None
     if patient.account_id is not None:
         account = await session.get(MessagePatientAccount, patient.account_id)
     elif adopt:
@@ -669,3 +682,185 @@ async def revoke_account_sessions(session: AsyncSession, email: str) -> int:
     )
     await session.commit()
     return result.rowcount or 0
+
+
+# --- The PENDING visit: a conversation before any address ---------------------------------
+#
+# The owner's 2026-09-16 order of events: link -> chat -> e-mail -> LGPD -> real appointment ->
+# code. Everything before the code happens under a `MessagePendingSession` and the identity it
+# mints. Two rules carry over unchanged from the account model above and are what make this
+# safe: (4) the identity's id never changes, and (3) an address grants nothing until a code
+# proves it. What is NEW is only that the identity can exist before the address does.
+
+
+async def open_pending_session(
+    session: AsyncSession, tenant: Tenant
+) -> tuple[MessagePendingSession, MessagePatient, str]:
+    """Mint a handle and a visit for a visitor of `tenant`. Commits.
+
+    Returns `(pending row, identity, RAW opaque token)` — the token exactly once, as every
+    credential here is handed out: only its SHA-256 is stored.
+
+    The identity is born with `email = NULL` and `account_id = NULL`, which is precisely what
+    makes it invisible to the account machinery (`_adopt`, `add_clinic`, `account_clinics` and
+    `revoke_account_sessions` all match on an address, and no NULL satisfies `=` in SQL). Its
+    `id` is already the handle secretarIA and PreCheck will store, so the whole conversation —
+    including the appointment booked before any code — lives under it from the first message.
+    """
+    now = datetime.now(UTC)
+    patient = MessagePatient(
+        id=uuid4(), tenant_id=tenant.id, account_id=None, email=None, last_seen_at=now
+    )
+    session.add(patient)
+    await session.flush()
+    raw = generate_refresh_token()
+    pending = MessagePendingSession(
+        id=uuid4(),
+        patient_id=patient.id,
+        tenant_id=tenant.id,
+        token_hash=hash_refresh_token(raw),
+        expires_at=now + timedelta(hours=get_settings().PATIENT_PENDING_EXPIRE_HOURS),
+    )
+    session.add(pending)
+    await session.commit()
+    # The clinic only. The handle would line this visit up with the siblings' logs, and there
+    # is no address to leak yet precisely because this is what runs before one exists.
+    logger.info("patient_pending_session_opened", tenant_id=str(tenant.id))
+    return pending, patient, raw
+
+
+def _pending_is_live(row: MessagePendingSession, now: datetime) -> bool:
+    """Live = not revoked, not expired, and not already turned into an account login."""
+    return row.revoked_at is None and row.verified_at is None and _as_utc(row.expires_at) > now
+
+
+async def find_pending_by_token(
+    session: AsyncSession, raw_token: str
+) -> MessagePendingSession | None:
+    """The live visit a raw cookie value names; `None` for unknown, expired, revoked alike."""
+    row = await session.scalar(
+        select(MessagePendingSession).where(
+            MessagePendingSession.token_hash == hash_refresh_token(raw_token)
+        )
+    )
+    if row is None or not _pending_is_live(row, datetime.now(UTC)):
+        return None
+    return row
+
+
+async def find_live_pending(
+    session: AsyncSession, pending_id: UUID
+) -> MessagePendingSession | None:
+    """The live visit a pending token's `sid` names — re-read on EVERY request.
+
+    The same discipline `find_live_session` applies to a login row: a 30-minute bearer must
+    not outlive the row it was minted from (OWASP ASVS 5.0 7.4.1).
+    """
+    row = await session.get(MessagePendingSession, pending_id)
+    if row is None or not _pending_is_live(row, datetime.now(UTC)):
+        return None
+    return row
+
+
+async def claim_pending_email(
+    session: AsyncSession, tenant_id: UUID, patient_ref: UUID, email: str
+) -> MessagePendingSession | None:
+    """Write the address the patient TYPED IN THE CHAT onto their visit. Commits.
+
+    Called service-to-service by secretarIA (`POST /internal/brain-message/pending-email`),
+    never by the browser: the whole security argument of the later code is that the address
+    being verified is the one the conversation captured, not one a client could name at
+    verification time. Re-claiming OVERWRITES (the patient corrected a typo, which is exactly
+    what happens in a chat); a code already sent to the previous address simply stops being
+    reachable from this visit.
+
+    `None` for a visit that is unknown, dead, or whose clinic/handle disagree with the caller's
+    — one answer for every reason, like every refusal in this module.
+    """
+    now = datetime.now(UTC)
+    row = await session.scalar(
+        select(MessagePendingSession).where(
+            MessagePendingSession.patient_id == patient_ref,
+            MessagePendingSession.tenant_id == tenant_id,
+        )
+    )
+    if row is None or not _pending_is_live(row, now):
+        return None
+    row.email = normalize_email(email)
+    row.claimed_at = now
+    await session.commit()
+    # The clinic and the fact, never the address.
+    logger.info("patient_pending_email_claimed", tenant_id=str(tenant_id))
+    return row
+
+
+async def adopt_pending_identity(
+    session: AsyncSession, pending: MessagePendingSession, address: str
+) -> bool:
+    """Give the visit's identity the address a code just proved. No commit.
+
+    ONE conditional UPDATE, and the condition is the whole design:
+
+        SET email = :address WHERE id = :handle AND email IS NULL
+                             AND NOT EXISTS (an identity of this clinic already has :address)
+
+    `email IS NULL` keeps this from ever rewriting an identity that already has an address
+    (rule 4: an id and its address are written once). The `NOT EXISTS` is the honest half: a
+    clinic may ALREADY have an identity for this address — the same human talked to this same
+    clinic before, from an account — and that row owns the `(tenant_id, email)` slot together
+    with its own conversation history. Nothing is merged and no id is rewritten; the caller
+    falls back to that existing identity and records which one on the visit
+    (`close_pending_session`'s `superseded_by`).
+
+    `False` therefore means "this clinic already had one", not "it failed".
+
+    Residual race, stated: two adoptions of the same address at the same clinic could both see
+    `NOT EXISTS` and one would then lose the unique key. Unreachable through the only caller —
+    `verify_account_otp` burns the single live challenge for an address by compare-and-swap, so
+    at most one request per address is ever past it.
+    """
+    twin = aliased(MessagePatient)
+    result = await session.execute(
+        update(MessagePatient)
+        .where(
+            MessagePatient.id == pending.patient_id,
+            MessagePatient.email.is_(None),
+            ~exists(
+                select(literal(1))
+                .select_from(twin)
+                .where(twin.tenant_id == pending.tenant_id, twin.email == address)
+            ),
+        )
+        .values(email=address, last_seen_at=datetime.now(UTC))
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount == 1
+
+
+async def close_pending_session(
+    session: AsyncSession,
+    pending: MessagePendingSession,
+    *,
+    canonical: MessagePatient | None = None,
+) -> None:
+    """End the visit: it either became an account login, or it was abandoned. Commits.
+
+    `canonical` is the identity the ACCOUNT ended up using at this clinic. When it is not the
+    visit's own handle, the clinic already had an identity for the proven address and this
+    conversation's handle stays where it is — `superseded_by` records the swap so the answer
+    can tell the client which handle to carry on with, and so the trail of "that account
+    started in this conversation" survives.
+    """
+    now = datetime.now(UTC)
+    if canonical is not None:
+        pending.verified_at = now
+        if canonical.id != pending.patient_id:
+            pending.superseded_by = canonical.id
+    pending.revoked_at = pending.revoked_at or now
+    await session.commit()
+    logger.info(
+        "patient_pending_session_closed",
+        tenant_id=str(pending.tenant_id),
+        verified=canonical is not None,
+        superseded=pending.superseded_by is not None,
+    )

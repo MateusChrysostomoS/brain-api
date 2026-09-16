@@ -13,6 +13,7 @@ from brain_api.models.patient_access import (
     MessagePatientAccountOtp,
     MessagePatientOtp,
     MessagePatientSession,
+    MessagePendingSession,
     PatientConsentEvent,
 )
 from brain_api.models.precheck_link import PrecheckAccountLink
@@ -36,6 +37,7 @@ __all__ = [
     "MessagePatientAccountOtp",
     "MessagePatientOtp",
     "MessagePatientSession",
+    "MessagePendingSession",
     "PatientConsentEvent",
     "PrecheckAccountLink",
     "PrecheckTopupCredit",

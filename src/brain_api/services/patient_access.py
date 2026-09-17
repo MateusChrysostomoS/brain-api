@@ -730,20 +730,31 @@ async def open_pending_session(
 
 
 def _pending_is_live(row: MessagePendingSession, now: datetime) -> bool:
-    """Live = not revoked, not expired, and not already turned into an account login."""
-    return row.revoked_at is None and row.verified_at is None and _as_utc(row.expires_at) > now
+    """Live for identity mutation = accessible and not verified yet."""
+    return _pending_is_accessible(row, now) and row.verified_at is None
+
+
+def _pending_is_accessible(row: MessagePendingSession, now: datetime) -> bool:
+    """The pending browser may still read/exchange this visit.
+
+    A successful inline code stamps `verified_at` but cannot mint the browser's account
+    cookie: the call came from secretarIA over the service leg. The pending bearer therefore
+    remains valid until `POST /patient-access/pending/complete` performs that browser-facing
+    exchange and stamps `revoked_at`.
+    """
+    return row.revoked_at is None and _as_utc(row.expires_at) > now
 
 
 async def find_pending_by_token(
     session: AsyncSession, raw_token: str
 ) -> MessagePendingSession | None:
-    """The live visit a raw cookie value names; `None` for unknown, expired, revoked alike."""
+    """The accessible visit a raw cookie names, including verified-before-exchange."""
     row = await session.scalar(
         select(MessagePendingSession).where(
             MessagePendingSession.token_hash == hash_refresh_token(raw_token)
         )
     )
-    if row is None or not _pending_is_live(row, datetime.now(UTC)):
+    if row is None or not _pending_is_accessible(row, datetime.now(UTC)):
         return None
     return row
 
@@ -751,13 +762,34 @@ async def find_pending_by_token(
 async def find_live_pending(
     session: AsyncSession, pending_id: UUID
 ) -> MessagePendingSession | None:
-    """The live visit a pending token's `sid` names — re-read on EVERY request.
+    """The accessible visit a pending token's `sid` names — re-read on EVERY request.
 
     The same discipline `find_live_session` applies to a login row: a 30-minute bearer must
     not outlive the row it was minted from (OWASP ASVS 5.0 7.4.1).
     """
     row = await session.get(MessagePendingSession, pending_id)
-    if row is None or not _pending_is_live(row, datetime.now(UTC)):
+    if row is None or not _pending_is_accessible(row, datetime.now(UTC)):
+        return None
+    return row
+
+
+async def find_pending_identity(
+    session: AsyncSession, tenant_id: UUID, patient_ref: UUID
+) -> MessagePendingSession | None:
+    """The newest accessible visit for this exact clinic handle, or `None`.
+
+    Both keys are required on every service-to-service operation. This is the same tenant
+    boundary as `claim_pending_email`, centralized so status/request/verify cannot drift.
+    """
+    row = await session.scalar(
+        select(MessagePendingSession)
+        .where(
+            MessagePendingSession.patient_id == patient_ref,
+            MessagePendingSession.tenant_id == tenant_id,
+        )
+        .order_by(MessagePendingSession.created_at.desc())
+    )
+    if row is None or not _pending_is_accessible(row, datetime.now(UTC)):
         return None
     return row
 
@@ -792,6 +824,133 @@ async def claim_pending_email(
     # The clinic and the fact, never the address.
     logger.info("patient_pending_email_claimed", tenant_id=str(tenant_id))
     return row
+
+
+async def issue_pending_otp(
+    session: AsyncSession, pending: MessagePendingSession
+) -> str | None:
+    """Issue the account challenge for THIS unverified visit and stamp its chat state.
+
+    Returns the raw code only to the caller that immediately hands it to the transactional
+    e-mail job. It is never stored or logged. `None` means the visit is no longer mutable or
+    has no claimed address.
+    """
+    if not _pending_is_live(pending, datetime.now(UTC)) or pending.email is None:
+        return None
+    code = await issue_account_otp(session, pending.email)
+    pending.otp_requested_at = datetime.now(UTC)
+    await session.commit()
+    return code
+
+
+def pending_otp_is_active(
+    pending: MessagePendingSession, now: datetime | None = None
+) -> bool:
+    """Whether THIS visit's last requested challenge is still inside its TTL."""
+    if pending.otp_requested_at is None:
+        return False
+    current = now or datetime.now(UTC)
+    expires_at = _as_utc(pending.otp_requested_at) + timedelta(
+        minutes=get_settings().PATIENT_OTP_EXPIRE_MINUTES
+    )
+    return expires_at > current
+
+
+@dataclass(frozen=True)
+class PendingIdentityVerification:
+    account: MessagePatientAccount
+    canonical: MessagePatient
+    handle_kept: bool
+
+
+async def verify_pending_identity(
+    session: AsyncSession, pending: MessagePendingSession, code: str
+) -> PendingIdentityVerification | None:
+    """Prove, adopt and link the visit, but leave browser-session issuance for `/complete`.
+
+    This is called by secretarIA over the internal leg, so it must NOT issue a login cookie
+    or return an access token. It performs the identity/account work, stamps `verified_at`,
+    and deliberately leaves `revoked_at` empty. The browser that already owns the pending
+    bearer exchanges it afterwards; no credential ever rides in the chat transcript.
+    """
+    if not _pending_is_live(pending, datetime.now(UTC)) or pending.email is None:
+        return None
+    clinic = await channel_open_tenant(session, pending.tenant_id)
+    if clinic is None or not await verify_account_otp(session, pending.email, code):
+        return None
+
+    account = await open_account(session, pending.email)
+    handle_kept = await adopt_pending_identity(session, pending, account.email)
+    canonical = await add_clinic(session, account, clinic)
+    if canonical is None:  # defensive: the address cannot belong to another account
+        return None
+
+    pending.verified_at = datetime.now(UTC)
+    if canonical.id != pending.patient_id:
+        pending.superseded_by = canonical.id
+    await session.commit()
+    logger.info(
+        "patient_pending_identity_verified",
+        tenant_id=str(pending.tenant_id),
+        handle_kept=handle_kept,
+    )
+    return PendingIdentityVerification(
+        account=account,
+        canonical=canonical,
+        handle_kept=handle_kept,
+    )
+
+
+async def complete_pending_identity(
+    session: AsyncSession, pending: MessagePendingSession
+) -> tuple[MessagePatientAccount, MessagePatient, str, UUID] | None:
+    """Atomically exchange a verified visit for the browser's revocable account session.
+
+    The conditional revoke is the one-time claim. The login row and revoke commit together,
+    so a failed issuance leaves the pending bearer usable and concurrent completions cannot
+    mint two live browser sessions from one visit.
+    """
+    now = datetime.now(UTC)
+    if not _pending_is_accessible(pending, now) or pending.verified_at is None:
+        return None
+    canonical_id = pending.superseded_by or pending.patient_id
+    canonical = await session.get(MessagePatient, canonical_id)
+    if canonical is None or canonical.account_id is None:
+        return None
+    account = await session.get(MessagePatientAccount, canonical.account_id)
+    if account is None:
+        return None
+
+    claimed = await session.execute(
+        update(MessagePendingSession)
+        .where(
+            MessagePendingSession.id == pending.id,
+            MessagePendingSession.revoked_at.is_(None),
+            MessagePendingSession.verified_at.is_not(None),
+        )
+        .values(revoked_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        return None
+
+    raw = generate_refresh_token()
+    login = MessagePatientSession(
+        id=uuid4(),
+        account_id=account.id,
+        patient_id=canonical.id,
+        tenant_id=canonical.tenant_id,
+        token_hash=hash_refresh_token(raw),
+        expires_at=now + timedelta(days=get_settings().PATIENT_SESSION_EXPIRE_DAYS),
+    )
+    session.add(login)
+    await session.commit()
+    logger.info(
+        "patient_pending_identity_completed",
+        tenant_id=str(pending.tenant_id),
+        handle_kept=pending.superseded_by is None,
+    )
+    return account, canonical, raw, login.id
 
 
 async def adopt_pending_identity(

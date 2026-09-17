@@ -6,9 +6,11 @@ mesma onda, em outro repo e sem dependência: `PROMPT_BRAIN_MESSAGE_PRECHECK_LIN
 (PreCheck). Consome quem vier depois: `PROMPT_BRAIN_MESSAGE_SECRETARIA_EMAIL_OTP_INLINE.md`
 (onda 2, secretarIA) e `PROMPT_BRAIN_MESSAGE_PORTAL_CHAT_SEM_GATE.md` (onda 3, frontend).
 
-**Estado: BUILT, NÃO COMMITADO, não deployado. Migração `0021_patient_pending_sessions` NÃO
-aplicada em produção.** Commit, push e deploy são decisão do dono (e há sessões paralelas nesta
-árvore — `git add` só com caminhos explícitos). Provas com os comandos: §9.
+**Estado: COMMITADO (`5a2d5e6 feat(patient-access): implement pending visit flow allowing chat
+before email verification`) e DEPLOYADO. Migração `0021_patient_pending_sessions` CONFIRMADA
+aplicada em produção — provado ao vivo em 2026-09-16 (§11), não só suposto.** Provas locais com
+os comandos: §9; prova em produção (requests/responses reais contra
+`https://secretaria-brain-api.cpux9k.easypanel.host`): §11.
 
 Este checkpoint **não substitui** `CHECKPOINT_portal_clinicas_convite.md`: o modelo de conta
 (conta = e-mail, clínica entra por convite, `MessagePatient.id` imutável) continua valendo
@@ -389,3 +391,110 @@ continua funcionando byte a byte.
 **Downgrade:** pare o brain-api novo antes. Apaga identidades pendentes (`email IS NULL`) e os
 consentimentos delas — uma conversa pendente em andamento se perde. Identidades já adotadas
 ficam, com os mesmos ids.
+
+## §11 — Provado em produção (2026-09-16, sessão de QA separada da implementação)
+
+Testado ao vivo contra `https://secretaria-brain-api.cpux9k.easypanel.host` (não TestClient),
+tenant real "Chrysostomo For Eyes" (`9c4fa6a5-ffdb-4adb-9fe1-9036270f1246`), que já tinha
+autorização permanente para dado de teste em produção (`PROMPT_BRAIN_MESSAGE_E2E_QA_PRODUCAO.md`).
+
+1. **Migração `0021` aplicada** — a incerteza registrada em §9 ("não provado... rodar antes do
+   deploy") está resolvida: `POST /pending` gravou `MessagePatient` com `email=NULL` e uma linha
+   em `message_pending_sessions` sem erro. Se a migração estivesse faltando, essa chamada teria
+   sido 500 (tabela/coluna inexistente) — não foi.
+2. `POST /patient-access/clinics/lookup`: invite inválido → `404 clinic_invite_not_found`; UUID
+   real → `200 {"tenant_id":"9c4fa6a5-...","clinic_name":"Chrysostomo For Eyes","products":
+   {"secretaria":true,"precheck":true}}`. Confirma que `resolve_invite` aceita o UUID nu (não só
+   link/código) e que o canal segue ligado.
+3. `POST /patient-access/pending` com `{"invite":"9c4fa6a5-...","product":"precheck"}` → `200`,
+   `patient_ref=fb3b7b26-0990-4404-8e9c-b4e491f62b30`, `email_claimed=false`, cookie
+   `__Host-patient_pending` setado (HttpOnly, confirmado no jar do curl).
+4. **Retomada:** repetindo a mesma chamada com o cookie salvo → mesmo `patient_ref`
+   (`fb3b7b26-...`) — não mintou uma segunda identidade. `MessagePatient.id` estável confirmado
+   neste trecho do fluxo (a parte que dependia só de brain-api; a estabilidade PÓS-código depende
+   do round-trip de OTP, item 7 abaixo).
+5. **Relay ponta a ponta para o PreCheck**, usando o `pending_token` do item 3 em
+   `POST /patient-access/threads/precheck/messages`: `200`, sessão nova nascida no PreCheck
+   (`session_ref=fb3b7b26-...`, `clinic_id=4`, `state=LGPD_PENDING`), primeira mensagem =
+   boas-vindas genéricas + cartão de LGPD (`options: ["Concordo"]`) — exatamente o contrato que
+   `PreCheck/docs/CHECKPOINT_BRAIN_MESSAGE_LINK_DIRETO.md` documenta. Sem handoff, sem e-mail,
+   sem nome. `GET /patient-access/threads/precheck/messages` (poll) devolveu o transcript
+   completo e consistente com o que foi enviado.
+6. **Fronteira do endpoint interno confirmada fechada:** `POST /internal/brain-message/pending-
+   email` sem `X-Internal-Api-Key` e com chave errada → `401 {"detail":"Invalid internal API
+   key."}` nos dois casos. Não é um endpoint acidentalmente aberto.
+7. **NÃO testado em produção nesta rodada:** o round-trip completo de OTP (reivindicar e-mail →
+   pedir código → verificar → conta criada/incrementada, com `patient_ref` estável pós-código).
+   Exige a `X-Internal-Api-Key` real de produção para simular a chamada que a secretarIA faria
+   (`POST /internal/brain-message/pending-email`) — deliberadamente não obtida do EasyPanel
+   (`EASYPANEL_CLI_SECURITY.md` proíbe ler/exportar variável de ambiente gerenciada por lá). Os 25
+   testes locais (§9) cobrem essa lógica com Postgres/SQLite de teste; falta só a confirmação ao
+   vivo. Duas formas de fechar essa lacuna: (a) o dono roda o teste manualmente com a chave real,
+   ou (b) o dono expõe a chave numa variável de ambiente local via `!` (nunca colada no chat) para
+   uma sessão futura reusar sem que o modelo veja o valor.
+
+## §12 — Emenda para OTP inline da secretarIA (onda 2, 2026-09-17)
+
+**Estado:** BUILT localmente, **UNCOMMITTED, NÃO DEPLOYADO**. Esta seção amplia o contrato da onda
+1; não altera a evidência de produção da §11, que continua valendo somente para a revisão `0021`.
+
+A implementação inicial da onda 2 precisava consultar, pedir e verificar o OTP sem possuir o
+`pending_token` HttpOnly do navegador. Como esses endpoints não existiam no contrato original, a
+emenda cria uma perna interna estrita, sempre autenticada por `X-Internal-Api-Key` e sempre
+vinculada ao par exato `(tenant_id, external_id)`:
+
+| Método e rota | Entrada | Saída / erros relevantes |
+|---|---|---|
+| `POST /internal/brain-message/pending-identity` | `{tenant_id, external_id}` | `status = pending_unclaimed | pending_claimed | verified | unknown`; nunca devolve e-mail/token |
+| `POST /internal/brain-message/pending-otp/request` | `{tenant_id, external_id}` | `200 {status:"sent"}`; `404` visita ausente; `409` sem e-mail; `429` rate limit; `503` e-mail não enfileirado |
+| `POST /internal/brain-message/pending-otp/verify` | `{tenant_id, external_id, code}` | `200 {status:"verified"}`; `400` código inválido/expirado/gasto; `404/409/429` como acima |
+
+O serviço interno **não recebe token do navegador e não devolve credencial**. No sucesso ele cria
+ou abre a conta, vincula a clínica, mantém `MessagePatient.id` quando não há colisão e marca a
+visita como verificada. A visita continua acessível ao único navegador que já possui seu bearer.
+Esse navegador conclui a promoção por:
+
+| Método e rota | Contrato |
+|---|---|
+| `GET /patient-access/pending/status` | bearer pendente → `{state: pending_unclaimed | pending_claimed | otp_sent | verified}` sem PII. `otp_sent` dura somente o TTL real do desafio. |
+| `POST /patient-access/pending/complete` | bearer pendente já verificado → `PatientAccountOut`, cookie HttpOnly de conta e revogação atômica da visita; `409` antes da verificação. |
+
+`POST /patient-access/pending/verify-otp` continua compatível para clientes antigos: verifica e faz
+a mesma troca atômica em uma chamada. Uma falha depois da verificação pode ser retomada porque uma
+visita verificada permanece acessível até `complete`.
+
+### Persistência e ordem de rollout
+
+A revisão `0022_pending_identity_inline_otp` adiciona apenas
+`message_pending_sessions.otp_requested_at NULL`. O marcador é local à visita; sem ele, um OTP de
+login pedido em outra aba para o mesmo e-mail colocaria esta conversa no modo de código por engano.
+
+```
+1. alembic upgrade head                    # aplica 0022, aditiva e nullable
+2. deploy do brain-api desta emenda
+3. deploy conjunto secretaria_api + secretaria-worker da onda 2
+4. só então Brain-Message-Frontend da onda 3
+```
+
+### Provas locais desta emenda
+
+```
+uv run python -m pytest tests/test_patient_pending_session.py tests/test_patient_access.py -q
+85 passed in 158.07s
+
+uv run ruff check <arquivos Python tocados pela emenda>
+All checks passed!
+
+uv run python -m pytest -q
+3 failed, 661 passed, 2 skipped, 12 warnings in 1331.29s
+```
+
+Os testes novos provam: estado sem PII; recusa cross-tenant e de campos extras; pedido/erro/retry de
+OTP; recusa do serviço de e-mail retornando `503` sem prometer código; `otp_sent` expirando pelo
+TTL; verificação interna sem credencial; thread ainda acessível antes
+da troca do navegador; `complete` emitindo cookie de conta uma única vez e invalidando o bearer
+pendente. As 3 falhas da suíte completa são exatamente o baseline já registrado na §9 e vêm de
+valores do `.env` local (`STRIPE_SECRET_KEY`, Embedded Signup e `PRECHECK_API_KEY`), fora deste diff:
+`test_checkout_without_stripe_key_returns_503`, `test_get_onboarding_shape_default_state` e
+`test_precheck_internal_usage_event_key_unset_403`. Nenhuma etapa foi executada em produção nesta
+rodada.

@@ -28,8 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
+from brain_api.core.ratelimit import SlidingWindowLimiter
 from brain_api.core.security import decode_hub_token
 from brain_api.models import Entitlement, Tenant, User
+from brain_api.models.patient_access import MessagePatient
 from brain_api.schemas.internal import (
     HubTokenVerifyIn,
     HubTokenVerifyOut,
@@ -42,17 +44,32 @@ from brain_api.schemas.internal import (
     InternalProfessionalEmailsOut,
     PendingEmailClaimIn,
     PendingEmailClaimOut,
+    PendingIdentityIn,
+    PendingIdentityStatusOut,
+    PendingOtpRequestOut,
+    PendingOtpVerifyIn,
+    PendingOtpVerifyOut,
     PrecheckHandoffIn,
     PrecheckHandoffOut,
     UsageEventIn,
     UsageEventOut,
 )
-from brain_api.services import onboarding_sync, patient_access
+from brain_api.services import onboarding_sync, patient_access, secretaria_provisioning
 from brain_api.services.entitlements import ACTIVE_STATUSES, resolve_entitlement
 from brain_api.services.precheck_handoff import request_handoff
 from brain_api.services.usage import record_usage
 
 logger = get_logger(__name__)
+
+_pending_otp_request_limiter = SlidingWindowLimiter(
+    "internal_pending_otp_request",
+    lambda: get_settings().PATIENT_OTP_EMAIL_RATE_LIMIT_PER_MIN,
+)
+_pending_otp_verify_limiter = SlidingWindowLimiter(
+    "internal_pending_otp_verify",
+    lambda: get_settings().PATIENT_VERIFY_RATE_LIMIT_PER_MIN,
+)
+_OTP_EMAIL_TEMPLATE = "patient_access_otp"
 
 _internal_key_scheme = APIKeyHeader(
     name="X-Internal-Api-Key",
@@ -242,11 +259,20 @@ async def create_usage_event(
     summary="Hand off a patient session to PreCheck (internal)",
     responses={
         **_INTERNAL_RESPONSES,
-        403: {"description": "Tenant not entitled to PreCheck (inactive status or precheck disabled)."},
+        403: {
+            "description": "Tenant not entitled to PreCheck "
+            "(inactive status or precheck disabled)."
+        },
         404: {"description": "No PreCheck clinic mapped to this tenant."},
         409: {"description": "Patient already has a conflicting active PreCheck session."},
-        502: {"description": "PreCheck upstream error / network failure (generic detail, never the upstream body)."},
-        503: {"description": "PRECHECK_BASE_URL/PRECHECK_INTERNAL_TOKEN not configured, or PreCheck itself degraded."},
+        502: {
+            "description": "PreCheck upstream error / network failure "
+            "(generic detail, never the upstream body)."
+        },
+        503: {
+            "description": "PRECHECK_BASE_URL/PRECHECK_INTERNAL_TOKEN not configured, "
+            "or PreCheck itself degraded."
+        },
     },
 )
 async def precheck_handoff(
@@ -321,6 +347,125 @@ async def claim_pending_email(
     # The clinic only — never the address, never the handle (see the module's PII note).
     logger.info("pending_email_claimed", tenant_id=str(payload.tenant_id))
     return PendingEmailClaimOut(status="claimed")
+
+
+@router.post(
+    "/brain-message/pending-identity",
+    response_model=PendingIdentityStatusOut,
+    summary="Read the PII-free identity state of one Brain-Message conversation",
+    responses=_INTERNAL_RESPONSES,
+)
+async def pending_identity_status(
+    payload: PendingIdentityIn,
+    session: AsyncSession = Depends(get_session),
+) -> PendingIdentityStatusOut:
+    """Tell secretarIA whether this exact clinic handle still needs an address.
+
+    The answer deliberately carries no address, account id or token. A verified legacy
+    identity (address present even if account adoption is waiting for its old cookie) also
+    counts as verified: that patient already proved the inbox and must not be asked again.
+    """
+    patient = await session.get(MessagePatient, payload.external_id)
+    if patient is None or patient.tenant_id != payload.tenant_id:
+        return PendingIdentityStatusOut(status="unknown")
+    pending = await patient_access.find_pending_identity(
+        session, payload.tenant_id, payload.external_id
+    )
+    if pending is not None:
+        if pending.verified_at is not None:
+            return PendingIdentityStatusOut(status="verified")
+        return PendingIdentityStatusOut(
+            status="pending_claimed" if pending.email is not None else "pending_unclaimed"
+        )
+    if patient.email is not None:
+        return PendingIdentityStatusOut(status="verified")
+    return PendingIdentityStatusOut(status="unknown")
+
+
+@router.post(
+    "/brain-message/pending-otp/request",
+    response_model=PendingOtpRequestOut,
+    summary="Send the pending visit's post-booking code (internal)",
+    responses={
+        **_INTERNAL_RESPONSES,
+        404: {"description": "No accessible visit for this clinic handle."},
+        409: {"description": "The conversation has not captured an e-mail."},
+        429: {"description": "Rate limited for this visit."},
+        503: {"description": "The notification service did not accept the e-mail."},
+    },
+)
+async def request_pending_otp_internal(
+    payload: PendingIdentityIn,
+    session: AsyncSession = Depends(get_session),
+) -> PendingOtpRequestOut:
+    """Service leg used by the post-booking hook; takes no address by design."""
+    pending = await patient_access.find_pending_identity(
+        session, payload.tenant_id, payload.external_id
+    )
+    if pending is None or pending.verified_at is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "pending_session_not_found")
+    if pending.email is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "pending_email_missing")
+    if not _pending_otp_request_limiter.allow(str(pending.id)):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
+
+    code = await patient_access.issue_pending_otp(session, pending)
+    if code is None:  # state changed between lookup and issue
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "pending_session_not_found")
+    queued = await secretaria_provisioning.send_notification_email(
+        pending.email,
+        _OTP_EMAIL_TEMPLATE,
+        {"code": code, "ttl_minutes": get_settings().PATIENT_OTP_EXPIRE_MINUTES},
+    )
+    if not queued:
+        # Do not tell secretarIA "sent" (and make it promise a code in chat)
+        # when the notification leg refused the e-mail. The account-wide OTP
+        # may remain until its short TTL, but this visit must not advertise
+        # code mode; a retry will issue and mark a fresh challenge.
+        pending.otp_requested_at = None
+        await session.commit()
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "notification_unavailable")
+    logger.info("patient_pending_otp_requested_internal", tenant_id=str(payload.tenant_id))
+    return PendingOtpRequestOut(status="sent")
+
+
+@router.post(
+    "/brain-message/pending-otp/verify",
+    response_model=PendingOtpVerifyOut,
+    summary="Verify the code typed in the Brain-Message conversation (internal)",
+    responses={
+        **_INTERNAL_RESPONSES,
+        400: {"description": "Wrong, expired, used or exhausted code."},
+        404: {"description": "No accessible visit for this clinic handle."},
+        409: {"description": "The conversation has not captured an e-mail."},
+        429: {"description": "Rate limited for this visit."},
+    },
+)
+async def verify_pending_otp_internal(
+    payload: PendingOtpVerifyIn,
+    session: AsyncSession = Depends(get_session),
+) -> PendingOtpVerifyOut:
+    """Prove the address without attempting to mint a browser credential on this leg.
+
+    A successful retry is idempotent while the browser has not completed the exchange. The
+    visitor's pending bearer remains readable until `/patient-access/pending/complete` sets
+    the HttpOnly account cookie and returns the ordinary account tokens.
+    """
+    pending = await patient_access.find_pending_identity(
+        session, payload.tenant_id, payload.external_id
+    )
+    if pending is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "pending_session_not_found")
+    if pending.verified_at is not None:
+        return PendingOtpVerifyOut(status="verified")
+    if pending.email is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "pending_email_missing")
+    if not _pending_otp_verify_limiter.allow(str(pending.id)):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
+    verified = await patient_access.verify_pending_identity(session, pending, payload.code)
+    if verified is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid_or_expired_code")
+    return PendingOtpVerifyOut(status="verified")
 
 
 # --- Onboarding crons (CONTRACT_onboarding_v1.md §5 items 7-8; secretaria pulls/posts) ---

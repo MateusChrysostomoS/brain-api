@@ -27,6 +27,7 @@ What each group here exists to catch, in the order the flow runs:
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from sqlalchemy import func, select
@@ -72,7 +73,13 @@ def _internal_key(monkeypatch):
     monkeypatch.setattr(
         internal_api,
         "get_settings",
-        lambda: SimpleNamespace(SECRETARIA_API_KEY=_INTERNAL_KEY, SECRETARIA_API_KEY_PREVIOUS=""),
+        lambda: SimpleNamespace(
+            SECRETARIA_API_KEY=_INTERNAL_KEY,
+            SECRETARIA_API_KEY_PREVIOUS="",
+            PATIENT_OTP_EMAIL_RATE_LIMIT_PER_MIN=999,
+            PATIENT_VERIFY_RATE_LIMIT_PER_MIN=999,
+            PATIENT_OTP_EXPIRE_MINUTES=10,
+        ),
     )
     return {"X-Internal-Api-Key": _INTERNAL_KEY}
 
@@ -118,6 +125,18 @@ async def _count(sessionmaker, model, *where) -> int:
         return await session.scalar(select(func.count()).select_from(model).where(*where))
 
 
+async def _identity_call(client, monkeypatch, path, tenant_id, patient_ref, **extra):
+    return await client.post(
+        f"/internal/brain-message/{path}",
+        headers=_internal_key(monkeypatch),
+        json={
+            "tenant_id": str(tenant_id),
+            "external_id": str(patient_ref),
+            **extra,
+        },
+    )
+
+
 # --- 1) The handle is minted before the address, and never changes ------------------------
 
 
@@ -137,6 +156,193 @@ async def test_a_visitor_gets_an_identity_with_no_email_at_all(pclient):
     assert patient.email is None, "a pending identity must carry no address"
     assert patient.account_id is None, "and belong to no account"
     assert patient.tenant_id == seed.both
+
+
+async def test_internal_inline_contract_promotes_only_on_the_browser_leg(
+    pclient, monkeypatch
+):
+    """The wave-2/wave-3 seam: service verifies, browser receives the account.
+
+    The pending bearer remains usable after the internal verification, because no service
+    callback can set an HttpOnly cookie in the patient's browser. `/pending/complete` is the
+    one-time exchange that returns the ordinary account contract and then kills that bearer.
+    """
+    from brain_api.services import secretaria_provisioning
+
+    async def _queued(to, template, variables):
+        assert template == "patient_access_otp"
+        assert set(variables) == {"code", "ttl_minutes"}
+        return True
+
+    monkeypatch.setattr(secretaria_provisioning, "send_notification_email", _queued)
+    client, sessionmaker, seed = pclient
+    opened = (await _open(client, sessionmaker, seed.both)).json()
+    token = opened["pending_token"]
+    handle = opened["patient_ref"]
+
+    probe = await _identity_call(
+        client, monkeypatch, "pending-identity", seed.both, handle
+    )
+    assert probe.status_code == 200
+    assert probe.json() == {"status": "pending_unclaimed"}
+
+    assert (await _claim(client, monkeypatch, seed.both, handle)).status_code == 200
+    probe = await _identity_call(
+        client, monkeypatch, "pending-identity", seed.both, handle
+    )
+    assert probe.json() == {"status": "pending_claimed"}
+
+    requested = await _identity_call(
+        client, monkeypatch, "pending-otp/request", seed.both, handle
+    )
+    assert requested.status_code == 200, requested.text
+    assert requested.json() == {"status": "sent"}
+    status_response = await client.get(
+        "/patient-access/pending/status", headers=_bearer(token)
+    )
+    assert status_response.json() == {"state": "otp_sent"}
+
+    wrong = await _identity_call(
+        client,
+        monkeypatch,
+        "pending-otp/verify",
+        seed.both,
+        handle,
+        code="000000",
+    )
+    assert wrong.status_code == 400
+    assert (
+        await client.get("/patient-access/pending/status", headers=_bearer(token))
+    ).json() == {"state": "otp_sent"}
+
+    # The composer hint is bounded by the real challenge TTL; a historical
+    # request must not leave the Portal in code mode for the visit's full day.
+    async with sessionmaker() as session:
+        row = await session.scalar(
+            select(MessagePendingSession).where(
+                MessagePendingSession.patient_id == uuid.UUID(handle)
+            )
+        )
+        row.otp_requested_at = datetime.now(UTC) - timedelta(minutes=11)
+        await session.commit()
+    assert (
+        await client.get("/patient-access/pending/status", headers=_bearer(token))
+    ).json() == {"state": "pending_claimed"}
+
+    requested = await _identity_call(
+        client, monkeypatch, "pending-otp/request", seed.both, handle
+    )
+    assert requested.status_code == 200
+
+    code = await _peek_code(sessionmaker, None, PATIENT_EMAIL)
+    verified = await _identity_call(
+        client,
+        monkeypatch,
+        "pending-otp/verify",
+        seed.both,
+        handle,
+        code=code,
+    )
+    assert verified.status_code == 200, verified.text
+    assert verified.json() == {"status": "verified"}
+    assert (
+        await client.get("/patient-access/pending/status", headers=_bearer(token))
+    ).json() == {"state": "verified"}
+
+    # Still readable until the BROWSER receives its replacement credentials.
+    before_exchange = await client.get(
+        "/patient-access/threads", headers=_bearer(token)
+    )
+    assert before_exchange.status_code == 200
+
+    completed = await client.post(
+        "/patient-access/pending/complete", headers=_bearer(token)
+    )
+    assert completed.status_code == 200, completed.text
+    account = completed.json()
+    assert account["patient_ref"] == handle
+    assert account["account_token"]
+    assert "__Host-patient_session=" in completed.headers.get("set-cookie", "")
+
+    assert (
+        await client.get("/patient-access/pending/status", headers=_bearer(token))
+    ).status_code == 401
+    assert (
+        await client.get("/patient-access/threads", headers=_bearer(token))
+    ).status_code == 401
+
+    probe = await _identity_call(
+        client, monkeypatch, "pending-identity", seed.both, handle
+    )
+    assert probe.json() == {"status": "verified"}
+
+
+async def test_internal_inline_contract_refuses_missing_email_and_cross_tenant_handle(
+    pclient, monkeypatch
+):
+    """The service key is not authority to detach a visit from its tenant+handle pair."""
+    client, sessionmaker, seed = pclient
+    opened = (await _open(client, sessionmaker, seed.both)).json()
+
+    no_email = await _identity_call(
+        client,
+        monkeypatch,
+        "pending-otp/request",
+        seed.both,
+        opened["patient_ref"],
+    )
+    assert no_email.status_code == 409
+
+    wrong_tenant = await _identity_call(
+        client,
+        monkeypatch,
+        "pending-otp/request",
+        seed.only_secretaria,
+        opened["patient_ref"],
+    )
+    assert wrong_tenant.status_code == 404
+
+    strict = await client.post(
+        "/internal/brain-message/pending-identity",
+        headers=_internal_key(monkeypatch),
+        json={
+            "tenant_id": str(seed.both),
+            "external_id": opened["patient_ref"],
+            "email": PATIENT_EMAIL,
+        },
+    )
+    assert strict.status_code == 422
+
+
+async def test_internal_inline_request_never_promises_an_unqueued_code(
+    pclient, monkeypatch
+):
+    """A notification refusal is 503 and leaves the Portal outside code mode."""
+    from brain_api.services import secretaria_provisioning
+
+    async def _refused(to, template, variables):
+        return False
+
+    monkeypatch.setattr(secretaria_provisioning, "send_notification_email", _refused)
+    client, sessionmaker, seed = pclient
+    opened = (await _open(client, sessionmaker, seed.both)).json()
+    assert (
+        await _claim(client, monkeypatch, seed.both, opened["patient_ref"])
+    ).status_code == 200
+
+    requested = await _identity_call(
+        client,
+        monkeypatch,
+        "pending-otp/request",
+        seed.both,
+        opened["patient_ref"],
+    )
+    assert requested.status_code == 503
+    progress = await client.get(
+        "/patient-access/pending/status",
+        headers=_bearer(opened["pending_token"]),
+    )
+    assert progress.json() == {"state": "pending_claimed"}
 
 
 async def test_the_handle_is_the_same_id_from_the_first_message_to_the_code(pclient, monkeypatch):

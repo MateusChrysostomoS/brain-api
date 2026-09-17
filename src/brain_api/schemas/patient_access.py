@@ -12,6 +12,7 @@ Two kinds of field live here:
 """
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
@@ -290,6 +291,18 @@ class PendingSessionOut(BaseModel):
     # decide whether "enviar código" is even offered yet. The address itself is never returned:
     # echoing it back would turn this route into a way to read what another visit captured.
     email_claimed: bool = False
+
+
+class PendingProgressOut(BaseModel):
+    """Read-only progress for the chat UI; contains no address, code or token.
+
+    `otp_sent` is visit-local (`MessagePendingSession.otp_requested_at`), so an account
+    login challenge requested elsewhere for the same inbox cannot switch this composer into
+    code mode. `verified` means the service leg accepted the code and `/pending/complete` is
+    now allowed.
+    """
+
+    state: Literal["pending_unclaimed", "pending_claimed", "otp_sent", "verified"]
 
 
 class PendingVerifyIn(BaseModel):

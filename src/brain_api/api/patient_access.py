@@ -83,6 +83,7 @@ from brain_api.schemas.patient_access import (
     OtpVerifyIn,
     PatientAccountOut,
     PatientMessageIn,
+    PendingProgressOut,
     PendingSessionIn,
     PendingSessionOut,
     PendingVerifyIn,
@@ -999,6 +1000,65 @@ async def open_pending(
     )
 
 
+@router.get(
+    "/pending/status",
+    response_model=PendingProgressOut,
+    summary="Read the pending chat's identity step without exposing identity data",
+    responses={401: {"description": "Missing or invalid pending token."}},
+)
+async def pending_status(
+    visit: tuple[MessagePatient, MessagePendingSession] = Depends(get_current_pending),
+) -> PendingProgressOut:
+    """The typed state the Portal uses for its composer; no copy matching required."""
+    _, pending = visit
+    if pending.verified_at is not None:
+        state = "verified"
+    elif patient_access.pending_otp_is_active(pending):
+        state = "otp_sent"
+    elif pending.email is not None:
+        state = "pending_claimed"
+    else:
+        state = "pending_unclaimed"
+    return PendingProgressOut(state=state)
+
+
+@router.post(
+    "/pending/complete",
+    response_model=PatientAccountOut,
+    summary="Exchange an inline-verified visit for the browser's account session",
+    responses={
+        401: {"description": "Missing or invalid pending token."},
+        409: {"description": "The inline code has not been verified yet."},
+    },
+)
+async def complete_pending(
+    response: Response,
+    visit: tuple[MessagePatient, MessagePendingSession] = Depends(get_current_pending),
+    session: AsyncSession = Depends(get_session),
+) -> PatientAccountOut:
+    """The only leg allowed to promote the browser after secretarIA verified its code.
+
+    The service callback cannot set a cookie in the patient's browser and must never send
+    tokens through the transcript. This request already carries the scoped pending bearer;
+    it atomically spends that visit, writes the HttpOnly account cookie and returns the same
+    `PatientAccountOut` every ordinary OTP login uses.
+    """
+    _, pending = visit
+    completed = await patient_access.complete_pending_identity(session, pending)
+    if completed is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "pending_verification_incomplete")
+    account, canonical, raw_session, session_id = completed
+    set_patient_session_cookie(response, raw_session)
+    clear_patient_pending_cookie(response)
+    return await _account_body(
+        session,
+        account,
+        session_id,
+        canonical,
+        invited_tenant_id=canonical.tenant_id,
+    )
+
+
 @router.post(
     "/pending/request-otp",
     response_model=MessageOut,
@@ -1037,7 +1097,9 @@ async def request_pending_otp(
     if not _ip_limiter.allow(client_ip(request)) or not _email_limiter.allow(address):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
 
-    code = await patient_access.issue_account_otp(session, address)
+    code = await patient_access.issue_pending_otp(session, pending)
+    if code is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _OTP_INVALID)
     # Fail-soft, like every transactional e-mail in this repo.
     await secretaria_provisioning.send_notification_email(
         address,
@@ -1095,26 +1157,25 @@ async def verify_pending_otp(
     if pending.email is None:
         raise HTTPException(status.HTTP_409_CONFLICT, _PENDING_EMAIL_MISSING)
 
-    clinic = await patient_access.channel_open_tenant(session, pending.tenant_id)
-    if clinic is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, _OTP_INVALID)
-    if not await patient_access.verify_account_otp(session, pending.email, payload.code):
+    if pending.verified_at is None:
+        verified = await patient_access.verify_pending_identity(session, pending, payload.code)
+    else:
+        verified = None
+    if pending.verified_at is None and verified is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, _OTP_INVALID)
 
-    account = await patient_access.open_account(session, pending.email)
-    kept = await patient_access.adopt_pending_identity(session, pending, account.email)
-    canonical = await patient_access.add_clinic(session, account, clinic)
-    if canonical is None:  # pragma: no cover - unreachable: the address owns its account
+    completed = await patient_access.complete_pending_identity(session, pending)
+    if completed is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, _OTP_INVALID)
-    await patient_access.close_pending_session(session, pending, canonical=canonical)
-
-    raw_session, session_id = await patient_access.issue_patient_session(
-        session, account, opened_at=canonical
-    )
+    account, canonical, raw_session, session_id = completed
     set_patient_session_cookie(response, raw_session)
     clear_patient_pending_cookie(response)
     # The clinic and whether the handle survived — never the address, never a token.
-    logger.info("patient_pending_session_verified", tenant_id=str(clinic.id), handle_kept=kept)
+    logger.info(
+        "patient_pending_session_verified",
+        tenant_id=str(pending.tenant_id),
+        handle_kept=pending.superseded_by is None,
+    )
     return await _account_body(
         session, account, session_id, canonical, invited_tenant_id=canonical.tenant_id
     )

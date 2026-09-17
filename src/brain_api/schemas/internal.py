@@ -178,6 +178,48 @@ class PendingEmailClaimOut(BaseModel):
     status: Literal["claimed"]
 
 
+class PendingIdentityIn(BaseModel):
+    """Common key for secretarIA's pending-identity service leg.
+
+    Both fields must match the same visit. `external_id` is the caller's name for
+    `MessagePatient.id`; no e-mail or token is accepted on this boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: UUID
+    external_id: UUID
+
+
+class PendingIdentityStatusOut(BaseModel):
+    """PII-free state used before secretarIA decides whether to ask for e-mail."""
+
+    status: Literal[
+        "pending_unclaimed",
+        "pending_claimed",
+        "verified",
+        "unknown",
+    ]
+
+
+class PendingOtpRequestOut(BaseModel):
+    """The code was accepted for delivery; neither address nor credential leaves."""
+
+    status: Literal["sent"]
+
+
+class PendingOtpVerifyIn(PendingIdentityIn):
+    """Inline code from secretarIA. The code is consumed in-memory and never logged."""
+
+    code: str = Field(min_length=1, max_length=32)
+
+
+class PendingOtpVerifyOut(BaseModel):
+    """The identity is proven; the browser still has to call `/pending/complete`."""
+
+    status: Literal["verified"]
+
+
 # --- Onboarding crons (CONTRACT_onboarding_v1.md §5 items 7-8; secretaria pulls/posts) ---
 
 

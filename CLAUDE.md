@@ -109,9 +109,14 @@
   `/prompt-generator`, onda 1 de `PLANO_LOGIN_SEM_GATE_PACIENTE_NOVO.md`) — cria o conceito de sessão
   pendente (identidade sem e-mail verificado, para o paciente conversar e agendar antes de confirmar
   a conta) e o link direto ao PreCheck sem autenticação. Consome o modelo de conta do prompt acima
-  (nunca muda `MessagePatient.id`). **EXECUTADO em 2026-09-16, NÃO COMMITADO (sem hash: commit é
-  decisão do dono, e há sessões paralelas nesta árvore) e não deployado — migração
-  `0021_patient_pending_sessions` NÃO aplicada em produção.** Uma visita
+  (nunca muda `MessagePatient.id`). **EXECUTADO em 2026-09-16, COMMITADO
+  (`5a2d5e6 feat(patient-access): implement pending visit flow allowing chat before email
+  verification`), DEPLOYADO e PROVADO ao vivo em produção no mesmo dia** — migração `0021`
+  confirmada aplicada; `/pending`, `/clinics/lookup` e o relay ponta a ponta pro PreCheck testados
+  contra `https://secretaria-brain-api.cpux9k.easypanel.host` no tenant "Chrysostomo For Eyes"
+  (evidência em `docs/CHECKPOINT_portal_sessao_pendente.md` §11). Não provado ainda: o round-trip
+  de OTP da visita pendente, que exige a `X-Internal-Api-Key` real (não obtida do EasyPanel de
+  propósito). Uma visita
   (`message_pending_sessions`) carrega a conversa antes de qualquer e-mail; a identidade nasce com
   `MessagePatient.email` anulável e **mantém o mesmo id** depois do código. Quatro rotas novas
   (`POST /patient-access/clinics/lookup`, `/pending`, `/pending/request-otp`,
@@ -123,6 +128,12 @@
   ordem de deploy e provas em `docs/CHECKPOINT_portal_sessao_pendente.md`; skill
   `cross-tenant-account-linking` estendida com a seção "identidade antes do atributo". **Ordem de
   deploy: `alembic upgrade head` → brain-api → só então secretarIA (onda 2) → frontend (onda 3).**
+  **EMENDA 2026-09-17 PARA A ONDA 2: BUILT localmente, UNCOMMITTED e NÃO DEPLOYADA** — migração
+  aditiva `0022`, status/request/verify internos sem PII/credencial e os endpoints públicos
+  `GET /patient-access/pending/status` + `POST /patient-access/pending/complete`; contrato, segurança,
+  compatibilidade do `/pending/verify-otp` e provas em
+  `docs/CHECKPOINT_portal_sessao_pendente.md` §12. A ordem agora é 0022 → brain-api →
+  `secretaria_api`+worker → frontend.
 - `z_prompts/PROMPT_BRAIN_MESSAGE_PRECHECK_PARIDADE_4_EXAMES_BRAIN_API.md` (raiz de BRAIN, gerado 2026-09-14;
   **Opus 5, esforço alto**) — parte 4 da série de paridade do PreCheck no Portal: `PatientMessageIn`
   (`extra="forbid"`) passa a aceitar anexo só no produto precheck, com validação de tipo real/tamanho antes de

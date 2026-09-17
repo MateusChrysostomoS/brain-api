@@ -309,10 +309,18 @@ class MessagePendingSession(Base):
     # CLAIMED, not proven (see above). Lower-cased on write, like every address here.
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Stamped only after brain-api accepted the request to issue a challenge for THIS visit.
+    # The account OTP is keyed by address, so without this visit-local marker a login code
+    # requested elsewhere for the same inbox would make the Portal think this conversation
+    # had already reached its post-booking code step.
+    otp_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    # Stamped when a code turned this conversation into an account login. The row is revoked at
-    # the same moment; the stamp is kept so the trail of "this account started here" survives.
+    # Stamped when a code proves the address. The visit deliberately remains readable until
+    # the browser exchanges it for the account session (`POST /pending/complete`); only that
+    # browser-facing request can set the HttpOnly account cookie and return the scoped tokens.
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # The identity the account ended up using at this clinic, when it is NOT `patient_id` —
     # i.e. the clinic ALREADY had an identity for the proven address, so this conversation's

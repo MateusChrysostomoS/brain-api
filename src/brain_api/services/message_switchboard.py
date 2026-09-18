@@ -25,13 +25,18 @@ never be spelled the same as "the service is down" (502/503), or a support call 
 missing tab becomes unanswerable.
 """
 
-from typing import Any
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from dataclasses import dataclass
+from typing import Any, BinaryIO
 from uuid import UUID
 
 import httpx
 from fastapi import HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 
 from brain_api.config import get_settings
+from brain_api.core import attachments
+from brain_api.core.attachments import AttachmentKind, CheckedAttachment
 from brain_api.core.logging import get_logger
 from brain_api.schemas.entitlement import EntitlementOut
 
@@ -41,6 +46,11 @@ PRODUCT_SECRETARIA = "secretaria"
 PRODUCT_PRECHECK = "precheck"
 #: Display order of the tabs the patient sees; also the iteration order of `/threads`.
 PRODUCTS: tuple[str, ...] = (PRODUCT_SECRETARIA, PRODUCT_PRECHECK)
+#: Products whose relay CODE carries a file (`send_attachment`, `open_media`, the transcript
+#: reference). PreCheck is out of this round on purpose (z_prompts/PLANO_PORTAL_API_MVP.md,
+#: decision 1): adapting it is adding it here plus its branch in those functions — the
+#: validation in `core/attachments.py` is product-agnostic and does not change.
+ATTACHMENT_PRODUCTS: frozenset[str] = frozenset({PRODUCT_SECRETARIA})
 
 # secretarIA's inbound scheme (secretaria api/internal.py: APIKeyHeader X-Internal-Api-Key).
 _SECRETARIA_KEY_HEADER = "X-Internal-Api-Key"
@@ -125,6 +135,9 @@ async def _call(
     *,
     json: dict[str, Any] | None = None,
     params: dict[str, Any] | None = None,
+    content: AsyncIterator[bytes] | None = None,
+    content_headers: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> Any:
     """One authenticated hop into a sibling service. Upstream bodies NEVER reach the patient.
 
@@ -140,14 +153,22 @@ async def _call(
     """
     base, headers = _upstream(product)
     settings = get_settings()
-    timeout = (
-        settings.SECRETARIA_TIMEOUT_SECONDS
-        if product == PRODUCT_SECRETARIA
-        else settings.PRECHECK_TIMEOUT_SECONDS
-    )
+    if timeout is None:
+        timeout = (
+            settings.SECRETARIA_TIMEOUT_SECONDS
+            if product == PRODUCT_SECRETARIA
+            else settings.PRECHECK_TIMEOUT_SECONDS
+        )
     try:
         async with httpx.AsyncClient(base_url=base, timeout=timeout) as client:
-            resp = await client.request(method, path, headers=headers, json=json, params=params)
+            resp = await client.request(
+                method,
+                path,
+                headers={**headers, **(content_headers or {})},
+                json=json,
+                params=params,
+                content=content,
+            )
     except httpx.RequestError as exc:
         logger.warning(
             "switchboard_upstream_unreachable", product=product, error=type(exc).__name__
@@ -252,12 +273,13 @@ async def list_messages(
         params: dict[str, Any] = {"tenant_id": str(tenant_id)}
         if since:
             params["since"] = since
-        return await _call(
+        payload = await _call(
             product,
             "GET",
             f"/internal/brain-message/conversations/{patient_ref}/messages",
             params=params,
         )
+        return _project_attachments(product, payload)
 
     params = {"tenant_id": str(tenant_id)}
     if since:
@@ -268,3 +290,256 @@ async def list_messages(
         f"/internal/brain-message/sessions/{patient_ref}/messages",
         params=params,
     )
+
+
+# --- Attachments (2026-09-18): the multipart relay, the transcript reference, the stream ---
+
+
+async def send_attachment(
+    product: str,
+    *,
+    tenant_id: UUID,
+    patient_ref: str,
+    attachment: CheckedAttachment,
+    file: BinaryIO,
+    text: str | None = None,
+    patient_name: str | None = None,
+    interactive_reply_id: str | None = None,
+) -> dict[str, Any]:
+    """Relay one patient message WITH a file to `product`'s inbound, as `multipart/form-data`.
+
+    The SAME internal route and the SAME field names as `send_message`'s JSON body — only the
+    encoding changes, plus one file part named `file`. What that part says about the file is
+    this service's finding, never the browser's: the content type is the one SNIFFED from the
+    bytes and the name is the cleaned one (`core/attachments.py`). The file streams from
+    Starlette's spool in chunks — never re-encoded (no base64), never held in memory whole.
+
+    httpx encodes the body (it owns the boundary and the quoting of names), but it reads a
+    file synchronously, and measures it first through `fileno()` — which rolls a spooled file
+    over to disk. On the event loop, every one of those reads would stall every other request
+    this service is serving. So the encoder is built, and then iterated, in a worker thread
+    (`_off_the_loop`); only the network write stays on the loop.
+
+    The product validates again on its side and must accept whatever this edge accepted (same
+    constants). If it refuses anyway, that is drift between the two repos rather than a
+    patient error, so it surfaces as the ordinary `product_error` 502 with the upstream status
+    in this service's log (brain-mesh-opaque-5xx-diagnosis).
+    """
+    if product not in ATTACHMENT_PRODUCTS:  # pragma: no cover - the router refuses first.
+        raise attachments.AttachmentRefused(attachments.ATTACHMENT_UNSUPPORTED_FOR_PRODUCT)
+    data = {"tenant_id": str(tenant_id), "external_id": patient_ref}
+    if text:
+        data["text"] = text
+    if patient_name:
+        data["patient_name"] = patient_name
+    if interactive_reply_id:
+        data["interactive_reply_id"] = interactive_reply_id
+    # A relative URL on purpose: the request is only an ENCODER here, so it carries no Host;
+    # its two headers below are the whole framing of the body it built.
+    encoded = await run_in_threadpool(
+        httpx.Request,
+        "POST",
+        _INBOUND_PATH,
+        data=data,
+        files={"file": (attachment.filename, file, attachment.kind.content_type)},
+    )
+    return await _call(
+        product,
+        "POST",
+        _INBOUND_PATH,
+        content=_off_the_loop(encoded.stream),
+        content_headers={
+            name: encoded.headers[name]
+            for name in ("Content-Type", "Content-Length")
+            if name in encoded.headers
+        },
+        timeout=get_settings().ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS,
+    )
+
+
+_INBOUND_PATH = "/internal/brain-message/inbound"
+
+
+async def _off_the_loop(stream: Iterable[bytes]) -> AsyncIterator[bytes]:
+    """A SYNC byte stream, pulled one chunk per worker-thread hop — never on the event loop."""
+    chunks = iter(stream)
+    while (chunk := await run_in_threadpool(next, chunks, None)) is not None:
+        yield chunk
+
+
+def _project_attachments(product: str, payload: Any) -> Any:
+    """Rewrite each transcript message's `attachment` into the only shape a browser may see.
+
+    Everything else in the transcript passes through untouched (`RelayOut` says why). This
+    one key is the exception because it is where storage could leak: the product keeps an
+    object key, and could one day add a signed URL, and neither may reach the patient — the
+    portal's CSP would block the URL, and a URL that works for whoever holds it is a
+    credential. What leaves is a whitelist (type, size, name) plus `media_path`, the route
+    that streams the file under the patient's own session. A malformed reference becomes
+    null, with a log line, rather than a broken message.
+    """
+    items = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return payload
+    for item in items:
+        if isinstance(item, dict) and item.get("attachment") is not None:
+            item["attachment"] = _attachment_ref(product, item)
+    return payload
+
+
+def _attachment_ref(product: str, item: dict[str, Any]) -> dict[str, Any] | None:
+    raw = item["attachment"] if isinstance(item["attachment"], dict) else {}
+    message_id, content_type = item.get("id"), raw.get("content_type")
+    kind = attachments.ALLOWED_KINDS.get(content_type) if isinstance(content_type, str) else None
+    size, name = raw.get("size_bytes"), raw.get("filename")
+    if (
+        kind is None
+        or type(size) is not int
+        or not 0 < size <= attachments.MAX_ATTACHMENT_BYTES
+        or not isinstance(message_id, str)
+        or not attachments.is_media_id(message_id)
+    ):
+        logger.warning("switchboard_attachment_ref_invalid", product=product)
+        return None
+    return {
+        "content_type": kind.content_type,
+        "size_bytes": size,
+        "filename": attachments.safe_filename(name if isinstance(name, str) else None, kind),
+        "media_path": f"/patient-access/threads/{product}/media/{message_id}",
+    }
+
+
+_MEDIA_PATH = "/internal/brain-message/media/{message_id}"
+
+
+@dataclass(frozen=True)
+class MediaStream:
+    """An attachment on its way from the product to the browser.
+
+    The upstream connection is released twice over, and either is enough: `chunks` closes it
+    when it ends however it ends (`_capped`), and the router also hands `aclose` to Starlette
+    as the response's background task. `aclose` is idempotent, so the second is harmless.
+    """
+
+    kind: AttachmentKind
+    content_length: int | None
+    chunks: AsyncIterator[bytes]
+    aclose: Callable[[], Awaitable[None]]
+
+
+async def open_media(
+    product: str, *, tenant_id: UUID, patient_ref: str, message_id: str
+) -> MediaStream:
+    """Open `product`'s stream of ONE attachment, scoped to this patient's own conversation.
+
+    `GET /internal/brain-message/media/{message_id}?tenant_id=..&external_id=..` — both query
+    values off the SESSION, exactly like the poll. The product answers 404 unless the message
+    belongs to that conversation, and that 404 goes on as the same `attachment_not_found` a
+    nonexistent id gets.
+
+    Re-checked here, because the answer lands in a browser under this service's origin: the
+    type must be an accepted kind (a `text/html` from a confused or compromised upstream is
+    refused, never streamed), a declared length over the ceiling is refused, and the body is
+    cut at the ceiling whatever the upstream claimed.
+    """
+    if product not in ATTACHMENT_PRODUCTS or not attachments.is_media_id(message_id):
+        raise _media_not_found()
+    base, headers = _upstream(product)
+    client = httpx.AsyncClient(
+        base_url=base, timeout=get_settings().ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS
+    )
+    try:
+        response = await client.send(
+            client.build_request(
+                "GET",
+                _MEDIA_PATH.format(message_id=message_id),
+                headers=headers,
+                params={"tenant_id": str(tenant_id), "external_id": patient_ref},
+            ),
+            stream=True,
+        )
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        logger.warning(
+            "switchboard_upstream_unreachable", product=product, error=type(exc).__name__
+        )
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "product_unreachable") from exc
+
+    async def aclose() -> None:
+        await response.aclose()
+        await client.aclose()
+
+    media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    kind = attachments.ALLOWED_KINDS.get(media_type)
+    length = _declared_length(response)
+    oversized = length is not None and length > attachments.MAX_ATTACHMENT_BYTES
+    if response.status_code != status.HTTP_200_OK or kind is None or oversized:
+        await aclose()
+        raise _media_failure(product, response.status_code, kind is not None, oversized)
+    return MediaStream(
+        kind=kind,
+        content_length=length,
+        chunks=_capped(product, response.aiter_bytes(), aclose),
+        aclose=aclose,
+    )
+
+
+def _declared_length(response: httpx.Response) -> int | None:
+    """The upstream's Content-Length when it describes the bytes sent on, else None.
+
+    A body sent with a Content-Encoding is decoded on the way (`aiter_bytes`), so its declared
+    length describes different bytes and is dropped.
+    """
+    raw = response.headers.get("content-length", "")
+    if response.headers.get("content-encoding") or not raw.isdigit():
+        return None
+    return int(raw)
+
+
+def _media_not_found() -> HTTPException:
+    refused = attachments.AttachmentRefused(attachments.ATTACHMENT_NOT_FOUND)
+    return HTTPException(refused.status_code, refused.detail)
+
+
+def _media_failure(
+    product: str, status_code: int, type_accepted: bool, oversized: bool
+) -> HTTPException:
+    """An upstream answer that will not be streamed, mapped the way `_call` maps its own."""
+    if status_code == status.HTTP_404_NOT_FOUND:
+        # Also what a product WITHOUT the route answers (deploy order) — hence the log line.
+        logger.info("switchboard_media_not_found", product=product)
+        return _media_not_found()
+    if status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        logger.warning("switchboard_upstream_degraded", product=product, path=_MEDIA_PATH)
+        return HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "product_temporarily_unavailable")
+    logger.error(
+        "switchboard_upstream_error",
+        product=product,
+        path=_MEDIA_PATH,
+        status=status_code,
+        type_accepted=type_accepted,
+        oversized=oversized,
+    )
+    return HTTPException(status.HTTP_502_BAD_GATEWAY, "product_error")
+
+
+async def _capped(
+    product: str, chunks: AsyncIterator[bytes], aclose: Callable[[], Awaitable[None]]
+) -> AsyncIterator[bytes]:
+    """`chunks`, cut at the attachment ceiling, releasing the upstream however it ends.
+
+    The cut is for an upstream that lies about size. The `finally` is for a patient who goes
+    away mid-download: Starlette runs a response's background task on that path only while
+    the server negotiates ASGI HTTP spec < 2.4 (uvicorn 0.49 says 2.3), and this does not
+    depend on it — an abandoned generator is finalized, and its `finally` runs, either way.
+    """
+    sent = 0
+    try:
+        async for chunk in chunks:
+            sent += len(chunk)
+            if sent > attachments.MAX_ATTACHMENT_BYTES:
+                logger.error("switchboard_media_oversized", product=product)
+                return
+            yield chunk
+    finally:
+        await aclose()

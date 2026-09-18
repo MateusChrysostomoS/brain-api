@@ -396,6 +396,31 @@ class Settings(BaseSettings):
     # because there is nothing else to key by before a session exists — which is also why it
     # is deliberately tighter than the OTP buckets.
     PATIENT_PENDING_RATE_LIMIT_PER_MIN: int = 5
+    # --- Attachments on the Brain-Message channel (2026-09-18) ----------------------------
+    # The SIZE and TYPE limits are deliberately NOT settings: they are the cross-repo contract
+    # and live as constants in core/attachments.py, so no env var can make this edge accept a
+    # file secretarIA then refuses. Only the operational knobs live here
+    # (docs/CHECKPOINT_brain_message_anexos.md).
+    # Kill switch for NEW uploads. Off = every product answers the 422
+    # `attachment_unsupported_for_product` PreCheck already answers; files already stored stay
+    # readable. Also the lever for the deploy order: brain-api live before secretarIA's side.
+    PATIENT_ATTACHMENTS_ENABLED: bool = True
+    # Per-PATIENT budget for uploads; a text message spends nothing, exactly as before. Keyed
+    # by the identity for the reason PATIENT_LINK_RATE_LIMIT_PER_MIN is keyed by the account
+    # (an IP key fails behind the portal proxy). The byte ceiling it implies is this x 20 MiB
+    # per minute per patient; there is deliberately no second, byte-window limiter.
+    PATIENT_ATTACHMENT_RATE_LIMIT_PER_MIN: int = 10
+    # Per-CLINIC budget shared by the uploads of every PENDING visitor (e-mail not verified) of
+    # that clinic, on top of the per-patient one above — the owner opened uploads to them on
+    # 2026-09-18. Each `POST /patient-access/pending` mints a new identity, and with it a fresh
+    # per-patient budget, so without a shared key a script holding the clinic's link multiplies
+    # its upload rate by minting visits. Verified patients never spend it. Per process and
+    # fail-open, like every limiter here; 0 disables it.
+    PATIENT_PENDING_ATTACHMENT_RATE_LIMIT_PER_MIN: int = 20
+    # Timeout of the two hops that carry a FILE (the multipart inbound and the media stream).
+    # Longer than SECRETARIA_TIMEOUT_SECONDS because the product stores the bytes before it
+    # answers; httpx applies it per network operation, not to the whole transfer.
+    ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS: float = 60.0
     # Public base URL of the Brain-Message patient portal (e.g. `https://portal.example`),
     # used ONLY to build the invite link a clinic reads (`core/invite_codes.py::invite_link`).
     # Not a secret. Empty = no link; the short code alone still works.

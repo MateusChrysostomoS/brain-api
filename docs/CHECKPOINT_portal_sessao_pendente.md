@@ -435,7 +435,7 @@ autorização permanente para dado de teste em produção (`PROMPT_BRAIN_MESSAGE
 
 ## §12 — Emenda para OTP inline da secretarIA (onda 2, 2026-09-17)
 
-**Estado:** BUILT localmente, **UNCOMMITTED, NÃO DEPLOYADO**. Esta seção amplia o contrato da onda
+**Estado:** **COMMITADO (`main@3ee89b7`), DEPLOYADO E PROVADO EM PRODUÇÃO** (2026-09-17) — ver "Rollout comprovado" no fim desta seção. Esta seção amplia o contrato da onda
 1; não altera a evidência de produção da §11, que continua valendo somente para a revisão `0021`.
 
 A implementação inicial da onda 2 precisava consultar, pedir e verificar o OTP sem possuir o
@@ -498,3 +498,24 @@ valores do `.env` local (`STRIPE_SECRET_KEY`, Embedded Signup e `PRECHECK_API_KE
 `test_checkout_without_stripe_key_returns_503`, `test_get_onboarding_shape_default_state` e
 `test_precheck_internal_usage_event_key_unset_403`. Nenhuma etapa foi executada em produção nesta
 rodada.
+
+### Rollout comprovado — 2026-09-17
+
+Somente o status de rollout; o contrato acima não mudou.
+
+`0022` aplicada e este repo em `main@3ee89b7`. Do lado consumidor, `secretaria_api` e
+`secretaria-worker` rodam `secretarIA/main@697c24a` (`source_fingerprint=595b1f80df8c` nos dois,
+`deploy_parity=match`, `alembic_head=4c8e2a7f1b93`).
+
+Provado na clínica QA, em navegador real, com `fetch` same-origin e sem imprimir token, cookie,
+código ou endereço: `POST /patient-access/pending` → `pending_unclaimed`; claim pela perna interna
+da secretarIA → `pending_claimed`; pedido de código após a consulta já persistida → `otp_sent`;
+código correto → `verified`; `POST /patient-access/pending/complete` devolveu `PatientAccountOut`
+com o **mesmo `patient_ref`** da visita e revogou o bearer pendente de forma atômica — a segunda
+chamada responde `401`. Depois de uma recarga real da página, `POST /patient-access/refresh` apenas
+com o cookie `__Host-` devolveu `200` e o mesmo `patient_ref`, com as 26 mensagens do histórico
+intactas.
+
+O E2E ficou bloqueado por um tempo num defeito da secretarIA (agendamento gravando o `patient_ref`
+em `appointments.phone`, `VARCHAR(32)`), não neste repo. Detalhe em
+`secretarIA/docs/CHECKPOINT_secretaria_email_otp_inline.md` e `tasks/TASK-002/TASK.md`.

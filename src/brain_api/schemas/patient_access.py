@@ -180,6 +180,24 @@ class PatientMessageIn(BaseModel):
     interactive_reply_id: str | None = Field(default=None, min_length=1, max_length=256)
 
 
+class PatientAttachmentForm(BaseModel):
+    """The text fields of `POST /patient-access/threads/{product}/messages` sent WITH a file.
+
+    The `multipart/form-data` twin of `PatientMessageIn`: the same fields under the same names
+    and bounds, as form fields beside ONE file part named `file` — which is not declared here
+    because it is judged by its content (`core/attachments.py`), never by a model. The one
+    difference is `text`: optional, because a file with no caption is a whole message, as on
+    WhatsApp. An empty form field counts as absent. `extra="forbid"` for the same reason as the
+    JSON body: no field may name a tenant or a patient.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str | None = Field(default=None, max_length=4000)
+    patient_name: str | None = Field(default=None, max_length=200)
+    interactive_reply_id: str | None = Field(default=None, min_length=1, max_length=256)
+
+
 class MessageOut(BaseModel):
     """A generic one-line message body (mirrors `schemas/auth.py::MessageOut`)."""
 

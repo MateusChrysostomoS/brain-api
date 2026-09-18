@@ -5,6 +5,10 @@
 `docs/` é a fonte de verdade deste repo. Regra geral de quando/como atualizar (CHECKPOINT,
 âncoras estáveis) em `AI_WORKFLOW.md` — aqui só o que diverge, se houver.
 
+O contrato de integração do canal Brain-Message (envio/recebimento entre produtos, autenticação
+`/internal/brain-message/*`, anexos, erros) está em `docs/PORTAL_MESSAGING_API.md` — mantenha em
+dia ao mudar este lado do contrato.
+
 ## Prompts pendentes
 
 - `z_prompts/PROMPT_SECRETARIA_CONFIG_PROFISSIONAIS_NAO_CARREGA.md` (raiz de BRAIN, gerado
@@ -128,17 +132,66 @@
   ordem de deploy e provas em `docs/CHECKPOINT_portal_sessao_pendente.md`; skill
   `cross-tenant-account-linking` estendida com a seção "identidade antes do atributo". **Ordem de
   deploy: `alembic upgrade head` → brain-api → só então secretarIA (onda 2) → frontend (onda 3).**
-  **EMENDA 2026-09-17 PARA A ONDA 2: BUILT localmente, UNCOMMITTED e NÃO DEPLOYADA** — migração
+  **EMENDA 2026-09-17 PARA A ONDA 2: COMMITADA E PUSHED em `main` (`3ee89b7`); endpoints públicos
+  e guardas observados em produção via Browser Act, incluindo `pending/status=200`, o que também
+  prova a coluna da migração `0022`; a revisão exata do build ainda deve ser registrada no
+  fechamento operacional** — migração
   aditiva `0022`, status/request/verify internos sem PII/credencial e os endpoints públicos
   `GET /patient-access/pending/status` + `POST /patient-access/pending/complete`; contrato, segurança,
   compatibilidade do `/pending/verify-otp` e provas em
   `docs/CHECKPOINT_portal_sessao_pendente.md` §12. A ordem agora é 0022 → brain-api →
   `secretaria_api`+worker → frontend.
+- `z_prompts/PROMPT_BRAIN_MESSAGE_FECHAR_ONDA_2_ROLLOUT_E2E.md` (raiz de BRAIN, gerado 2026-09-17
+  via `$prompt-generator`, revisado após o primeiro QA) — fechamento sequencial da onda 2. Trata
+  este repo como contrato congelado já comprovado por probes públicos; a falha localizada era o gate
+  WhatsApp `Tenant.is_active` herdado por `brain_message` na secretarIA. A correção está
+  commitada/pushed em `secretarIA/main@b2f3055`. **EXECUTADO 2026-09-17 — ONDA 2 FECHADA.**
+  `secretaria_api` e `secretaria-worker` rodam `secretarIA/main@697c24a` (`595b1f80df8c`,
+  `deploy_parity=match`), e o E2E foi provado ponta a ponta na clínica QA contra ESTE repo em
+  `3ee89b7`: `pending` → `pending_unclaimed` → `pending_claimed` → `otp_sent` → `verified` →
+  `POST /pending/complete` uma única vez (a segunda chamada devolve `401`), com `patient_ref`
+  preservado e a visita sobrevivendo a F5 via cookie `__Host-`. O contrato deste repo não mudou;
+  o defeito corrigido estava na secretarIA. Ver `docs/CHECKPOINT_portal_sessao_pendente.md` §12.
 - `z_prompts/PROMPT_BRAIN_MESSAGE_PRECHECK_PARIDADE_4_EXAMES_BRAIN_API.md` (raiz de BRAIN, gerado 2026-09-14;
   **Opus 5, esforço alto**) — parte 4 da série de paridade do PreCheck no Portal: `PatientMessageIn`
   (`extra="forbid"`) passa a aceitar anexo só no produto precheck, com validação de tipo real/tamanho antes de
   repassar ao PreCheck, e uma rota autenticada para a mídia do transcript chegar ao Portal sem afrouxar a CSP.
   Depende da parte 3 (PreCheck) deployada; depois vem a parte 5 (frontend). **NÃO EXECUTADO.**
+- `z_prompts/PLANO_PORTAL_API_MVP.md` (raiz de BRAIN, gerado 2026-09-17) — prioridade atual do dono:
+  terminar o MVP da API de mensageria do Portal (estilo WhatsApp, documentada, adaptável a qualquer
+  produto) antes de retomar `PLANO_ATUALIZADO_LOGIN_E_FLUXO_PACIENTE_PRECHECK.md`. Duas peças deste
+  repo:
+  - `z_prompts/PROMPT_BRAIN_MESSAGE_PORTAL_API_REFERENCE_DOC.md` (Sonnet 5, médio) — cria
+    `docs/PORTAL_MESSAGING_API.md`, o documento de referência único do canal Brain-Message (hoje
+    espalhado em ~15 `CHECKPOINT_*` sem nenhuma seção em `CONTRACTS.md`). Só documentação, sem
+    dependência. **EXECUTADO em 2026-09-18** — `docs/PORTAL_MESSAGING_API.md` criado (10 seções +
+    changelog, cada afirmação verificada contra o código nesta data), com o achado de que a
+    seção "enviar clínica→paciente" do prompt original estava desatualizada (o bug de despacho
+    do console já tinha sido corrigido na Onda 0, ver acima) — o documento reflete o código
+    real, não a suposição do prompt. 4 ponteiros de 1 linha adicionados neste arquivo e nos
+    `CLAUDE.md` de `secretarIA`, `PreCheck` e `Brain-Message-Frontend`. Nenhum código de produto
+    mudou.
+  - `z_prompts/PROMPT_BRAIN_MESSAGE_ANEXOS_SECRETARIA_1_BRAIN_API.md` (Opus 5, alto) — anexo de
+    arquivo no canal Brain-Message, revertendo a decisão da `PARIDADE_4` acima: sai para o produto
+    `secretaria` primeiro (a cadeia PreCheck nunca rodou), com PreCheck explicitamente adiado.
+    Multipart de ponta a ponta, validação de tipo real + tamanho, streaming autenticado de volta ao
+    navegador (nunca URL assinada direta, mesmo motivo de CSP que a `PARIDADE_4` já havia registrado).
+    Depende da parte 2 (secretarIA) para ir a produção; pode ser codado com mock antes.
+    **EXECUTADO em 2026-09-18 — BUILT, não commitado, não deployado.** Mesma rota em dois encodings
+    (JSON intacto; multipart com `file`), corpo lido dentro do handler (auth antes do 1º byte),
+    tipo pelos magic bytes, 20 MiB, upload por qualquer paciente — inclusive e-mail não
+    verificado, decisão do dono —, rota
+    `GET /patient-access/threads/{product}/media/{message_id}` em stream, referência na listagem
+    sem chave de armazenamento. Nova dependência `python-multipart` (não existia). Contrato que a
+    parte 2 consome, decisões e provas em `docs/CHECKPOINT_brain_message_anexos.md`; resumo em
+    `docs/PORTAL_MESSAGING_API.md` §7. Ordem de deploy: secretarIA parte 2 → este → frontend.
+  - `z_prompts/PROMPT_BRAIN_MESSAGE_STATUS_ENTREGA_2_BRAIN_API.md` (Opus 5, médio-alto; adicionada
+    2026-09-18, achado do dono) — Onda 3: estado de entrega/leitura (✓/✓✓) nunca funcionou de
+    verdade (evento do WhatsApp descartado, frontend fixo em "enviado" — causa raiz completa na
+    parte 1 deste item, repo secretarIA). Este repo ganha `GET .../messages` repassando o status
+    real e `POST /patient-access/threads/{product}/messages/read`, sempre com `tenant_id`/
+    `external_id` tirados da sessão, nunca do corpo. Sequencie DEPOIS da peça de anexos acima
+    (mesmos arquivos). **NÃO EXECUTADO.**
 
 ## graphify
 

@@ -28,6 +28,7 @@ link/code pasted later — never by an e-mail match
 (docs/CHECKPOINT_portal_clinicas_convite.md, docs/CHECKPOINT_portal_sessao_pendente.md).
 """
 
+import json
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -42,9 +43,19 @@ from fastapi import (
     Response,
     status,
 )
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
+from starlette.datastructures import FormData, UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.formparsers import MultiPartException
+from starlette.requests import ClientDisconnect
+from starlette.types import Message, Receive
 
 from brain_api.config import get_settings
+from brain_api.core import attachments
 from brain_api.core.cookies import (
     clear_patient_pending_cookie,
     clear_patient_session_cookie,
@@ -82,6 +93,7 @@ from brain_api.schemas.patient_access import (
     OtpRequestIn,
     OtpVerifyIn,
     PatientAccountOut,
+    PatientAttachmentForm,
     PatientMessageIn,
     PendingProgressOut,
     PendingSessionIn,
@@ -125,6 +137,21 @@ _link_limiter = SlidingWindowLimiter(
 # only key a request without a session has.
 _pending_limiter = SlidingWindowLimiter(
     "patient_pending_open", lambda: get_settings().PATIENT_PENDING_RATE_LIMIT_PER_MIN
+)
+# A sixth, for uploads (2026-09-18). Keyed by the patient HANDLE for the reason
+# `_link_limiter` is keyed by the account; only a message that carries a file spends it, so a
+# text conversation is exactly as unthrottled as before.
+_attachment_limiter = SlidingWindowLimiter(
+    "patient_attachment", lambda: get_settings().PATIENT_ATTACHMENT_RATE_LIMIT_PER_MIN
+)
+# A seventh, for the uploads of visitors whose e-mail is not verified. Keyed by the CLINIC:
+# `POST /pending` mints a fresh identity — and so a fresh `_attachment_limiter` budget — per
+# call, so a per-patient key alone lets one script multiply its rate by minting visits. One
+# budget shared by all unverified uploads of a clinic bounds the total; a verified patient
+# never spends it.
+_pending_attachment_limiter = SlidingWindowLimiter(
+    "patient_pending_attachment",
+    lambda: get_settings().PATIENT_PENDING_ATTACHMENT_RATE_LIMIT_PER_MIN,
 )
 
 # The e-mail template secretarIA renders; brain-api owns no SMTP of its own.
@@ -331,16 +358,22 @@ async def _authenticate_pending(
     return patient, row
 
 
-async def get_thread_patient(
+async def get_thread_identity(
     authorization: str | None = Header(default=None),
     session: AsyncSession = Depends(get_session),
-) -> MessagePatient:
-    """The identity behind EITHER a clinic token or a pending token, or 401.
+) -> tuple[MessagePatient, bool]:
+    """The identity behind EITHER a clinic token or a pending token, and which one it was.
 
     The thread routes take both because a thread is the one thing both populations do: a
     logged-in patient of a clinic, and a visitor still in the conversation that will become
     one. Everything those routes need — `tenant_id` and the handle — comes off the identity
     either way, and neither token can name a clinic it was not minted for.
+
+    The flag is `True` for a clinic token, and only the upload branch reads it. Both kinds may
+    send a file — the owner's decision (2026-09-18): any patient, e-mail verified or not — but
+    a pending visitor's uploads also share ONE budget per clinic (`_pending_attachment_limiter`),
+    because its identity is minted per `POST /pending` call and a per-patient budget alone
+    would bound nothing.
 
     Order matters only for cost: a clinic token is the common case, and a pending token fails
     `decode_patient_token` without a query.
@@ -349,11 +382,20 @@ async def get_thread_patient(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
     found = await _authenticate_patient(authorization, session)
     if found is not None:
-        return found[0]
+        return found[0], True
     pending = await _authenticate_pending(authorization, session)
     if pending is not None:
-        return pending[0]
+        return pending[0], False
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
+
+
+async def get_thread_patient(
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> MessagePatient:
+    """`get_thread_identity` without the flag — what every thread route but the upload needs."""
+    patient, _ = await get_thread_identity(authorization, session)
+    return patient
 
 
 async def get_current_pending(
@@ -782,23 +824,312 @@ async def list_threads(
     )
 
 
+# --- Sending: JSON (text) or multipart (a file), one resource (2026-09-18) ------------------
+
+# Ceiling for a body with no file: the JSON variant, and each text field of the multipart one.
+# Generous — the real bounds are the models' (4000 + 200 + 256 characters) — it only keeps a
+# body from being read into memory unbounded now that this route reads it itself.
+_TEXT_BODY_LIMIT = 64 * 1024
+# `PatientAttachmentForm` has three fields; the slack lets an extra one be refused BY NAME
+# (the model's 422) instead of by count.
+_MAX_FORM_FIELDS = 8
+# FastAPI's own words for a body it could not read at all; kept so the answer is unchanged.
+_BODY_UNREADABLE = "There was an error parsing the body"
+
+_ATTACHMENT_FORM_SCHEMA = {
+    "type": "object",
+    "required": ["file"],
+    "properties": {
+        "file": {
+            "type": "string",
+            "format": "binary",
+            "description": (
+                "ONE file: JPEG, PNG, WEBP, GIF or PDF, judged by its content, up to "
+                f"{attachments.MAX_ATTACHMENT_BYTES} bytes."
+            ),
+        },
+        **PatientAttachmentForm.model_json_schema()["properties"],
+    },
+    "additionalProperties": False,
+}
+
+
+class _BodyTooLarge(MultiPartException):
+    """Raised from inside the body stream when a request outgrows its cap.
+
+    A `MultiPartException` on purpose: Starlette's parser closes — and so deletes — every
+    part it spooled when one escapes it, so an aborted upload leaves nothing behind.
+    """
+
+
+class _CappedReceive:
+    """An ASGI `receive` that refuses to deliver more than `limit` body bytes.
+
+    Content-Length is checked before a byte is read, but a chunked body has none: this is
+    what bounds that case, WHILE it streams and before the parser spools any of it.
+    """
+
+    def __init__(self, receive: Receive, limit: int) -> None:
+        self._receive = receive
+        self._limit = limit
+        self._seen = 0
+        self.exceeded = False
+
+    async def __call__(self) -> Message:
+        message = await self._receive()
+        if message["type"] == "http.request":
+            self._seen += len(message.get("body", b""))
+            if self._seen > self._limit:
+                self.exceeded = True
+                raise _BodyTooLarge("request body over the cap")
+        return message
+
+
+def _media_type(request: Request) -> str:
+    return request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+
+
+def _declared_length(request: Request) -> int | None:
+    raw = request.headers.get("content-length")
+    return int(raw) if raw is not None and raw.isdigit() else None
+
+
+def _body_errors(exc: ValidationError) -> RequestValidationError:
+    """Pydantic's errors placed under `body`, as FastAPI reports those of a declared body."""
+    return RequestValidationError(
+        [{**error, "loc": ("body", *error["loc"])} for error in exc.errors(include_url=False)]
+    )
+
+
+async def _read_json_message(request: Request) -> PatientMessageIn:
+    """The JSON body, judged exactly as FastAPI judged it while the route still declared it.
+
+    FastAPI's strict content type, rule for rule: an empty body is a missing one, a body that
+    is not `application/json` (or `+json`) is not an object, bad JSON is `json_invalid`, and
+    every model error sits under `body` — so the JSON client sees the same 422 it always did.
+    """
+    declared = _declared_length(request)
+    receive = _CappedReceive(request.receive, _TEXT_BODY_LIMIT)
+    try:
+        if declared is not None and declared > _TEXT_BODY_LIMIT:
+            raise _BodyTooLarge("declared body over the cap")
+        raw = await Request(request.scope, receive).body()
+    except _BodyTooLarge:
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "body_too_large") from None
+    except ClientDisconnect:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _BODY_UNREADABLE) from None
+    if not raw:
+        raise _missing_body()
+    media = _media_type(request)
+    is_json = media == "application/json" or (
+        media.startswith("application/") and media.endswith("+json")
+    )
+    if not is_json:
+        raise _not_an_object(raw.decode("utf-8", errors="replace"))
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "json_invalid",
+                    "loc": ("body", exc.pos),
+                    "msg": "JSON decode error",
+                    "input": {},
+                    "ctx": {"error": exc.msg},
+                }
+            ]
+        ) from None
+    except (ValueError, RecursionError):
+        # Bytes that are no Unicode, a number past Python's digit limit, nesting past the
+        # recursion limit: FastAPI answers each with this 400 — never a 500 and a traceback.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _BODY_UNREADABLE) from None
+    if data is None:  # JSON `null` is an absent body to FastAPI, and so here
+        raise _missing_body()
+    if not isinstance(data, dict):  # an array, a string, a number: not an object
+        raise _not_an_object(data)
+    try:
+        return PatientMessageIn.model_validate(data)
+    except ValidationError as exc:
+        raise _body_errors(exc) from None
+
+
+def _missing_body() -> RequestValidationError:
+    return RequestValidationError(
+        [{"type": "missing", "loc": ("body",), "msg": "Field required", "input": None}]
+    )
+
+
+def _not_an_object(value: object) -> RequestValidationError:
+    return RequestValidationError(
+        [
+            {
+                "type": "model_attributes_type",
+                "loc": ("body",),
+                "msg": "Input should be a valid dictionary or object to extract fields from",
+                "input": value,
+            }
+        ]
+    )
+
+
+def _attachment_parts(form: FormData) -> tuple[PatientAttachmentForm, UploadFile]:
+    """The ONE file part (`file`) and the text fields, the latter judged like the JSON body."""
+    items = form.multi_items()
+    uploads = [(key, value) for key, value in items if isinstance(value, UploadFile)]
+    if len(uploads) != 1 or uploads[0][0] != "file":
+        raise attachments.AttachmentRefused(attachments.ATTACHMENT_MALFORMED)
+    texts = [(key, value) for key, value in items if isinstance(value, str)]
+    if len({key for key, _ in texts}) != len(texts):  # the same field twice
+        raise attachments.AttachmentRefused(attachments.ATTACHMENT_MALFORMED)
+    try:
+        fields = PatientAttachmentForm.model_validate({k: v for k, v in texts if v != ""})
+    except ValidationError as exc:
+        raise _body_errors(exc) from None
+    return fields, uploads[0][1]
+
+
+async def _relay_attachment(
+    request: Request, product: str, patient: MessagePatient, verified: bool
+) -> RelayOut:
+    """The multipart branch. Every refusal is logged by its CODE, with the clinic and the
+    product — never the file's name (patients name files after themselves), never a byte."""
+    try:
+        return await _checked_relay(request, product, patient, verified)
+    except attachments.AttachmentRefused as refused:
+        logger.info(
+            "patient_attachment_refused",
+            tenant_id=str(patient.tenant_id),
+            product=product,
+            code=refused.code,
+        )
+        raise HTTPException(refused.status_code, refused.detail) from None
+
+
+async def _checked_relay(
+    request: Request, product: str, patient: MessagePatient, verified: bool
+) -> RelayOut:
+    """Every cheap refusal first, then the body, then the file itself.
+
+    Cost order: nothing reads a byte of the file until the product takes files and the patient
+    still has budget — its own, and for a visitor whose e-mail is not verified, its clinic's
+    shared one too (`get_thread_identity` says why).
+    The size is refused as declared before the body is read, and as streamed while it is
+    read. Only then is the file sniffed, checked and relayed — and every part the parser
+    finished is closed, which deletes its spool (memory up to 1 MiB, then an anonymous
+    temporary file), in `finally` whatever happened. A part it never finished — a truncated
+    or broken body — is Starlette's to drop and goes with the garbage collector. Nothing is
+    ever kept.
+    """
+    if (
+        product not in message_switchboard.ATTACHMENT_PRODUCTS
+        or not get_settings().PATIENT_ATTACHMENTS_ENABLED
+    ):
+        raise attachments.AttachmentRefused(attachments.ATTACHMENT_UNSUPPORTED_FOR_PRODUCT)
+    if not _attachment_limiter.allow(str(patient.id)) or (
+        not verified and not _pending_attachment_limiter.allow(str(patient.tenant_id))
+    ):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
+    cap = attachments.MAX_ATTACHMENT_BYTES + attachments.MULTIPART_OVERHEAD_BYTES
+    declared = _declared_length(request)
+    if declared is not None and declared > cap:
+        raise attachments.AttachmentRefused(attachments.ATTACHMENT_TOO_LARGE)
+
+    receive = _CappedReceive(request.receive, cap)
+    try:
+        form = await Request(request.scope, receive).form(
+            max_files=1, max_fields=_MAX_FORM_FIELDS, max_part_size=_TEXT_BODY_LIMIT
+        )
+    except StarletteHTTPException:
+        # Starlette answers every parser refusal with a 400 that names its own limits; the
+        # patient gets ours instead — 413 for the size cap, one "malformed" for the rest.
+        code = (
+            attachments.ATTACHMENT_TOO_LARGE
+            if receive.exceeded
+            else attachments.ATTACHMENT_MALFORMED
+        )
+        raise attachments.AttachmentRefused(code) from None
+    except (ValueError, ClientDisconnect):
+        # What Starlette does not translate: python-multipart's own parse errors (a broken
+        # part header) and a client that went away mid-body. Malformed, not a 500.
+        raise attachments.AttachmentRefused(attachments.ATTACHMENT_MALFORMED) from None
+    try:
+        fields, upload = _attachment_parts(form)
+        head = await upload.read(attachments.SNIFF_BYTES)
+        await upload.seek(0)
+        checked = attachments.check_attachment(head, upload.size or 0, upload.filename)
+        result = await message_switchboard.send_attachment(
+            product,
+            tenant_id=patient.tenant_id,
+            patient_ref=str(patient.id),
+            attachment=checked,
+            file=upload.file,
+            text=fields.text,
+            patient_name=fields.patient_name,
+            interactive_reply_id=fields.interactive_reply_id,
+        )
+    finally:
+        await form.close()
+    logger.info(
+        "patient_attachment_relayed",
+        tenant_id=str(patient.tenant_id),
+        patient_ref=str(patient.id),
+        product=product,
+        verified=verified,
+        content_type=checked.kind.content_type,
+        size_bytes=checked.size_bytes,
+    )
+    return RelayOut(product=product, payload=result, at=datetime.now(UTC))
+
+
 @router.post(
     "/threads/{product}/messages",
     response_model=RelayOut,
-    summary="Send one message on a product thread",
+    summary="Send one message on a product thread — text, or a file with an optional caption",
+    description=(
+        "`application/json` (`PatientMessageIn`) sends text, exactly as before. "
+        "`multipart/form-data` sends ONE file in the part `file` plus the same fields as form "
+        "fields, `text` becoming an optional caption: JPEG, PNG, WEBP, GIF or PDF judged by "
+        "its content, up to 20 MiB, only on a product that takes files (secretaria) — from any "
+        "patient, clinic or pending token alike. Refusals of a file are 4xx with "
+        '`{"detail": {"code", "message"}}` (docs/CHECKPOINT_brain_message_anexos.md).'
+    ),
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {"schema": PatientMessageIn.model_json_schema()},
+                "multipart/form-data": {"schema": _ATTACHMENT_FORM_SCHEMA},
+            },
+        }
+    },
     responses={
         401: {"description": "Missing or invalid patient session."},
         403: {"description": "The clinic does not offer that product on this channel."},
+        413: {"description": "The file, or the whole body, is over the ceiling."},
+        415: {"description": "The file's real type is not an accepted one."},
+        422: {
+            "description": (
+                "Malformed body; a file whose name contradicts its content; or a product that "
+                "takes no files (precheck)."
+            )
+        },
+        429: {
+            "description": (
+                "Rate limited: the per-patient upload budget, and for a pending (unverified) "
+                "visitor also the clinic's shared one."
+            )
+        },
         502: {"description": "The product backend failed or is misconfigured."},
         503: {"description": "That product's leg of the mesh is unconfigured or degraded."},
     },
 )
 async def send_thread_message(
-    payload: PatientMessageIn,
+    request: Request,
     product: str = Path(
         description="secretaria | precheck — chosen by the CLIENT, never inferred."
     ),
-    patient: MessagePatient = Depends(get_thread_patient),
+    identity: tuple[MessagePatient, bool] = Depends(get_thread_identity),
     session: AsyncSession = Depends(get_session),
 ) -> RelayOut:
     """Relay to the named product's internal inbound endpoint.
@@ -806,10 +1137,29 @@ async def send_thread_message(
     `tenant_id` and the patient handle come from the SESSION, never from the body or the
     path: there is no input a patient could point at another clinic. `require_product` runs
     BEFORE any upstream call, so an unowned product costs zero network and leaks nothing.
+
+    TWO ENCODINGS OF ONE RESOURCE (2026-09-18). JSON is the original contract, unchanged.
+    Multipart is a message WITH a file, relayed as multipart end to end — never base64, which
+    would inflate it by a third and force the whole file into memory to re-encode.
+
+    The body is read HERE rather than declared, and that is a security property: FastAPI
+    parses a declared body before any dependency runs, so a declared `UploadFile` would let an
+    UNAUTHENTICATED caller make this service spool an unbounded upload. Here the session and
+    the entitlement are settled before the first byte of the body is read.
     """
+    patient, verified = identity
     ent = await resolve_entitlement(session, patient.tenant_id)
     message_switchboard.require_product(ent, product)
+    # The database is done with — release its connection BEFORE any client-paced I/O. The
+    # session's own teardown runs only after the response is sent, so otherwise a patient
+    # dribbling a body (or a slow upload on a mobile link) holds a pooled connection all the
+    # while, and ~15 of them starve every other route of this service. Nothing here commits:
+    # closing ends a read-only transaction, and `patient`'s loaded fields stay readable.
+    await session.close()
+    if _media_type(request) == "multipart/form-data":
+        return await _relay_attachment(request, product, patient, verified)
 
+    payload = await _read_json_message(request)
     result = await message_switchboard.send_message(
         product,
         tenant_id=patient.tenant_id,
@@ -862,6 +1212,94 @@ async def poll_thread_messages(
         since=since,
     )
     return RelayOut(product=product, payload=result, at=datetime.now(UTC))
+
+
+def _media_headers(media: message_switchboard.MediaStream) -> dict[str, str]:
+    """What makes a stored file safe to hand a browser from this origin.
+
+    `nosniff` pins the type the switchboard verified; the CSP sandbox disarms anything active
+    should the URL ever be opened as a page; `no-store` keeps a patient's file out of every
+    cache on the way and off the browser's disk; CORP stops other sites embedding it. Images
+    go `inline`, a PDF as a download. The name is generic on purpose: the real one — which
+    may carry PII — is the transcript's `attachment.filename`, and a header is one more
+    place it would be copied into logs.
+    """
+    disposition = "inline" if media.kind.family == "image" else "attachment"
+    headers = {
+        "Content-Disposition": f'{disposition}; filename="anexo.{media.kind.extension}"',
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "Cache-Control": "private, no-store",
+        "Cross-Origin-Resource-Policy": "same-origin",
+    }
+    if media.content_length is not None:
+        headers["Content-Length"] = str(media.content_length)
+    return headers
+
+
+@router.get(
+    "/threads/{product}/media/{message_id}",
+    response_class=StreamingResponse,
+    summary="Download one file of this patient's own thread",
+    description=(
+        "Streams the file a transcript message carries (its `attachment.media_path`). Needs "
+        "the same bearer as the thread (clinic or pending token), so the browser fetches the "
+        "bytes and renders them itself — the URL alone opens nothing. 404 alike for a file "
+        "that does not exist and for one of another conversation."
+    ),
+    responses={
+        200: {
+            "description": "The file's bytes, typed as verified.",
+            "content": {content_type: {} for content_type in attachments.ALLOWED_CONTENT_TYPES},
+        },
+        401: {"description": "Missing or invalid patient session."},
+        403: {"description": "The clinic does not offer that product on this channel."},
+        404: {"description": "No such file IN THIS CONVERSATION — one answer for every reason."},
+        422: {"description": "A malformed id."},
+        502: {"description": "The product backend failed, or answered a type it may not."},
+        503: {"description": "That product's leg of the mesh is unconfigured or degraded."},
+    },
+)
+async def get_thread_media(
+    product: str = Path(description="secretaria | precheck."),
+    message_id: str = Path(
+        pattern=attachments.MEDIA_ID_PATTERN,
+        description="The `id` of the message that carries the file, as the poll returned it.",
+    ),
+    patient: MessagePatient = Depends(get_thread_patient),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    """Stream one attachment back to the patient whose conversation holds it.
+
+    OWNERSHIP IS NEVER DECIDED BY THE ID. The id names a file; whose file it may be is the
+    session's clinic and handle, which travel with every upstream request, and the product
+    answers 404 unless the message belongs to THAT conversation. Another patient asking for
+    the same id gets the very same 404 as an id that never existed — this route never
+    confirms a file exists to someone who cannot read it.
+
+    A stream through here, never a signed bucket URL: the portal's CSP is
+    `img-src 'self' data:`, so a third-party storage URL would be blocked, and a URL that
+    works for whoever holds it is exactly the kind of credential this module avoids. The bytes
+    pass through without being written anywhere.
+    """
+    ent = await resolve_entitlement(session, patient.tenant_id)
+    message_switchboard.require_product(ent, product)
+    await session.close()  # before the client-paced download — see `send_thread_message`
+    media = await message_switchboard.open_media(
+        product, tenant_id=patient.tenant_id, patient_ref=str(patient.id), message_id=message_id
+    )
+    logger.info(
+        "patient_media_streamed",
+        tenant_id=str(patient.tenant_id),
+        product=product,
+        content_type=media.kind.content_type,
+    )
+    return StreamingResponse(
+        media.chunks,
+        media_type=media.kind.content_type,
+        headers=_media_headers(media),
+        background=BackgroundTask(media.aclose),
+    )
 
 
 async def _public_products(session: AsyncSession, tenant_id: UUID) -> PublicProductsOut:

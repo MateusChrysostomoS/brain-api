@@ -23,6 +23,7 @@ dependencies = [
     # Async HTTP client for the BFF proxy into PreCheck (services/precheck_client.py).
     "httpx>=0.28.0",
     "stripe>=11",
+    "python-multipart>=0.0.20",
 ]
 
 [dependency-groups]

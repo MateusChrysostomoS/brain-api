@@ -398,6 +398,18 @@ não pôr `except Exception` → 502. Não verificado: se o EasyPanel também ma
   `product_temporarily_unavailable`** — o armazenamento R2 do `secretaria_api` ainda falha (fora
   deste repo; `media_storage_unconfigured` ou `media_storage_put_failed` no log dele). Teste 3 = 200
   depende disso, não deste repo.
+- Produção DEPOIS do deploy de `415935a` (~04:40Z): visitante novo, teste 3 = **409 JSON
+  `attachment_consent_required`** com a frase legível (`server: uvicorn`) — a correção está no ar.
+  Testes 1 e 2 inalterados (200 / 422). Com aceite: ainda 503 — log do `secretaria_api`:
+  `media_storage_unconfigured` às 04:40:31.719Z, **depois** de um restart às 04:39:14Z; ou seja, o
+  processo reiniciado continua sem enxergar as 4 `ATTACHMENTS_R2_*` (pendência do operador).
+- **Produção final (2026-09-19 04:45-04:46Z), depois de o dono corrigir o R2 do `secretaria_api`** —
+  visitante novo → texto → e-mail → "Concordo" → teste 1 = **200** `queued`; teste 2 = **422**
+  `attachment_malformed`; teste 3 (PNG real, 69 bytes) = **200** `queued`. No poll: mensagem de
+  entrada `[anexo: exame.png]` com `attachment = {image/png, 69, "exame.png", media_path}` (sem chave
+  de armazenamento) + resposta do bot "Recebi seu arquivo, a equipe da clínica vai conferir.";
+  `GET media_path` → 200 `image/png`, 69 bytes, **byte a byte igual ao enviado**. Critério de
+  "resolvido" do prompt cumprido.
 
 ### 10.6 Achado fora do escopo (registrado, não corrigido)
 

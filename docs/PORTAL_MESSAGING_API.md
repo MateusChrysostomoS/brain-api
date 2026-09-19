@@ -416,13 +416,13 @@ it is purely how the existing frontend draws whatever text arrives.
 
 ---
 
-## 7. Attachments / media — brain-api edge built (2026-09-18); secretarIA and frontend pending
+## 7. Attachments / media — built end to end (2026-09-18; all three parts uncommitted, not deployed together)
 
 **State:** the brain-api half (part 1 of `z_prompts/PLANO_PORTAL_API_MVP.md` Onda 2) is BUILT and
 tested against a wire-level fake of secretarIA — **not committed, not deployed, and inert until
-secretarIA's half (`..._2_SECRETARIA.md`) and the frontend (`..._3_FRONTEND.md`) exist.** secretarIA
-and the frontend still have no attachment code (the console's `sendMessage` still refuses with
-`"Anexos ainda não estão disponíveis no console."`). Full contract, decisions and proofs:
+secretarIA's half (`..._2_SECRETARIA.md`) and the frontend (`..._3_FRONTEND.md`) exist.** The secretarIA half is §7.5 and the frontend half §7.6 (both built the same day, both uncommitted);
+the chain has NOT yet been proven in a browser with a real file in both directions. Full contract,
+decisions and proofs:
 `docs/CHECKPOINT_brain_message_anexos.md`. The limits live in ONE place,
 `src/brain_api/core/attachments.py` — copy the numbers from there, never re-derive them.
 
@@ -446,7 +446,7 @@ visitors, `PATIENT_PENDING_ATTACHMENT_RATE_LIMIT_PER_MIN` (20/clinic, shared); k
 `interactive_reply_id`, and one part `file` (sanitized name, sniffed `Content-Type`). secretarIA
 must accept both encodings on that path, re-validate with the same constants, and accept whatever
 brain-api accepted — a refusal after brain-api's check surfaces as `502 product_error` (contract
-drift). Timeout `ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS` (60 s per network operation). New:
+drift), except the two refusals only secretarIA can make (§7.4, lower table). Timeout `ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS` (60 s per network operation). New:
 `GET /internal/brain-message/media/{message_id}?tenant_id=&external_id=` → raw bytes, or one `404`
 for "missing / not this conversation / no attachment" — looked up in ONE query by
 `(message id, tenant_id, external_id)`: this route, not brain-api, is what keeps patient B out of
@@ -481,6 +481,19 @@ Body `{"detail": {"code", "message"}}` (+ `max_bytes` on 413); `message` is Port
 | `attachment_unsupported_for_product` | 422 | product takes no files (PreCheck), or kill switch off |
 | `attachment_not_found` | 404 | media route, every reason |
 
+Decided by the **product** after brain-api accepted the file (since 2026-09-19 relayed as these
+4xx — before, both surfaced as `502 product_error`, which EasyPanel's gateway swaps for its own
+"Service is not reachable" HTML page; see `docs/CHECKPOINT_brain_message_anexos.md` §10). Same
+body shape, brain-api's own `message` — the product's body still never reaches the browser, and
+only when the product's status agrees with this table (`core/attachments.py::PRODUCT_REFUSALS`):
+
+| `code` | Status | When |
+|---|---|---|
+| `attachment_consent_required` | 409 | the patient has not accepted the LGPD terms in this conversation yet — a new visitor's first message is text, then "Concordo", then a file |
+| `attachment_quota_exceeded` | 429 | secretarIA's persisted daily byte quota (per patient or per clinic) — distinct from the per-minute `429 "Too many requests"` (string `detail`) |
+
+Storage unavailable stays the retryable `503 product_temporarily_unavailable` (§8.1).
+
 Decisions already closed for the whole chain (do not re-litigate them; the prompts have the full
 argument):
 
@@ -503,6 +516,48 @@ this file is meant to grow (see the changelog at the bottom).
 
 ---
 
+### 7.5 secretarIA side (part 2) — built 2026-09-18, uncommitted, not deployed
+
+Implements §7.2 as specified (`secretarIA/docs/CHECKPOINT_brain_message_anexos_secretaria.md`):
+multipart on the same inbound path, re-validated with the same numbers; the API stores the
+file in secretarIA's own R2 bucket and the worker job carries only a reference; the bot
+answers with a fixed receipt, never an analysis. The poll's `attachment` carries only
+`{content_type, size_bytes, filename}`; `GET /internal/brain-message/media/{id}` streams the
+bytes, ownership checked in one query. Three refusals exist only on that side; brain-api passes
+the two permanent ones through since 2026-09-19 (§7.4, lower table) and keeps the 503 as its
+own `product_temporarily_unavailable`:
+
+| `code` | HTTP | When |
+|---|---|---|
+| `attachment_consent_required` | 409 | the patient has not accepted the LGPD terms (or is unknown) |
+| `attachment_quota_exceeded` | 429 | persisted rolling-24h byte quota: per patient (100 MiB) or per clinic (1 GiB) |
+| `attachment_storage_unavailable` | 503 | storage unconfigured or down — retryable |
+
+A captionless file's `body` is `"[anexo: <filename>]"`; a screen that draws the file may omit
+exactly that string. Staff (direct to secretarIA): `POST /tenants/me/conversations/{id}/messages`
+as multipart (Brain-Message patients only) and `GET /tenants/me/conversations/{id}/messages/{mid}/media`.
+
+### 7.6 Frontend (part 3) — built 2026-09-18, uncommitted, not deployed
+
+`Brain-Message-Frontend/docs/CHECKPOINT_brain_message_anexos_frontend.md`. Both surfaces (`/chat` staff,
+`/conversa` patient) send ONE file per message as multipart through `XMLHttpRequest`
+(`lib/real/upload.ts`), so the bubble's progress bar is the real upload percentage; the text is the
+caption; nothing is validated on the client beyond the picker's `accept` list — the card shows the
+backend's `detail.message` as it is, with retry of the same file and cancel. `content_type` maps to
+the card kind (`image/*` → picture, `application/pdf` → PDF, else generic file). The transcript's
+`attachment` becomes `Attachment.url` = `/api/brain` + `media_path` (patient) or the hub's
+`.../messages/{id}/media` (staff); the bytes are fetched under the session and shown from an object
+URL used only inside `<img>` and `<a download>` (nginx CSP gained `blob:` in `img-src`; `client_max_body_size
+25m` and `proxy_read_timeout 90s` on the two attachment hops). A captionless file's placeholder body
+is omitted. Closed 2026-09-19 on the brain-api side: secretarIA's 409/429 now reach the card as
+`{code, message}` (before, a `502 product_error` that EasyPanel turned into its HTML page). Proven live on
+2026-09-18 (patient side, `next dev` against production): the multipart reaches brain-api, a bad file is
+refused with the real 415 message on the card, and a good file gets `503 product_temporarily_unavailable`
+because production secretarIA answered 503 to the inbound multipart (storage most likely unconfigured) —
+brain-api's own string replaces secretarIA's `{code, message}` on that hop. The staff side, tested the same
+night straight against the hub, got secretarIA's `503 attachment_storage_unavailable` with its own message on
+the card — so the blocker is secretarIA's storage configuration, not the transport.
+
 ## 8. Errors and status codes
 
 Three different hops, three different vocabularies. None of this was written down in one
@@ -517,8 +572,8 @@ place before this document.
 | 403 | `product_unavailable` | Clinic does not have that product, or the Brain-Message channel is off — **one answer for both**, so a session cannot enumerate what a clinic pays for |
 | 422 | Malformed body | `extra="forbid"`, field length/shape violations (FastAPI validation) |
 | 429 | Rate limited | Per-IP/per-address/per-account limiters, route-dependent (`patient_access.py` header comments name each budget); uploads have their own per-patient budget |
-| 413 / 415 (+ some 403/404/422) | Attachment refusals | `{"detail": {"code", "message"}}` — full table in §7.4 |
-| 502 | `product_unreachable` / `product_error` | The product's leg is down, or answered something brain-api could not parse/trust. **Never** the same code as 403 — a missing tab and a real outage must read differently to a support call |
+| 409 / 413 / 415 / 429 (+ some 404/422) | Attachment refusals | `{"detail": {"code", "message"}}` — full table in §7.4 |
+| 502 | `product_unreachable` / `product_error` | The product's leg is down, or answered something brain-api could not parse/trust. **Never** the same code as 403 — a missing tab and a real outage must read differently to a support call. **In production the browser never sees this JSON:** EasyPanel's gateway replaces any 502 the app sends with its own HTML "Service is not reachable" page (observed 2026-09-18/19; a 503 passes through intact) — a client must treat a non-JSON 502 as this row, and an operator must read brain-api's log (`switchboard_upstream_error status=...`) before assuming a crash |
 | 503 | `product_channel_unconfigured` / `product_temporarily_unavailable` | brain-api itself has no base URL/key for that product (operator fact), or the product answered its **own** 503 (passed through, because PreCheck's `stage_unsupported_on_channel`/`clinic_flow_not_configured` are real "not available here" facts worth showing as such) |
 
 ### 8.2 brain-api ↔ secretarIA (`/internal/brain-message/*`)
@@ -558,6 +613,27 @@ brain_message.py`):
 An unknown patient/session on any `GET .../messages` route always answers with an **empty**
 list/transcript, never 404 — every one of these endpoints is polled, and a 404 would let a
 caller enumerate which ids exist.
+
+### 8.5 Message delivery state (enviado / entregue / lido / falhou) — secretarIA side only
+
+Added 2026-09-19 by the Onda 3 part 1 (secretarIA, **BUILT, uncommitted, not deployed**); brain-api
+(part 2) and the frontend (part 3) do **not** consume it yet. Full contract:
+`secretarIA/docs/CHECKPOINT_brain_message_status_entrega.md` §4.
+
+- Every secretarIA message now carries `status` (derived, never stored: `falhou` > `lido` >
+  `entregue` > `enviado`), `delivered_at`, `read_at`, `updated_at` (console also `failure_reason`).
+  `enviando` stays a client-only state.
+- **`since` on `GET /internal/brain-message/conversations/{external_id}/messages` now compares
+  `updated_at`, not `created_at`**: a message comes back when its status changes. Consumers must
+  **upsert by `id`**, and the next cursor is the largest `updated_at` received.
+- Brain-Message rows are delivered on persistence. `lido` needs a read mark:
+  `POST /internal/brain-message/messages/read` (patient side, `X-Internal-Api-Key`, body
+  `tenant_id` + `external_id` + exactly one of `up_to_message_id` / offset-aware `up_to`, answers
+  `{"marked", "applied"}`; 422 for a missing, double or naive cursor) and
+  `POST /tenants/me/conversations/{id}/messages/read` (staff side, hub token).
+- WhatsApp status comes only from Meta's receipts. A read mark for a WhatsApp patient returns
+  `applied: false` and changes nothing.
+- PreCheck: not covered.
 
 ---
 
@@ -654,5 +730,14 @@ e-mail address, a cookie, or a JWT from this channel.
 - **2026-09-18** — `PROMPT_BRAIN_MESSAGE_ANEXOS_SECRETARIA_1_BRAIN_API.md` (Onda 2, part 1): §7
   filled in with the brain-api edge (built, not deployed) and the contract secretarIA's part 2 must
   meet; §8.1 points at the attachment refusals. Parts 2 and 3 complete §7 in place.
+- **2026-09-18** — `PROMPT_BRAIN_MESSAGE_ANEXOS_SECRETARIA_3_FRONTEND.md` (Onda 2, part 3): §7.6
+  added — the frontend half (both surfaces, multipart via XMLHttpRequest with real progress,
+  authenticated media shown from object URLs); §7's heading and state updated to "built end to
+  end, uncommitted, browser proof pending".
 - **2026-09-18** — owner's decision: any patient uploads, e-mail verified or not (the pending
   token's 403 is gone); unverified uploads share a per-clinic budget. §7.1 and §7.4 updated.
+- **2026-09-19** — `PROMPT_BRAIN_MESSAGE_ANEXOS_BRAIN_API_UPLOAD_CRASH.md`: the "upload crashes
+  brain-api" 502 was secretarIA's `409 attachment_consent_required` flattened to `502
+  product_error` and masked by EasyPanel's gateway (no crash — logs of both services). §7.4 gains
+  the product-decided refusals (409 consent, 429 quota), relayed as 4xx; §7.2/§7.5/§7.6 and §8.1
+  (EasyPanel masks every app 502) updated.

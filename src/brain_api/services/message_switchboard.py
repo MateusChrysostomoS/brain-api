@@ -138,6 +138,7 @@ async def _call(
     content: AsyncIterator[bytes] | None = None,
     content_headers: dict[str, str] | None = None,
     timeout: float | None = None,
+    refusals: frozenset[str] = frozenset(),
 ) -> Any:
     """One authenticated hop into a sibling service. Upstream bodies NEVER reach the patient.
 
@@ -150,6 +151,11 @@ async def _call(
     `stage_unsupported_on_channel` and `clinic_flow_not_configured`, which are real
     "try again / not available here" facts the client should show as such rather than as
     a hard error.
+
+    `refusals` names the attachment refusals a caller lets through (`send_attachment`,
+    `attachments.PRODUCT_REFUSALS`): an upstream 4xx whose `detail.code` is one of them, at
+    the status this service's own table gives it, becomes that `AttachmentRefused` — this
+    service's code and sentence, still never the upstream's body.
     """
     base, headers = _upstream(product)
     settings = get_settings()
@@ -175,6 +181,19 @@ async def _call(
         )
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "product_unreachable") from exc
 
+    code = _refusal_code(resp) if refusals and 400 <= resp.status_code < 500 else None
+    # `.get`: a code a caller lists but the table lacks falls through to the opaque 502 below
+    # instead of a KeyError — the table, not the caller, decides what a refusal is.
+    table_status = attachments.REFUSALS.get(code, (None, ""))[0] if code in refusals else None
+    if table_status == resp.status_code:
+        logger.info(
+            "switchboard_upstream_refused",
+            product=product,
+            path=path,
+            status=resp.status_code,
+            code=code,
+        )
+        raise attachments.AttachmentRefused(code)
     if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
         logger.warning("switchboard_upstream_degraded", product=product, path=path)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "product_temporarily_unavailable")
@@ -193,6 +212,17 @@ async def _call(
     except ValueError:  # pragma: no cover - a 2xx non-JSON body is a contract break.
         logger.error("switchboard_upstream_not_json", product=product, path=path)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "product_error") from None
+
+
+def _refusal_code(resp: httpx.Response) -> str | None:
+    """`detail.code` of an upstream error body shaped `{"detail": {"code": ...}}`, else None."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    detail = body.get("detail") if isinstance(body, dict) else None
+    code = detail.get("code") if isinstance(detail, dict) else None
+    return code if isinstance(code, str) else None
 
 
 async def send_message(
@@ -323,7 +353,9 @@ async def send_attachment(
     The product validates again on its side and must accept whatever this edge accepted (same
     constants). If it refuses anyway, that is drift between the two repos rather than a
     patient error, so it surfaces as the ordinary `product_error` 502 with the upstream status
-    in this service's log (brain-mesh-opaque-5xx-diagnosis).
+    in this service's log (brain-mesh-opaque-5xx-diagnosis). The exception is what only the
+    product can know — consent in THIS conversation, its daily quota — relayed as the
+    patient's own 4xx (`attachments.PRODUCT_REFUSALS`).
     """
     if product not in ATTACHMENT_PRODUCTS:  # pragma: no cover - the router refuses first.
         raise attachments.AttachmentRefused(attachments.ATTACHMENT_UNSUPPORTED_FOR_PRODUCT)
@@ -354,6 +386,7 @@ async def send_attachment(
             if name in encoded.headers
         },
         timeout=get_settings().ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS,
+        refusals=attachments.PRODUCT_REFUSALS,
     )
 
 

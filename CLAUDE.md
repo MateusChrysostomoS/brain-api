@@ -192,6 +192,24 @@ dia ao mudar este lado do contrato.
     real e `POST /patient-access/threads/{product}/messages/read`, sempre com `tenant_id`/
     `external_id` tirados da sessão, nunca do corpo. Sequencie DEPOIS da peça de anexos acima
     (mesmos arquivos). **NÃO EXECUTADO.**
+  - `z_prompts/PROMPT_BRAIN_MESSAGE_ANEXOS_BRAIN_API_UPLOAD_CRASH.md` (Opus 5, alto; gerado
+    2026-09-18 via `/prompt-generator` a partir de um teste ao vivo em produção) — **bug de
+    produção achado ao testar a peça de anexos acima já deployada**: qualquer mensagem de texto
+    funciona (200), multipart sem arquivo dá 422 correto, mas multipart **com** um arquivo real
+    derruba a conexão com o brain-api (502 "Service is not reachable" — a página do PRÓPRIO
+    EasyPanel, não um JSON do brain-api, o que aponta pro processo crashando, não pro secretarIA
+    fora do ar). Suspeito principal: `message_switchboard.py::send_attachment` construindo
+    `httpx.Request` multipart numa thread, forçando `fileno()`/rollover do `SpooledTemporaryFile`
+    do Starlette — mas não confirmado (log do EasyPanel bloqueado por `401 Unauthorized` do MCP
+    nesta sessão). Divergência achada: o teste que exercita esse caminho passa localmente no
+    Windows (`uv run pytest`) mas nunca rodou no container Linux real da imagem de produção.
+    **EXECUTADO 2026-09-19 — premissa do prompt FALSA, não havia crash** (logs dos dois containers;
+    o projeto EasyPanel é `secretaria`, não `secretara`): a secretarIA recusou o arquivo com `409
+    attachment_consent_required` (visitante sem aceite LGPD, por desenho), este repo achatou em `502
+    product_error`, e o gateway do EasyPanel troca todo 502 do app pela página HTML dele. Correção:
+    `core/attachments.py::PRODUCT_REFUSALS` (409 consentimento, 429 cota) repassadas como 4xx por
+    `message_switchboard._call(refusals=...)`. Causa, provas e o achado "todo 502 vira HTML" em
+    `docs/CHECKPOINT_brain_message_anexos.md` §10.
 
 ## graphify
 

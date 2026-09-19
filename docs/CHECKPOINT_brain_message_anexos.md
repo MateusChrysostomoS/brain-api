@@ -149,6 +149,8 @@ português, para exibir como está. Tabela-fonte: `core/attachments.py::REFUSALS
 | `attachment_malformed` | 422 | sem `file`, dois arquivos, campo repetido, multipart quebrado |
 | `attachment_unsupported_for_product` | 422 | produto sem anexos (PreCheck) ou kill switch desligado |
 | `attachment_not_found` | 404 | rota de mídia, qualquer motivo |
+| `attachment_consent_required` | 409 | **decidida pela secretarIA** (desde 2026-09-19, §10): arquivo antes do aceite LGPD daquela conversa |
+| `attachment_quota_exceeded` | 429 | **decidida pela secretarIA** (desde 2026-09-19, §10): cota diária persistida de bytes (paciente ou clínica) |
 
 Também: `429` (orçamento por paciente; para visitante não verificado, também o compartilhado da
 clínica), `401`, `403 product_unavailable`, `502`, `503` como no resto de `/patient-access`.
@@ -181,6 +183,8 @@ clínica), `401`, `403 product_unavailable`, `502`, `503` como no resto de `/pat
    mesmo 422 do PreCheck; leitura de arquivos já gravados continua.
 8. **Timeout** de 60 s nos dois saltos com arquivo (`ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS`).
 9. **Recusa da secretarIA depois do aceite do brain-api → 502** (deriva de contrato, não do paciente).
+   **Emenda 2026-09-19 (§10):** exceto as duas que só a secretarIA pode decidir (consentimento LGPD,
+   cota diária) — essas não são deriva, são fatos da conversa/do armazenamento, e viram o 4xx delas.
 10. **Resposta de mídia endurecida** (§3.4): tipo reconferido (um `text/html` do upstream vira 502,
     nunca stream), comprimento declarado acima do teto → 502, corpo cortado no teto.
 11. **Correção honesta do prompt:** "sem nunca escrever em disco" não é literal. O Starlette mantém até
@@ -295,3 +299,110 @@ reformatados, regra do repo). Varredura de caracteres invisíveis/controle nos 8
   `docs/CHECKPOINT_portal_sessao_pendente.md` já tinham edições de outra sessão, não desta.
 - Adaptação futura do PreCheck = incluir em `ATTACHMENT_PRODUCTS` + o ramo dele em
   `send_attachment`/`open_media`; a validação não muda.
+
+## 10. Incidente de produção 2026-09-18/19 — "upload com arquivo derruba o brain-api" (não derrubava)
+
+Prompt: `z_prompts/PROMPT_BRAIN_MESSAGE_ANEXOS_BRAIN_API_UPLOAD_CRASH.md`. Estado do que está
+deployado: este módulo subiu em `963117c` (a linha "Estado" do topo ficou de antes do deploy).
+
+### 10.1 Sintoma
+
+Contra produção, tenant QA "Chrysostomo For Eyes" (`9c4fa6a5-…`), sessão pendente: JSON → 200;
+multipart sem arquivo → 422 `attachment_malformed`; multipart **com** PNG válido → **502 com a
+página HTML do próprio EasyPanel** ("Service is not reachable", sem `server: uvicorn`), ~100-300 ms,
+determinístico. Lido como o processo do brain-api caindo.
+
+### 10.2 Causa raiz — confirmada nos logs dos DOIS containers (não hipótese)
+
+Logs lidos com `get_service_logs` do MCP do EasyPanel. **O projeto é `secretaria`, não
+`secretara`** — o nome errado do prompt era por que o log "falhava" (`401`/"Waiting for service
+secretara_brain-api to start").
+
+| Hora (UTC) | secretaria_api | brain-api |
+|---|---|---|
+| 2026-09-18 22:48:08 | `brain_message_attachment_refused code=attachment_consent_required` → `POST /internal/brain-message/inbound 409` | `switchboard_upstream_error path=/internal/brain-message/inbound status=409` → `POST /patient-access/threads/secretaria/messages 502` |
+| 22:48:30 (×2) | idem, 409 | idem, 502 |
+
+1. **secretarIA recusou por desenho:** visitante novo nunca aceitou os termos
+   (`api/internal.py::_attachment_gate`, `Patient.lgpd_accepted_at` nulo → 409). É a decisão que o
+   §4.1 deste arquivo recomendou à parte 2.
+2. **O brain-api achatou o 409 em `502 product_error`** (`message_switchboard._call`: todo upstream
+   ≥ 400 menos 503). O §4.1 já avisava — "o brain-api hoje a repassaria como `502 product_error` —
+   ao definir o `code`, avisar para o brain-api passar a repassá-lo" — e o CHECKPOINT da parte 2 e o
+   `CLAUDE.md` da secretarIA registraram "o brain-api precisa passar a repassar esses dois códigos".
+   Ninguém fez. Deriva de contrato entre duas partes da mesma onda.
+3. **O gateway do EasyPanel troca qualquer 502 que a aplicação devolve pela página HTML dele.** O
+   access log do uvicorn registra o 502 que o app respondeu, e o cliente recebe HTML sem
+   `server: uvicorn`. O 503 JSON do mesmo app, na mesma rota, passa intacto (parte 3, 01:31Z) — só
+   o 502 é mascarado.
+4. **Não houve crash:** o container rodava desde `2026-09-18T20:57:36Z` (`api_starting`) com log
+   contínuo depois das 22:48, sem nenhum `Started server process` novo. As hipóteses do prompt
+   (rollover do `SpooledTemporaryFile`, Linux x Windows, versão de dependência) caem todas: o
+   arquivo chegou à secretarIA, que o recusou. As 415 de 01:34/01:35Z (parte 3) já mostravam o
+   parser multipart com arquivo funcionando em produção.
+
+Por que a suíte não pegou: todo teste de upload usava um upstream que aceita (`_queued`); nenhum
+simulava a recusa própria da secretarIA.
+
+### 10.3 Correção
+
+- `core/attachments.py`: `ATTACHMENT_CONSENT_REQUIRED` (409) e `ATTACHMENT_QUOTA_EXCEEDED` (429) na
+  tabela `REFUSALS`, com as frases DESTE serviço (iguais às da secretarIA); `PRODUCT_REFUSALS` = as duas.
+- `message_switchboard._call(..., refusals=...)`: um 4xx do upstream cujo `detail.code` está na
+  lista **e** cujo status bate com o da tabela vira `AttachmentRefused(code)` (log
+  `switchboard_upstream_refused`); o router já transforma isso em `{"detail": {"code","message"}}`.
+  O corpo do upstream continua sem chegar ao navegador — o código só escolhe uma frase nossa.
+  Só `send_attachment` passa a lista; texto, poll e mídia inalterados.
+- Continua `502 product_error`: código desconhecido, código conhecido com status divergente, uma das
+  recusas que o próprio brain-api já checa (deriva real), corpo não-JSON. Continua `503
+  product_temporarily_unavailable`: armazenamento indisponível (transitório — o único 5xx da tabela
+  da secretarIA).
+- **Não** foi acrescentado `except Exception` em `_relay_attachment` (item 4 do §7 do prompt): a
+  premissa — exceção não tratada derruba o uvicorn — é falsa (o Starlette responde 500 e o processo
+  segue), e convertê-la em 502 a tornaria PIOR, porque o EasyPanel mascara 502. Decisão sem consulta.
+
+### 10.4 O que o paciente vê agora
+
+Visitante novo que manda arquivo antes de aceitar os termos → `409 {"code":
+"attachment_consent_required", "message": "Para enviar arquivos, aceite primeiro os Termos de Uso e
+a Política de Privacidade nesta conversa."}` — o card da parte 3 mostra `detail.message` como está.
+Fluxo que passa: texto → e-mail (canal Brain-Message pede) → "Concordo" → arquivo.
+
+Risco aceito (revisão de segurança, LOW): a cota é por paciente **e** por clínica com o mesmo
+`code`, então um visitante cujo PRIMEIRO arquivo do dia recebe 429 deduz que a clínica esgotou a
+cota diária — sinal de volume da clínica, sem PII nem identidade de outro paciente. Aceito: é o
+preço de o paciente ler o motivo real em vez de uma página de "serviço fora do ar".
+
+Revisões (`ecc:security-reviewer` + `ecc:fastapi-reviewer`, o mesmo par da §8.4, Sonnet): nenhum
+CRITICAL/HIGH. LOW de segurança = o risco aceito acima. LOW FastAPI (`refusals` fora da tabela daria
+`KeyError`) → corrigido (`REFUSALS.get` em `_call`). MEDIUM FastAPI (a mesma rota tem dois 429: o
+limitador por minuto com `detail` string e a cota com `{code, message}`) → documentado em
+`PORTAL_MESSAGING_API.md` §7.4, sem mudar: unificar mexe no 429 que os frontends já consomem. Os dois
+confirmaram a premissa corrigida (exceção não tratada = 500, processo sobrevive) e recomendaram
+não pôr `except Exception` → 502. Não verificado: se o EasyPanel também mascara 500.
+
+### 10.5 Provas
+
+- `tests/test_patient_attachments.py` §7: 8 casos novos (409/429 repassados com a frase NOSSA e sem
+  o texto do upstream; 5 formas de deriva seguem 502; texto recusado segue 502; storage segue 503).
+  Os 2 casos de repasse **falham sem a correção** (502) — provado removendo `refusals=` e rodando.
+  Módulo: **31 passed**.
+- `tests/conftest.py`: as "3 falhas pré-existentes" do §8.2 eram o `.env` local vazando
+  `STRIPE_SECRET_KEY` (o teste chamava o Stripe REAL), `PRECHECK_API_KEY(_PREVIOUS)` e
+  `META_APP_ID`/`META_ES_CONFIG_ID` em testes que afirmam o comportamento SEM elas. Agora zeradas
+  como as da malha. **Suíte completa: 695 passed, 2 skipped, 0 failed** (19 min; antes 692/3 failed).
+- `ruff check` nos arquivos tocados: limpo; varredura de caracteres invisíveis: 0.
+- Produção ANTES do deploy (2026-09-19 ~04:07Z, script de E2E com sessão pendente): teste 1 = 200;
+  teste 2 = 422 `attachment_malformed`; teste 3 com visitante novo = **502 `text/html` sem
+  `server: uvicorn`** (a página do EasyPanel); teste 3 depois de e-mail + "Concordo" = **503
+  `product_temporarily_unavailable`** — o armazenamento R2 do `secretaria_api` ainda falha (fora
+  deste repo; `media_storage_unconfigured` ou `media_storage_put_failed` no log dele). Teste 3 = 200
+  depende disso, não deste repo.
+
+### 10.6 Achado fora do escopo (registrado, não corrigido)
+
+Todo `502` do brain-api (`product_error`/`product_unreachable`, em qualquer rota) chega ao
+navegador como a página HTML do EasyPanel, não como JSON. Os frontends precisam tratar 502 não-JSON
+como "produto indisponível"; operador sempre lê `switchboard_upstream_error status=...` no log antes
+de supor crash. Trocar o status de `product_error` mexe no contrato dos 3 frontends — prompt próprio.
+Registrado também em `docs/PORTAL_MESSAGING_API.md` §8.1.

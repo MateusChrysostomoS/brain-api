@@ -75,6 +75,11 @@ ATTACHMENT_TYPE_MISMATCH = "attachment_type_mismatch"
 ATTACHMENT_MALFORMED = "attachment_malformed"
 ATTACHMENT_UNSUPPORTED_FOR_PRODUCT = "attachment_unsupported_for_product"
 ATTACHMENT_NOT_FOUND = "attachment_not_found"
+# Decided by the PRODUCT, never here: only it knows the conversation (LGPD consent) and its
+# storage (the persisted daily byte quota). Same codes and statuses as secretarIA's
+# core/attachments.py::REFUSALS — see PRODUCT_REFUSALS below for how they reach the patient.
+ATTACHMENT_CONSENT_REQUIRED = "attachment_consent_required"
+ATTACHMENT_QUOTA_EXCEEDED = "attachment_quota_exceeded"
 
 _MAX_MB = MAX_ATTACHMENT_BYTES // (1024 * 1024)
 
@@ -100,7 +105,31 @@ REFUSALS: dict[str, tuple[int, str]] = {
     ATTACHMENT_MALFORMED: (422, 'Envio inválido: mande um único arquivo, no campo "file".'),
     ATTACHMENT_UNSUPPORTED_FOR_PRODUCT: (422, "Esta conversa ainda não aceita arquivos."),
     ATTACHMENT_NOT_FOUND: (404, "Arquivo não encontrado."),
+    # Permanent for the request as sent: resending the same file never passes; only a change
+    # of STATE does (the terms accepted in the conversation, a day gone by).
+    ATTACHMENT_CONSENT_REQUIRED: (
+        409,
+        "Para enviar arquivos, aceite primeiro os Termos de Uso e a Política de Privacidade "
+        "nesta conversa.",
+    ),
+    ATTACHMENT_QUOTA_EXCEEDED: (
+        429,
+        "O limite diário de envio de arquivos foi atingido. Tente novamente amanhã.",
+    ),
 }
+
+#: The refusals a product answers AFTER this edge accepted the file, relayed to the patient as
+#: the 4xx they are instead of the opaque `product_error` 502 (`message_switchboard._call`).
+#: Only these, and only when the product's status agrees with the one above: the product's
+#: body never reaches the browser — its CODE selects one of this table's own sentences. Any
+#: other refusal of a file this edge accepted is drift between the repos and stays a 502.
+#:
+#: Why a 502 was not good enough (2026-09-19): EasyPanel's gateway swaps an app's 502 for its
+#: own HTML "Service is not reachable" page, so a patient who sent a file before accepting the
+#: terms saw what looked like brain-api crashing (docs/CHECKPOINT_brain_message_anexos.md §10).
+PRODUCT_REFUSALS: frozenset[str] = frozenset(
+    {ATTACHMENT_CONSENT_REQUIRED, ATTACHMENT_QUOTA_EXCEEDED}
+)
 
 
 class AttachmentRefused(Exception):

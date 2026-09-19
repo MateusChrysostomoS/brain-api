@@ -52,6 +52,19 @@ for _mesh_var in (
 ):
     os.environ[_mesh_var] = ""
 
+# Same bleed, other services: tests that assert the UNSET behaviour of these keys (billing
+# 503 without a Stripe key — which otherwise called the REAL Stripe API —, PreCheck usage
+# events failing closed, Embedded Signup unconfigured) failed on any machine whose `.env`
+# sets them. Force-empty like the mesh vars; configured-path tests monkeypatch settings.
+for _external_var in (
+    "STRIPE_SECRET_KEY",
+    "PRECHECK_API_KEY",
+    "PRECHECK_API_KEY_PREVIOUS",
+    "META_APP_ID",
+    "META_ES_CONFIG_ID",
+):
+    os.environ[_external_var] = ""
+
 # Stripe billing (stripe-billing-entitlements skill, tests/test_billing.py). The webhook
 # secret is a fixed test value so signed-payload tests can compute a real HMAC. The price
 # map covers every catalog id the billing tests exercise. STRIPE_SECRET_KEY deliberately

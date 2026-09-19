@@ -652,6 +652,111 @@ async def test_no_log_line_carries_the_file_name_or_its_bytes(pclient, monkeypat
         assert event in everything
 
 
+# --- 7) What only the product can refuse reaches the patient as a 4xx, never a 502 -------------
+#
+# Production, 2026-09-18/19: a visitor's first file hit secretarIA's LGPD gate (409
+# attachment_consent_required), this edge flattened it to `502 product_error`, and EasyPanel's
+# gateway swapped that 502 for its own "Service is not reachable" page — read as brain-api
+# crashing (docs/CHECKPOINT_brain_message_anexos.md §10).
+
+_UPSTREAM_SENTENCE = "texto interno da secretaria que nunca chega ao navegador"
+
+
+def _refusing(status_code, detail):
+    def answer(request):
+        return httpx.Response(status_code, json={"detail": detail}, request=request)
+
+    return answer
+
+
+@pytest.mark.parametrize(
+    ("code", "status_code"),
+    [("attachment_consent_required", 409), ("attachment_quota_exceeded", 429)],
+)
+async def test_a_refusal_only_the_product_can_make_reaches_the_patient_as_its_own_4xx(
+    pclient, monkeypatch, capsys, code, status_code
+):
+    """Consent (in THIS conversation) and the persisted daily quota are the product's facts.
+    They reach the patient as the permanent 4xx they are, in this service's own words — the
+    product's body still never does."""
+    client, _, seed = pclient
+    _configure_mesh(monkeypatch)
+    calls = _mesh(
+        monkeypatch, _refusing(status_code, {"code": code, "message": _UPSTREAM_SENTENCE})
+    )
+    visit = (await client.post("/patient-access/pending", json={"invite": str(seed.both)})).json()
+    capsys.readouterr()
+
+    resp = await _upload(client, visit["pending_token"], "exame.png", _png())
+
+    assert resp.status_code == status_code, resp.text
+    assert resp.headers["content-type"] == "application/json"
+    assert resp.json() == {"detail": {"code": code, "message": attachments.REFUSALS[code][1]}}
+    assert _UPSTREAM_SENTENCE not in resp.text
+    assert len(calls) == 1
+    logged = capsys.readouterr().out
+    assert "switchboard_upstream_refused" in logged
+    assert "patient_attachment_refused" in logged
+    assert "switchboard_upstream_error" not in logged
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body"),
+    [
+        (409, {"detail": {"code": "some_future_refusal", "message": _UPSTREAM_SENTENCE}}),
+        # A known code at a status that disagrees with the table is drift, not a refusal.
+        (422, {"detail": {"code": "attachment_consent_required", "message": "x"}}),
+        # A refusal this edge makes itself, answered by the product after this edge accepted
+        # the file: the two repos disagree — a bug to see in the log, not the patient's fault.
+        (415, {"detail": {"code": "attachment_type_unsupported", "message": "x"}}),
+        (409, {"detail": "attachment_consent_required"}),
+        (409, None),
+    ],
+)
+async def test_any_other_refusal_of_an_accepted_file_stays_the_opaque_product_error(
+    pclient, monkeypatch, status_code, body
+):
+    client, _, _ = pclient
+    _configure_mesh(monkeypatch)
+
+    def answer(request):
+        if body is None:
+            return httpx.Response(status_code, text="<html>nope</html>", request=request)
+        return httpx.Response(status_code, json=body, request=request)
+
+    _mesh(monkeypatch, answer)
+    token = (await _patient(pclient))["access_token"]
+
+    resp = await _upload(client, token, "exame.png", _png())
+
+    assert resp.status_code == 502, resp.text
+    assert resp.json() == {"detail": "product_error"}
+
+
+async def test_a_text_message_and_a_storage_outage_keep_their_answers(pclient, monkeypatch):
+    """Only the FILE relay lets the product's refusals through; a text message refused the
+    same way is still the opaque 502. And the one transient refusal — storage unavailable —
+    stays the retryable 503 every product outage already is."""
+    client, _, _ = pclient
+    _configure_mesh(monkeypatch)
+    _mesh(
+        monkeypatch,
+        _refusing(409, {"code": "attachment_consent_required", "message": _UPSTREAM_SENTENCE}),
+    )
+    token = (await _patient(pclient))["access_token"]
+    text = await client.post(SECRETARIA_MESSAGES, headers=_bearer(token), json={"text": "oi"})
+    assert text.status_code == 502, text.text
+    assert text.json() == {"detail": "product_error"}
+
+    _mesh(
+        monkeypatch,
+        _refusing(503, {"code": "attachment_storage_unavailable", "message": _UPSTREAM_SENTENCE}),
+    )
+    outage = await _upload(client, token, "exame.png", _png())
+    assert outage.status_code == 503, outage.text
+    assert outage.json() == {"detail": "product_temporarily_unavailable"}
+
+
 # --- The contract module itself ----------------------------------------------------------------
 
 

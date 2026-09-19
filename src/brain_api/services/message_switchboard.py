@@ -27,6 +27,7 @@ missing tab becomes unanswerable.
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, BinaryIO
 from uuid import UUID
 
@@ -51,6 +52,10 @@ PRODUCTS: tuple[str, ...] = (PRODUCT_SECRETARIA, PRODUCT_PRECHECK)
 #: decision 1): adapting it is adding it here plus its branch in those functions — the
 #: validation in `core/attachments.py` is product-agnostic and does not change.
 ATTACHMENT_PRODUCTS: frozenset[str] = frozenset({PRODUCT_SECRETARIA})
+#: Products whose transcript carries a delivery state and that take a patient read mark
+#: (`mark_read`). PreCheck is out of this round for the same reason as attachments
+#: (z_prompts/PROMPT_BRAIN_MESSAGE_STATUS_ENTREGA_2_BRAIN_API.md, decision 1).
+READ_RECEIPT_PRODUCTS: frozenset[str] = frozenset({PRODUCT_SECRETARIA})
 
 # secretarIA's inbound scheme (secretaria api/internal.py: APIKeyHeader X-Internal-Api-Key).
 _SECRETARIA_KEY_HEADER = "X-Internal-Api-Key"
@@ -298,6 +303,14 @@ async def list_messages(
     Both GET routes carry the tenant determined by the authenticated patient
     session. PreCheck filters the bm: session by clinic as well as reference;
     references shared across clinics therefore cannot cross the boundary.
+
+    DELIVERY STATE (2026-09-19). secretarIA's messages carry `status` (enviado | entregue |
+    lido | falhou), `delivered_at`, `read_at` and `updated_at`, and they pass through here
+    untouched: the state is derived ONCE, by secretarIA (`models/message.py::status_of`
+    there), and a second derivation here could only disagree with it. For the same reason
+    `since` stays opaque — on secretarIA it now means "CHANGED strictly after" (compared
+    against `updated_at`), so one message can come back on several polls as its state moves,
+    and the client upserts by `id`. This service never filters, dedupes or re-sorts rows.
     """
     if product == PRODUCT_SECRETARIA:
         params: dict[str, Any] = {"tenant_id": str(tenant_id)}
@@ -320,6 +333,40 @@ async def list_messages(
         f"/internal/brain-message/sessions/{patient_ref}/messages",
         params=params,
     )
+
+
+# --- Read receipts (2026-09-19): the patient's "I have seen up to here" --------------------
+
+
+async def mark_read(
+    product: str,
+    *,
+    tenant_id: UUID,
+    patient_ref: str,
+    up_to_message_id: UUID | None = None,
+    up_to: datetime | None = None,
+) -> dict[str, Any]:
+    """Tell `product` the patient has seen their conversation up to ONE cursor.
+
+    `POST /internal/brain-message/messages/read`, answering `{"marked": int, "applied": bool}`,
+    passed on as is. The body is built field by field because secretarIA's model is
+    `extra="forbid"` (`frozen-contract-migration`), and its scope keys are the SESSION's — the
+    same `tenant_id` + `external_id` pair as the poll, so a patient can mark only the
+    conversation they could read.
+
+    A product without read receipts (PreCheck, this round) is answered HERE with the "does not
+    apply" secretarIA itself gives a WhatsApp patient: `applied: false`, nothing changed, no
+    network call. So the portal may mark every thread it shows without knowing which products
+    keep a state — an error for a background side effect would only be noise to the patient.
+    """
+    if product not in READ_RECEIPT_PRODUCTS:
+        return {"marked": 0, "applied": False}
+    body: dict[str, Any] = {"tenant_id": str(tenant_id), "external_id": patient_ref}
+    if up_to_message_id is not None:
+        body["up_to_message_id"] = str(up_to_message_id)
+    if up_to is not None:
+        body["up_to"] = up_to.isoformat()
+    return await _call(product, "POST", "/internal/brain-message/messages/read", json=body)
 
 
 # --- Attachments (2026-09-18): the multipart relay, the transcript reference, the stream ---

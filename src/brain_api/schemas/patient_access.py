@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from brain_api.core.invite_codes import MAX_INVITE_LENGTH
 
@@ -196,6 +196,33 @@ class PatientAttachmentForm(BaseModel):
     text: str | None = Field(default=None, max_length=4000)
     patient_name: str | None = Field(default=None, max_length=200)
     interactive_reply_id: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class PatientReadMarkIn(BaseModel):
+    """`POST /patient-access/threads/{product}/messages/read` — "I have seen up to here".
+
+    EXACTLY ONE cursor, under the names secretarIA's own contract uses
+    (`schemas/internal.py::BrainMessageReadMark` there, and the staff route's body): the id of
+    the last message the patient saw, or an instant that carries its offset. Checked HERE, with
+    the same rules, so a malformed cursor is the patient's own 422 instead of an upstream 422
+    this service would have to report as `product_error`.
+
+    Like `PatientMessageIn`, it names NO tenant and NO patient: both come from the session, and
+    `extra="forbid"` refuses a body that tries — which conversation gets marked read is never
+    a patient's input.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    up_to_message_id: UUID | None = None
+    # A naive time is refused, never guessed at (`naive-timestamp-serialization`).
+    up_to: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_cursor(self) -> "PatientReadMarkIn":
+        if (self.up_to_message_id is None) == (self.up_to is None):
+            raise ValueError("send exactly one of up_to_message_id, up_to")
+        return self
 
 
 class MessageOut(BaseModel):

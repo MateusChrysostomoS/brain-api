@@ -323,8 +323,9 @@ GET /internal/brain-message/conversations/{external_id}/messages?tenant_id=...&s
 Scoped by **all three** of `tenant_id` (required query param — an `external_id` alone is a
 bearer-like handle, so making the tenant optional would turn a guessed id into a cross-tenant
 read), `external_id` (path) and `channel == "brain_message"`
-(`api/internal.py::list_brain_message_messages`). `since` is an exclusive timestamp cursor
-(`Message.created_at > since`). An unknown patient or an empty conversation returns
+(`api/internal.py::list_brain_message_messages`). `since` is an exclusive timestamp cursor —
+**since 2026-09-19 (Onda 3) on `updated_at`, not `created_at`**: a row returns again whenever its
+delivery state moves, so the client upserts by `id` (§8.5). An unknown patient or an empty conversation returns
 `{"data": []}`, **never 404** — this endpoint is polled, so "nothing yet" must not be
 distinguishable from "wrong id" (`BrainMessageMessageList`):
 
@@ -614,11 +615,31 @@ An unknown patient/session on any `GET .../messages` route always answers with a
 list/transcript, never 404 — every one of these endpoints is polled, and a 404 would let a
 caller enumerate which ids exist.
 
-### 8.5 Message delivery state (enviado / entregue / lido / falhou) — secretarIA side only
+### 8.5 Message delivery state (enviado / entregue / lido / falhou) — secretarIA + brain-api
 
-Added 2026-09-19 by the Onda 3 part 1 (secretarIA, **BUILT, uncommitted, not deployed**); brain-api
-(part 2) and the frontend (part 3) do **not** consume it yet. Full contract:
-`secretarIA/docs/CHECKPOINT_brain_message_status_entrega.md` §4.
+Added 2026-09-19 by the Onda 3 part 1 (secretarIA, committed `9cc9b7a`, deploy not confirmed)
+and part 2 (brain-api, **BUILT, uncommitted, not deployed**); the frontend (part 3) does **not**
+consume it yet. Full contracts: `secretarIA/docs/CHECKPOINT_brain_message_status_entrega.md` §4
+(product side) and `brain-api/docs/CHECKPOINT_brain_message_status_entrega.md` (patient side).
+
+**Patient ↔ brain-api (part 2):**
+
+- `GET /patient-access/threads/secretaria/messages` passes `status`, `delivered_at`, `read_at`
+  and `updated_at` through **exactly as secretarIA sent them** — `RelayOut` is untyped per
+  message, so nothing here re-derives or validates the state. `since` stays opaque and brain-api
+  keeps no cursor of its own: it never filters, dedupes or re-sorts rows. The client upserts by
+  `id` and takes the next cursor from the largest `updated_at`.
+- **`POST /patient-access/threads/{product}/messages/read`**, clinic or pending token. Body:
+  exactly one of `{"up_to_message_id": "<uuid>"}` or `{"up_to": "<ISO 8601 with offset>"}` —
+  the same names as secretarIA's models, `extra="forbid"`. A body naming `tenant_id`,
+  `external_id` or anything else is a **422** and nothing is relayed; so is a missing, double or
+  naive cursor (checked here so it never becomes an upstream 422 → `product_error` 502).
+  `tenant_id` + `external_id` upstream are the SESSION's. Answers `RelayOut` whose `payload` is
+  secretarIA's `{"marked", "applied"}`. On `precheck` it answers `{"marked": 0, "applied": false}`
+  with no network call, so the portal may mark every thread it shows. No limiter of its own
+  (the same as sending a text message). 401 / 403 / 502 / 503 as the rest of §8.1.
+
+**Product side (part 1):**
 
 - Every secretarIA message now carries `status` (derived, never stored: `falhou` > `lido` >
   `entregue` > `enviado`), `delivered_at`, `read_at`, `updated_at` (console also `failure_reason`).
@@ -706,15 +727,12 @@ e-mail address, a cookie, or a JWT from this channel.
   workspace. If a product **outside** this company ever needs to integrate, that is a new
   security surface (signed webhooks, external-facing auth, rate limiting against strangers)
   and deserves its own design and its own prompt — not a trivial extension of this file.
-- **Not a delivery/read-receipt system (✓ ✓✓ blue ticks) for this channel yet.** The frontend
-  already draws all five `DeliveryStatus` states
-  (`Brain-Message-Frontend/components/console/DeliveryTicks.tsx`), but nothing populates them
-  for Brain-Message today, and the WhatsApp side is equally broken (the Meta status webhook is
-  received and discarded — `secretaria/src/secretaria/workers/tasks.py::
-  process_webhook_event` has no branch for `value.statuses`). This is scoped as its own piece
-  of work (`PLANO_PORTAL_API_MVP.md`, Onda 3 — `PROMPT_BRAIN_MESSAGE_STATUS_ENTREGA_1/2/3_*.md`,
-  **not executed** as of this writing) precisely so it does not get lost inside an unrelated
-  change.
+- **Not yet a delivery/read-receipt system (✓ ✓✓ blue ticks) the patient can see.** Onda 3 of
+  `PLANO_PORTAL_API_MVP.md` built the backend halves on 2026-09-19 — secretarIA stores and
+  serves the state and consumes Meta's `statuses` (part 1), brain-api relays it and the
+  patient's read mark (part 2, §8.5) — but the frontend
+  (`Brain-Message-Frontend/components/console/DeliveryTicks.tsx`, `lib/real/mappers.ts`) still
+  pins `"enviado"` until part 3 runs.
 - **Not a substitute for each product's own `docs/CHECKPOINT_*.md`.** Those still hold the
   historical *why* behind a decision; this file holds only the current wire contract.
 
@@ -741,3 +759,7 @@ e-mail address, a cookie, or a JWT from this channel.
   product_error` and masked by EasyPanel's gateway (no crash — logs of both services). §7.4 gains
   the product-decided refusals (409 consent, 429 quota), relayed as 4xx; §7.2/§7.5/§7.6 and §8.1
   (EasyPanel masks every app 502) updated.
+- **2026-09-19** — `PROMPT_BRAIN_MESSAGE_STATUS_ENTREGA_2_BRAIN_API.md` (Onda 3, part 2): §8.5
+  gains the patient side — the poll relays the delivery state untouched (no brain-api cursor), and
+  `POST /patient-access/threads/{product}/messages/read` relays the patient's read mark scoped by
+  the session. §4.1 notes the `updated_at` cursor. Built, uncommitted, not deployed.

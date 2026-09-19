@@ -95,6 +95,7 @@ from brain_api.schemas.patient_access import (
     PatientAccountOut,
     PatientAttachmentForm,
     PatientMessageIn,
+    PatientReadMarkIn,
     PendingProgressOut,
     PendingSessionIn,
     PendingSessionOut,
@@ -1192,7 +1193,12 @@ async def poll_thread_messages(
     product: str = Path(description="secretaria | precheck."),
     since: str | None = Query(
         default=None,
-        description="Cursor: return only what the product recorded strictly after this instant.",
+        description=(
+            "Cursor, passed to the product verbatim. On secretaria it means rows CHANGED "
+            "strictly after this instant — new ones and ones whose delivery state moved — so "
+            "the same message may come back on a later poll: upsert by `id`, never append, and "
+            "take the next cursor from the largest `updated_at` received."
+        ),
     ),
     patient: MessagePatient = Depends(get_thread_patient),
     session: AsyncSession = Depends(get_session),
@@ -1200,7 +1206,9 @@ async def poll_thread_messages(
     """Poll the product's transcript for this patient.
 
     `since` is passed through opaque: each backend defines its own cursor, and re-formatting
-    a value this service does not own is how a cursor silently starts skipping a row.
+    a value this service does not own is how a cursor silently starts skipping a row. Each
+    message's delivery state (`status`, `delivered_at`, `read_at`, `updated_at` on secretaria)
+    is the product's and passes through as it came (`message_switchboard.list_messages`).
     """
     ent = await resolve_entitlement(session, patient.tenant_id)
     message_switchboard.require_product(ent, product)
@@ -1210,6 +1218,64 @@ async def poll_thread_messages(
         tenant_id=patient.tenant_id,
         patient_ref=str(patient.id),
         since=since,
+    )
+    return RelayOut(product=product, payload=result, at=datetime.now(UTC))
+
+
+@router.post(
+    "/threads/{product}/messages/read",
+    response_model=RelayOut,
+    summary="Mark the clinic's messages on a product thread as read by the patient",
+    description=(
+        "Called when the portal SHOWS the thread to the patient. Body: exactly one of "
+        "`up_to_message_id` (the last message seen) or `up_to` (an offset-aware instant). The "
+        "clinic's messages up to that cursor become `lido`; idempotent. The conversation is the "
+        "session's own — the body cannot name a clinic or a patient. The payload is the "
+        'product\'s `{"marked", "applied"}`; a product without read receipts (precheck) answers '
+        '`{"marked": 0, "applied": false}` and changes nothing.'
+    ),
+    responses={
+        401: {"description": "Missing or invalid patient session."},
+        403: {"description": "The clinic does not offer that product on this channel."},
+        422: {"description": "Not exactly one cursor, a naive `up_to`, or any other field."},
+        502: {"description": "The product backend failed or is misconfigured."},
+        503: {"description": "That product's leg of the mesh is unconfigured or degraded."},
+    },
+)
+async def mark_thread_read(
+    payload: PatientReadMarkIn,
+    product: str = Path(description="secretaria | precheck."),
+    patient: MessagePatient = Depends(get_thread_patient),
+    session: AsyncSession = Depends(get_session),
+) -> RelayOut:
+    """Relay the patient's read mark, scoped by the SESSION like every thread route.
+
+    `tenant_id` and `external_id` upstream are `patient.tenant_id` and `patient.id` — never
+    the body, which `PatientReadMarkIn` keeps closed — so a patient can mark as read only the
+    conversation `GET .../messages` would show them. `require_product` first, as everywhere:
+    an unowned product costs no network. No limiter of its own, on purpose: it is held to the
+    same budget as sending a text message, which has none either (decision 4 of the prompt);
+    the upstream write is one idempotent UPDATE, cheaper than the agent turn a send enqueues.
+    """
+    ent = await resolve_entitlement(session, patient.tenant_id)
+    message_switchboard.require_product(ent, product)
+    # Release the pooled connection before the upstream hop (up to its timeout) — the portal
+    # calls this on every poll that brings something new, see `send_thread_message`.
+    await session.close()
+
+    result = await message_switchboard.mark_read(
+        product,
+        tenant_id=patient.tenant_id,
+        patient_ref=str(patient.id),
+        up_to_message_id=payload.up_to_message_id,
+        up_to=payload.up_to,
+    )
+    logger.info(
+        "patient_thread_read_marked",
+        tenant_id=str(patient.tenant_id),
+        product=product,
+        applied=result.get("applied"),
+        marked=result.get("marked"),
     )
     return RelayOut(product=product, payload=result, at=datetime.now(UTC))
 

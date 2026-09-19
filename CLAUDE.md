@@ -191,7 +191,16 @@ dia ao mudar este lado do contrato.
     parte 1 deste item, repo secretarIA). Este repo ganha `GET .../messages` repassando o status
     real e `POST /patient-access/threads/{product}/messages/read`, sempre com `tenant_id`/
     `external_id` tirados da sessão, nunca do corpo. Sequencie DEPOIS da peça de anexos acima
-    (mesmos arquivos). **NÃO EXECUTADO.**
+    (mesmos arquivos). **EXECUTADO 2026-09-19 — BUILT, UNCOMMITTED, não deployado, sem
+    migração.** Três premissas do prompt caíram: não há schema por mensagem (`RelayOut` repassa
+    o status sem código novo, e agora há teste provando), não há cursor próprio (o `since` é
+    opaco) e o envio de texto não tem limitador (a rota nova também não ganhou um). O corpo usa
+    `up_to_message_id` xor `up_to`, os nomes da parte 1, e `extra="forbid"` recusa
+    `tenant_id`/`external_id` com 422. PreCheck responde `applied: false` sem ir à rede. A metade
+    da secretarIA está em `secretarIA/docs/CHECKPOINT_brain_message_status_entrega.md`. A deste
+    repo, com contrato para a parte 3, decisões e provas, está em
+    `docs/CHECKPOINT_brain_message_status_entrega.md`, e o resumo em
+    `docs/PORTAL_MESSAGING_API.md` §8.5. Ordem de deploy: secretarIA parte 1 → este → frontend.
   - `z_prompts/PROMPT_BRAIN_MESSAGE_ANEXOS_BRAIN_API_UPLOAD_CRASH.md` (Opus 5, alto; gerado
     2026-09-18 via `/prompt-generator` a partir de um teste ao vivo em produção) — **bug de
     produção achado ao testar a peça de anexos acima já deployada**: qualquer mensagem de texto

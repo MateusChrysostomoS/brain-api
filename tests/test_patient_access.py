@@ -724,6 +724,54 @@ async def test_poll_relays_to_each_products_own_read_route(pclient, monkeypatch)
     assert calls[1]["params"]["tenant_id"] == str(seed.both)
 
 
+async def test_poll_releases_the_pooled_connection_before_the_upstream_hop(pclient, monkeypatch):
+    """The poll is the MOST called route (every client's every tick) — holding its DB
+    session open across the upstream HTTP hop would keep a pooled connection busy for the
+    whole round trip. `send_thread_message`/`mark_thread_read` already close their session
+    before the hop; this asserts `poll_thread_messages` does the same, by ORDER of events,
+    not just by the outcome (a slow/stalled upstream would otherwise still return 200).
+    """
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+
+    events: list[str] = []
+    real_close = AsyncSession.close
+
+    async def _spy_close(self):
+        events.append("db_close")
+        return await real_close(self)
+
+    monkeypatch.setattr(AsyncSession, "close", _spy_close)
+
+    real_request = httpx.AsyncClient.request
+
+    async def _fake_request(self, method, url, *, headers=None, json=None, params=None, **kw):
+        mesh = "secretaria:8000" in str(self.base_url) or "precheck:8000" in str(self.base_url)
+        if not mesh:
+            return await real_request(
+                self, method, url, headers=headers, json=json, params=params, **kw
+            )
+        events.append("upstream_call")
+        return _SpyResponse(status_code=200, payload={"data": []})
+
+    monkeypatch.setattr(httpx.AsyncClient, "request", _fake_request)
+
+    body = (await _login(client, sessionmaker, seed.both)).json()
+    events.clear()  # drop close/request events produced by the login itself
+
+    resp = await client.get(
+        "/patient-access/threads/secretaria/messages",
+        headers=_bearer(body["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    assert "db_close" in events, "the route's session must be closed at some point"
+    assert "upstream_call" in events
+    assert events.index("db_close") < events.index("upstream_call"), (
+        "the DB session must be released BEFORE the upstream poll hop, not after "
+        f"(order was: {events})"
+    )
+
+
 async def test_relay_to_an_unowned_product_is_refused_before_any_network_call(pclient, monkeypatch):
     """A clinic with `secretaria` only cannot be made to talk to PreCheck.
 

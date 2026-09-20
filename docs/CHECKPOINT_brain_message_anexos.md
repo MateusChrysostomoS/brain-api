@@ -411,10 +411,41 @@ não pôr `except Exception` → 502. Não verificado: se o EasyPanel também ma
   `GET media_path` → 200 `image/png`, 69 bytes, **byte a byte igual ao enviado**. Critério de
   "resolvido" do prompt cumprido.
 
-### 10.6 Achado fora do escopo (registrado, não corrigido)
+### 10.6 Achado fora do escopo — corrigido em 2026-09-19
 
 Todo `502` do brain-api (`product_error`/`product_unreachable`, em qualquer rota) chega ao
 navegador como a página HTML do EasyPanel, não como JSON. Os frontends precisam tratar 502 não-JSON
 como "produto indisponível"; operador sempre lê `switchboard_upstream_error status=...` no log antes
 de supor crash. Trocar o status de `product_error` mexe no contrato dos 3 frontends — prompt próprio.
 Registrado também em `docs/PORTAL_MESSAGING_API.md` §8.1.
+
+**Corrigido em 2026-09-19** (`Z_QUESTÕES _PENDENTES.md` item 4): `product_unreachable`/
+`product_error` em `services/message_switchboard.py` (as 4 chamadas de `_call`/`open_media`)
+agora respondem 503, nunca mais 502 — junto com `product_channel_unconfigured`/
+`product_temporarily_unavailable`, que já eram 503. `docs/PORTAL_MESSAGING_API.md` §8.1 atualizado
+para refletir os quatro códigos sob 503. Testes ajustados em `tests/test_patient_access.py`,
+`tests/test_patient_attachments.py` e `tests/test_patient_read_receipts.py` (`assert
+resp.status_code == 502` → `503`, mensagens/comentários atualizados); suíte dos três arquivos:
+**111 passed**; `ruff check` limpo nos arquivos tocados. Verificado nos 3 frontends: nenhum trata
+502 sem também tratar 503 — `Brain-Message-Frontend/lib/attachments.ts` (`BY_STATUS`) já mapeia
+502/503/504 pra mesma frase, `components/portal/PortalConversation.tsx:104` já testa `502 ||
+503`, e `lib/patient-account.ts::linkFailure` cai no mesmo `"retry"` padrão para qualquer status
+fora de `{401,404,429}` — nenhuma mudança de frontend foi necessária. Não commitado, não
+deployado.
+
+### 10.7 Pendência do item 6 de `Z_QUESTÕES _PENDENTES.md` — GET do poll também segurava a conexão
+
+O achado MEDIUM já corrigido (rota de envio) fechava a sessão do banco ANTES da chamada de rede
+pra secretarIA/PreCheck; o texto da revisão já registrava que `GET .../threads/{product}/messages`
+(`poll_thread_messages`, `api/patient_access.py`) — a rota mais chamada do sistema, uma vez por
+poll de cada cliente — tinha a MESMA lacuna e ficou de fora "pra manter o diff restrito". Corrigido
+agora: `await session.close()` logo após `require_product`, mesmo padrão de
+`send_thread_message`/`mark_thread_read`. Teste novo,
+`test_poll_releases_the_pooled_connection_before_the_upstream_hop`
+(`tests/test_patient_access.py`), prova por ORDEM de eventos (spy em `AsyncSession.close` e em
+`httpx.AsyncClient.request`) que o fechamento acontece antes do salto de rede — confirmado que ele
+falha sem a correção (`git stash` da linha nova reproduz `['upstream_call', 'db_close']`, a ordem
+errada) e passa com ela. `uv run pytest tests/test_patient_access.py -k poll_releases` → 1 passed;
+suíte completa dos dois arquivos de patient-access → 89 passed; `ruff check` limpo nos arquivos
+tocados. Não commitado, não deployado. Pendente: prova sob carga real (a suíte não simula
+concorrência de pool de verdade — `StaticPool` do teste não expõe `checkedout()`).

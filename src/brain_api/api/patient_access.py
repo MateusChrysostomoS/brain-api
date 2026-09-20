@@ -1212,6 +1212,11 @@ async def poll_thread_messages(
     """
     ent = await resolve_entitlement(session, patient.tenant_id)
     message_switchboard.require_product(ent, product)
+    # Release the pooled connection before the upstream hop, same as `send_thread_message`
+    # and `mark_thread_read` — this is the MOST called route (every client poll), so holding
+    # a connection here for the duration of the upstream request is the fastest way to starve
+    # the pool.
+    await session.close()
 
     result = await message_switchboard.list_messages(
         product,

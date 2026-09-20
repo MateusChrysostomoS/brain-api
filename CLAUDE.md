@@ -219,6 +219,32 @@ dia ao mudar este lado do contrato.
     `core/attachments.py::PRODUCT_REFUSALS` (409 consentimento, 429 cota) repassadas como 4xx por
     `message_switchboard._call(refusals=...)`. Causa, provas e o achado "todo 502 vira HTML" em
     `docs/CHECKPOINT_brain_message_anexos.md` §10.
+- `z_prompts/PROMPT_STATUS_ENTREGA_ONDA3_DEPLOY_E_VALIDACAO_PRODUCAO.md` (raiz de BRAIN, gerado
+  2026-09-19 via `/prompt-generator`) — o contrato da Onda 3 (status ✓/✓✓) já está implementado e
+  COMMITADO nos 3 repos (`secretarIA@9cc9b7a` com a migração `8b4d2f6e1a37`, este repo em
+  `7796949`, `Brain-Message-Frontend@d56bd8f`/`0b42ded`); `docs/CHECKPOINT_brain_message_status_entrega.md`
+  ainda diz "não deployado" e isso segue valendo. Falta: migração em Postgres real (só provada em
+  SQLite), deploy dos 3 na ordem documentada, e um recibo real do Meta em produção. Não é mais
+  tarefa de código — é deploy + validação, com autorização do dono em cada etapa. **NÃO
+  EXECUTADO.**
+- `z_prompts/PROMPT_502_EASYPANEL_HTML_CONTRATO_3_FRONTENDS.md` (raiz de BRAIN, gerado 2026-09-19
+  via `/prompt-generator`, aparentemente por outra sessão em paralelo — gerado no mesmo minuto em
+  que este item foi implementado direto numa sessão diferente, sem coordenação entre as duas) —
+  fecha o achado do §10.6 acima: todo `502` de `product_error`/`product_unreachable`
+  (`message_switchboard.py::_call`) chega ao navegador como a página HTML do EasyPanel, não como
+  JSON (503 na mesma rota passa intacto, provado em produção). **Este prompt NÃO precisa mais ser
+  executado — o mesmo problema já foi resolvido diretamente em 2026-09-19** (as 4 respostas viraram
+  503, os 3 frontends conferidos, nenhum precisou mudar): ver `docs/CHECKPOINT_brain_message_anexos.md`
+  §10.6 para a correção real, com provas. Mantido aqui só como referência histórica de que dois
+  caminhos chegaram ao mesmo achado de forma independente.
+- `z_prompts/PROMPT_POLL_THREAD_MESSAGES_DB_SESSION_LEAK.md` (raiz de BRAIN, gerado 2026-09-19 via
+  `/prompt-generator`, mesma situação do item acima — outra sessão, mesmo minuto) — `poll_thread_messages`
+  (`api/patient_access.py:1192`, a rota GET mais chamada) ainda não fechava a sessão do banco
+  (`await session.close()`) antes da chamada de rede ao switchboard, ao contrário de
+  `send_thread_message` (linha 1159) e `mark_thread_read` (linha 1264), que já seguiam esse padrão.
+  **Este prompt NÃO precisa mais ser executado — já corrigido diretamente em 2026-09-19**: ver
+  `docs/CHECKPOINT_brain_message_anexos.md` §10.7 para a correção real, com o teste de regressão que
+  prova a ordem certa.
 
 ## graphify
 

@@ -33,6 +33,16 @@ logger = get_logger(__name__)
 # — the SAME service credential services/privacy.py sends for the LGPD orchestration leg).
 _PRECHECK_TOKEN_HEADER = "X-Internal-Token"
 _PRECHECK_HANDOFF_PATH = "/internal/precheck-handoff"
+# The Portal half of the same contract. Different PATH, same credential and same guard
+# (PreCheck puts `require_internal_api_token` on every `/internal/*` route).
+_PRECHECK_OPEN_PATH = "/internal/brain-message/open"
+
+# PreCheck's two opening outcomes -> the two words this contract already speaks. A session
+# that was at INIT and now holds the welcome is `seeded`; one that had already started is
+# `already_active`. Mapped, not passed through: `PrecheckHandoffOut` is a frozen two-value
+# Literal that secretarIA already branches on, and inventing a third word here would break
+# our own response model rather than reach the patient.
+_OPEN_OUTCOMES = {"awaiting_consent": "seeded", "exists": "already_active"}
 
 # Generic, never-leak-upstream-body details for the collapsed failure cases.
 _GENERIC_UNAVAILABLE = "precheck_handoff_unavailable"
@@ -124,6 +134,103 @@ async def request_handoff(
     # 422 / any other 4xx / 5xx: collapse to a clean 502, upstream body never surfaced.
     logger.warning(
         "precheck_handoff_upstream_error",
+        tenant_id=str(tenant_id),
+        upstream_status=resp.status_code,
+    )
+    raise HTTPException(status.HTTP_502_BAD_GATEWAY, _GENERIC_FAILED)
+
+
+async def request_portal_handoff(
+    tenant_id: UUID,
+    session_ref: str,
+    *,
+    patient_name: str | None = None,
+) -> dict[str, Any]:
+    """The same hand-off for a patient who has no phone number.
+
+    A Portal patient is `wa_id IS NULL` by design, so `request_handoff` above cannot
+    name them: its upstream route requires `phone_number` matching `^\\d{8,15}$`.
+    This one addresses them by the handle the rest of the Brain-Message mesh already
+    uses — `MessagePatient.id`, which is also PreCheck's `session_ref` — and calls
+    PreCheck's opening route instead.
+
+    Why not `/internal/brain-message/inbound` with an empty `text`, which the wire would
+    have accepted: that is the INBOUND route, and its safety here would rest entirely on
+    the session being at `INIT`. It is not, whenever the patient opened the pre-consult
+    tab before booking — and there an empty text reaches PreCheck's `_turn()`, which asks
+    the agent to classify a message nobody wrote and can SAVE an answer as if given.
+    `/internal/brain-message/open` exists precisely so that decision is made by the side
+    that owns the session state, and it writes nothing at all past `INIT`.
+
+    SYNCHRONOUS, unlike `message_switchboard.open_conversation`'s fire-and-forget
+    greeting, and the difference is not stylistic: secretarIA sends the pre-consult
+    invitation ONLY on `seeded`/`already_active` (`plugins/precheck_handoff.py`), so a
+    status invented before the upstream answered would invite a patient to a
+    questionnaire that may not exist. The greeting has no such consumer.
+
+    `booked_service` is deliberately NOT forwarded: PreCheck's opening route does not
+    declare it and its request model is `extra="forbid"`, so sending it would be a `422`
+    from a service that is working perfectly (`frozen-contract-migration`). The WhatsApp
+    leg keeps sending it; closing that gap needs a change on PreCheck's side and is
+    recorded in `tasks/TASK-004/TASK.md`, not papered over here.
+
+    Same status matrix as `request_handoff` — deliberately, so secretarIA needs no second
+    table — with one addition: an upstream `200` whose `status` is neither of the two
+    known words is a `502`, never a guess.
+    """
+    settings = get_settings()
+    base, token = settings.PRECHECK_BASE_URL, settings.PRECHECK_INTERNAL_TOKEN
+    if not base or not token:
+        logger.warning("precheck_portal_handoff_unconfigured", tenant_id=str(tenant_id))
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "precheck_handoff_not_configured"
+        )
+
+    payload: dict[str, Any] = {"tenant_id": str(tenant_id), "session_ref": session_ref}
+    if patient_name is not None:
+        payload["patient_name"] = patient_name
+
+    try:
+        async with httpx.AsyncClient(
+            base_url=base, timeout=settings.PRECHECK_TIMEOUT_SECONDS
+        ) as client:
+            resp = await client.post(
+                _PRECHECK_OPEN_PATH,
+                headers={_PRECHECK_TOKEN_HEADER: token},
+                json=payload,
+            )
+    except httpx.RequestError as exc:
+        logger.warning("precheck_portal_handoff_unreachable", tenant_id=str(tenant_id))
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _GENERIC_FAILED) from exc
+
+    if resp.status_code == status.HTTP_200_OK:
+        try:
+            upstream = resp.json().get("status")
+        except ValueError:
+            upstream = None
+        outcome = _OPEN_OUTCOMES.get(upstream) if isinstance(upstream, str) else None
+        if outcome is None:
+            logger.error(
+                "precheck_portal_handoff_unknown_outcome", tenant_id=str(tenant_id)
+            )
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, _GENERIC_FAILED)
+        logger.info(
+            "precheck_portal_handoff_ok", tenant_id=str(tenant_id), outcome=outcome
+        )
+        return {"status": outcome}
+
+    if resp.status_code == status.HTTP_404_NOT_FOUND:
+        logger.warning("precheck_portal_handoff_no_clinic", tenant_id=str(tenant_id))
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no_clinic_for_tenant")
+
+    if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        logger.warning(
+            "precheck_portal_handoff_upstream_unavailable", tenant_id=str(tenant_id)
+        )
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _GENERIC_UNAVAILABLE)
+
+    logger.warning(
+        "precheck_portal_handoff_upstream_error",
         tenant_id=str(tenant_id),
         upstream_status=resp.status_code,
     )

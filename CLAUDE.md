@@ -219,6 +219,22 @@ dia ao mudar este lado do contrato.
     `core/attachments.py::PRODUCT_REFUSALS` (409 consentimento, 429 cota) repassadas como 4xx por
     `message_switchboard._call(refusals=...)`. Causa, provas e o achado "todo 502 vira HTML" em
     `docs/CHECKPOINT_brain_message_anexos.md` §10.
+- `BRAIN/tasks/TASK-003/TASK.md` (2026-09-19, tarefa cross-repo de 3 implementers, **não** é um
+  `z_prompts/`) — Portal sem tela de login do paciente + 3 formatos de link + tela de links da
+  clínica. A perna deste repo tem três peças: (1) a **automação fala primeiro** — dois gatilhos
+  fire-and-forget (`POST /patient-access/pending` só em visita criada, `POST /patient-access/clinics`
+  em toda adição) chamando `POST {SECRETARIA}/internal/brain-message/open`, nunca fabricando bolha
+  de paciente; (2) `email_masked` na resposta de `POST /internal/brain-message/pending-otp/request`
+  (`core/email_mask.py`, função pura — o endereço cru nunca sai daqui); (3) `PrecheckHandoffIn`
+  passa a aceitar `external_id` XOR `phone_number`. **A peça 3 PAROU de propósito**: o único
+  endpoint de pré-abertura de sessão que o PreCheck expõe exige `phone_number` (conferido no
+  `openapi.json` ao vivo), e a alternativa fabricaria uma mensagem do paciente — motivo completo
+  em `CONTRACTS.md` **§12.3.2**, e o ramo responde `501 precheck_portal_handoff_unsupported`.
+  **EXECUTADO 2026-09-19 — BUILT, commitado só em `task/TASK-003-brain-api`, não mergeado, não
+  deployado, sem migração.** Estado, 10 decisões sem consulta, o que as duas revisões
+  (`ecc:fastapi-reviewer`, `ecc:python-reviewer`) mudaram, e a ordem de deploy (livre nos dois
+  sentidos) em `docs/CHECKPOINT_portal_saudacao_automatica.md`; contrato em
+  `docs/PORTAL_MESSAGING_API.md` §8.6/§8.7.
 - `z_prompts/PROMPT_STATUS_ENTREGA_ONDA3_DEPLOY_E_VALIDACAO_PRODUCAO.md` (raiz de BRAIN, gerado
   2026-09-19 via `/prompt-generator`) — o contrato da Onda 3 (status ✓/✓✓) já está implementado e
   COMMITADO nos 3 repos (`secretarIA@9cc9b7a` com a migração `8b4d2f6e1a37`, este repo em

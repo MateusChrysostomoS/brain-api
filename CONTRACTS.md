@@ -1200,7 +1200,7 @@ accepts `SECRETARIA_API_KEY_PREVIOUS` during rotation):
 | `POST` | `/internal/secretaria/hub-token/verify` | introspection above. Always `200` for an authenticated service caller — refusal is `active:false`, not an HTTP error |
 | `GET` | `/internal/tenants/{tenant_id}/entitlements` | entitlement summary `{tenant_id, status, active, secretaria_enabled, plan, secretaria_tier, addons, limits}` — the gate data secretarIA's plugin registry consumes (same `is_entitled` semantics, §3.2) |
 | `POST` | `/internal/usage-events` | metering leg only (`stripe-billing-entitlements`; NO Stripe call — meter forwarding is a later billing round). Body `{tenant_id, feature, amount, event_id}` — `feature` must be a catalog `LIMIT_KEYS` id (422 otherwise), `amount` `1..10000`, `event_id` is the CALLER's own idempotency key (e.g. `"reminder:24h:<appointment_id>"`). Inserts a `usage_events` row (§6.3d) AND increments `entitlements.usage[feature]` in ONE transaction (upserts the entitlement row if missing). Always `200 {recorded: bool}` — `false` means `event_id` was already applied (replay), no double-count, never an HTTP error |
-| `POST` | `/internal/precheck-handoff` | secretarIA → brain-api → PreCheck patient handoff (§12.3). Body `{tenant_id, phone_number}` plus the OPTIONAL booking context `patient_name?` / `booked_service?` (both `str|null`, ≤255 chars — FEAT 38) — `phone_number` digits only, `8..15` chars (422 otherwise). Entitlement-gated: `403 precheck_not_entitled` unless status active/trialing AND `precheck_enabled`. Forwards to PreCheck; full status matrix in §12.3. No DB write |
+| `POST` | `/internal/precheck-handoff` | secretarIA → brain-api → PreCheck patient handoff (§12.3). Body `{tenant_id}` + **exactly one** handle: `phone_number` (digits only, `8..15`) **or** `external_id` (UUID, the Portal patient's `MessagePatient.id` — TASK-003 §5.1); both or neither → `422`. Plus the OPTIONAL booking context `patient_name?` / `booked_service?` (both `str|null`, ≤255 chars — FEAT 38). Entitlement-gated: `403 precheck_not_entitled` unless status active/trialing AND `precheck_enabled`. `phone_number` forwards to PreCheck (full status matrix in §12.3); `external_id` opens the Portal patient's session through PreCheck's `/internal/brain-message/open` — **see §12.3.2**. No DB write |
 
 ### 12.3 secretarIA → PreCheck patient handoff (`POST /internal/precheck-handoff`)
 
@@ -1231,6 +1231,15 @@ service credential.
 unconfigured / `401` mismatch). Body `{"tenant_id": "<uuid>", "phone_number":
 "<digits>"}`; `phone_number` must match `^\d{8,15}$` and `tenant_id` must parse as a
 UUID, else `422`.
+
+**Two handles since 2026-09-19 (TASK-003 §5.1), exactly one per request.** A patient of the
+**Portal** has `wa_id IS NULL` by design, so no phone number can name them; the body therefore
+also accepts `external_id` (a UUID — brain-api's `MessagePatient.id`, the same handle
+`message_switchboard.send_message` already sends secretarIA as `external_id`). `phone_number`
+stopped being a *required field* but did not stop being *mandatory*: a model validator demands
+exactly one of the two, so **both → `422`** and **neither → `422`**, and an explicit `null`
+counts as absent. The legacy two-field body is byte-for-byte unaffected. **The `external_id`
+leg reaches PreCheck through a DIFFERENT route; §12.3.2 says which and why.**
 
 **Optional booking context (FEAT 38):** the body also accepts `patient_name` and
 `booked_service` — both `str | None`, default `None`, `max_length=255`, both forwarded
@@ -1344,6 +1353,61 @@ operational reason to log it. `services/precheck_handoff.py` logs `tenant_id` + 
 only, and `tests/test_precheck_handoff.py::test_context_never_reaches_a_log_line` fails if
 either value reaches a logger call (asserting on the recorded call args — structlog's
 `PrintLoggerFactory` bypasses stdlib logging, so `caplog` cannot see these lines).
+
+### 12.3.2 `external_id` (a Portal patient) — the Portal leg
+
+Added 2026-09-19 as a validated `501` (TASK-003 §5.1); **closed 2026-09-20 (TASK-004)**. The
+`501` no longer exists and is unreachable from any valid body (pinned by
+`tests/test_precheck_handoff.py::test_501_is_unreachable_from_every_valid_body`).
+
+A Portal patient is `wa_id IS NULL` by design, so `phone_number` cannot name them and
+PreCheck's `POST /internal/precheck-handoff` — which requires `phone_number` matching
+`^\d{8,15}$` — cannot serve them. TASK-003 stopped there because the only other candidate,
+`POST {PRECHECK}/internal/brain-message/inbound`, is the **inbound** route and that task could
+not read the PreCheck repo to learn what a null `text` does.
+
+**What reading it established** (TASK-004): `inbound` with an empty `text` is safe only while
+the session is at `INIT`, where PreCheck's `_open` writes a `"patient"` line just `if text:`.
+Past `INIT` the same body reaches its `_turn()`, which asks the questionnaire agent to classify
+a message nobody wrote and can SAVE an answer as if the patient had given it — and that state
+is the ordinary case, not an edge one: a patient who opened the pre-consult tab before booking
+is already `ACTIVE`. So `inbound` was never the right route.
+
+**The route this leg calls instead:**
+
+```
+POST {PRECHECK_BASE_URL}/internal/brain-message/open
+Header: X-Internal-Token: <PRECHECK_INTERNAL_TOKEN>   (same credential as the WhatsApp leg)
+Body:   { "tenant_id": "<uuid>", "session_ref": "<handle>", "patient_name"?: "<str>" }
+→ 200 { "status": "awaiting_consent", ... }   session was INIT; welcome + LGPD written
+→ 200 { "status": "exists", ... }             already started; NOTHING written
+→ 404 / 503                                   no clinic for tenant / no active flow
+```
+
+It never calls PreCheck's agent, never writes a patient line, and writes nothing at all past
+`INIT` — so retrying it is free.
+
+**Mapping back onto this contract.** `awaiting_consent → seeded`, `exists → already_active`,
+so `PrecheckHandoffOut` keeps its two-value `Literal` and secretarIA branches once rather than
+per channel. A `200` whose `status` is neither word is a `502`, never a guess. Every other
+status maps exactly as the WhatsApp leg's (§12.3): `404 → 404`, `503 → 503`, anything else or
+a network error → `502`.
+
+**`booked_service` is NOT forwarded on this leg.** PreCheck's opening route does not declare
+it and its request model is `extra="forbid"`, so sending it would be a `422` from a service
+working perfectly (`frozen-contract-migration`). `patient_name` IS forwarded — FEAT 40 uses it
+so the patient is not asked their name twice. Widening the opening route to accept
+`booked_service` is a PreCheck-side change, recorded in `tasks/TASK-004/TASK.md`.
+
+**Synchronous, unlike the auto-greeting.** `message_switchboard.open_conversation` is
+fire-and-forget because nothing consumes its result; this leg is awaited because secretarIA
+sends the pre-consult invitation ONLY on `seeded`/`already_active`, so a status invented before
+the upstream answered would invite a patient to a questionnaire that may not exist.
+
+**Deploy order.** PreCheck must carry `/internal/brain-message/open` **before** a brain-api
+that calls it; an older PreCheck answers `404`, which this leg maps to `404 no_clinic_for_tenant`
+— indistinguishable from a real mapping problem. The `501` it replaces was permanent, so no
+caller retried it, and there is no in-flight state to migrate.
 
 ---
 

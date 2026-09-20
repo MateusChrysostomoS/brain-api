@@ -89,6 +89,18 @@ def available_products(ent: EntitlementOut) -> list[str]:
     return [product for product in PRODUCTS if enabled[product]]
 
 
+def default_product(ent: EntitlementOut) -> str | None:
+    """The thread a link that names NO product opens on — the first one offered, or None.
+
+    `available_products` is already in tab order (`PRODUCTS`), so this is literally "the tab
+    the portal lands on". Deriving it from that list instead of hardcoding `"secretaria"` is
+    the point: a clinic that has only PreCheck lands on PreCheck, and the answer here cannot
+    drift from the tabs the patient actually sees.
+    """
+    offered = available_products(ent)
+    return offered[0] if offered else None
+
+
 def require_product(ent: EntitlementOut, product: str) -> None:
     """403 unless `product` is one this tenant may reach right now.
 
@@ -127,9 +139,7 @@ def _upstream(product: str) -> tuple[str, dict[str, str]]:
 
     if not base or not key:
         logger.warning("switchboard_unconfigured", product=product, reason=missing)
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "product_channel_unconfigured"
-        )
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "product_channel_unconfigured")
     return base, {header: key}
 
 
@@ -333,6 +343,109 @@ async def list_messages(
         f"/internal/brain-message/sessions/{patient_ref}/messages",
         params=params,
     )
+
+
+# --- Opening the conversation (2026-09-19): the automation speaks first --------------------
+
+_OPEN_PATH = "/internal/brain-message/open"
+
+#: Outcomes of `open_conversation`, for the log line and for tests. They are OBSERVATIONS,
+#: never a decision the caller acts on: every one of them means "the patient's request is
+#: finished either way". `queued` = secretarIA created the conversation and enqueued the
+#: greeting (202); `exists` = there was already a conversation with a message, so nothing was
+#: sent (200); `unconfigured` = this deployment has no secretarIA leg; `failed` = anything
+#: else, including a 404 from a secretarIA that does not have the route yet.
+OPEN_QUEUED = "queued"
+OPEN_EXISTS = "exists"
+OPEN_UNCONFIGURED = "unconfigured"
+OPEN_FAILED = "failed"
+
+
+async def open_conversation(
+    *, tenant_id: UUID, patient_ref: str, patient_name: str | None = None
+) -> str:
+    """Ask secretarIA to open this patient's conversation and greet them — FIRE AND FORGET.
+
+    THE ONE FUNCTION IN THIS MODULE THAT NEVER RAISES, and the module's "fail closed, loudly"
+    rule is suspended here on purpose. Every other hop happens while a patient waits for its
+    answer, so a failure has to become their error. This one has no patient waiting: it is a
+    side effect scheduled AFTER the response to `POST /patient-access/pending` (or
+    `POST /patient-access/clinics`) has already been written. There is nothing left to fail.
+    Turning an unreachable secretarIA into an exception here could only mean one thing — a
+    patient who opened a clinic's link gets an error instead of a conversation, because the
+    clinic's *greeting* could not be sent. That trade is never worth making.
+
+    NO INBOUND MESSAGE IS FABRICATED. This route exists precisely so the greeting does not
+    need one: secretarIA's conversation is otherwise born only from a patient message
+    (`workers/tasks.py::_get_or_create_conversation` there), and the alternative — relaying a
+    synthetic "oi" the patient never typed — would put a bubble in their own transcript that
+    they did not write. TASK-003 §2 forbids it, and so does the `/pending` docstring's
+    "NOTHING IS PRE-CREATED UPSTREAM" note, which this replaces for secretarIA only.
+
+    IDEMPOTENCE IS THE CALLEE'S, NOT OURS. secretarIA answers `200 {"status": "exists"}` when
+    the conversation already has a message and only `202 {"status": "queued"}` when it is
+    genuinely new (TASK-003 §2). That is why this may be called from two places without any
+    state kept here, and why a retry is harmless: guessing locally whether a greeting is due
+    would be a second, silently diverging copy of a decision secretarIA already owns.
+
+    Returns one of the `OPEN_*` constants, for the caller's tests and this module's log —
+    never for control flow. `patient_name` is PII and is forwarded but never logged; nor is
+    the handle, for the reason `services/patient_access.py` gives (it would line one person's
+    visits up across clinics in the log).
+    """
+    try:
+        base, headers = _upstream(PRODUCT_SECRETARIA)
+    except HTTPException:
+        # `_upstream` raises the patient-facing 503 this path has nobody to show it to.
+        logger.warning("brain_message_open_unconfigured", tenant_id=str(tenant_id))
+        return OPEN_UNCONFIGURED
+
+    body: dict[str, Any] = {
+        "tenant_id": str(tenant_id),
+        "external_id": patient_ref,
+        "patient_name": patient_name,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=base, timeout=get_settings().SECRETARIA_TIMEOUT_SECONDS
+        ) as client:
+            resp = await client.request("POST", _OPEN_PATH, headers=headers, json=body)
+    except httpx.HTTPError as exc:
+        # `HTTPError`, not `RequestError`: a background task swallowing its own failure must
+        # not be the thing that lets a read/decode error escape into the server's task log.
+        logger.warning(
+            "brain_message_open_unreachable", tenant_id=str(tenant_id), error=type(exc).__name__
+        )
+        return OPEN_FAILED
+    except Exception as exc:  # noqa: BLE001 - see below; the docstring's promise is absolute
+        # The only blanket catch in this module, and it is load-bearing rather than lazy.
+        # "Never raises" has to hold for EVERY exception, not the expected ones: `httpx.
+        # InvalidURL` is not an `HTTPError` (it inherits straight from `Exception`), so an
+        # operator typo in `SECRETARIA_BASE_URL` would otherwise escape a background task and
+        # surface as "Exception in ASGI application" AFTER a perfectly good response — the
+        # most confusing possible failure. `Exception`, not `BaseException`, so a
+        # `CancelledError` during shutdown still propagates and the task is cancelled properly.
+        logger.error(
+            "brain_message_open_unexpected_error",
+            tenant_id=str(tenant_id),
+            error=type(exc).__name__,
+        )
+        return OPEN_FAILED
+
+    if resp.status_code == status.HTTP_202_ACCEPTED:
+        logger.info("brain_message_open_queued", tenant_id=str(tenant_id))
+        return OPEN_QUEUED
+    if resp.status_code == status.HTTP_200_OK:
+        logger.info("brain_message_open_exists", tenant_id=str(tenant_id))
+        return OPEN_EXISTS
+    # 404 included, and expected during the rollout window: this service may go live before
+    # secretarIA has the route. The greeting simply does not happen, which is exactly today's
+    # behaviour — the patient can still write first (`brain-mesh-opaque-5xx-diagnosis`: the
+    # status is logged so a missing route is not mistaken for a mesh outage).
+    logger.warning(
+        "brain_message_open_refused", tenant_id=str(tenant_id), upstream_status=resp.status_code
+    )
+    return OPEN_FAILED
 
 
 # --- Read receipts (2026-09-19): the patient's "I have seen up to here" --------------------

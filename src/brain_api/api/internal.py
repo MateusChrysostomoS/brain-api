@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
 from brain_api.core.database import get_session
+from brain_api.core.email_mask import mask_email
 from brain_api.core.logging import get_logger
 from brain_api.core.ratelimit import SlidingWindowLimiter
 from brain_api.core.security import decode_hub_token
@@ -56,7 +57,7 @@ from brain_api.schemas.internal import (
 )
 from brain_api.services import onboarding_sync, patient_access, secretaria_provisioning
 from brain_api.services.entitlements import ACTIVE_STATUSES, resolve_entitlement
-from brain_api.services.precheck_handoff import request_handoff
+from brain_api.services.precheck_handoff import request_handoff, request_portal_handoff
 from brain_api.services.usage import record_usage
 
 logger = get_logger(__name__)
@@ -260,8 +261,7 @@ async def create_usage_event(
     responses={
         **_INTERNAL_RESPONSES,
         403: {
-            "description": "Tenant not entitled to PreCheck "
-            "(inactive status or precheck disabled)."
+            "description": "Tenant not entitled to PreCheck (inactive status or precheck disabled)."
         },
         404: {"description": "No PreCheck clinic mapped to this tenant."},
         409: {"description": "Patient already has a conflicting active PreCheck session."},
@@ -288,6 +288,24 @@ async def precheck_handoff(
     (`services/precheck_handoff.request_handoff`) forwards to PreCheck and maps its
     response 1:1 (see that module's docstring for the full status matrix). No DB write
     on this path; nothing is cached or retried here.
+
+    ### The `external_id` leg (a Portal patient) — no longer a `501`
+
+    TASK-003 §5.1 asked for a Portal patient (`wa_id IS NULL`, so no phone number) to be
+    handed off by `external_id`, and stopped at a deliberate `501`: PreCheck's
+    `/internal/precheck-handoff` requires `phone_number` (`^\\d{8,15}$`), and the only
+    route that takes a `session_ref` was `/internal/brain-message/inbound` — the *inbound*
+    route, whose empty-`text` behaviour that task could not read the PreCheck repo to
+    verify. TASK-004 read it, and the answer is that `inbound` is safe ONLY at `INIT`:
+    past it, an empty text reaches PreCheck's `_turn()` and can save an answer the patient
+    never gave. So the fix was not to reuse `inbound` — it was
+    `POST {PRECHECK}/internal/brain-message/open`, which never calls the questionnaire
+    agent, never writes a patient line, and writes nothing at all on a session that has
+    already started. `services/precheck_handoff.request_portal_handoff` is that leg; the
+    `501` is gone and unreachable from any valid body.
+
+    Both legs answer with the same two words (`seeded` / `already_active`) and the same
+    status matrix, so secretarIA branches once, not per channel.
     """
     ent = await resolve_entitlement(session, payload.tenant_id)
     entitled = ent.status in ACTIVE_STATUSES and ent.products.precheck
@@ -299,11 +317,24 @@ async def precheck_handoff(
         )
         raise HTTPException(status.HTTP_403_FORBIDDEN, "precheck_not_entitled")
 
+    phone_number = payload.phone_number
+    if phone_number is None:
+        # A PORTAL patient (`external_id`), handed off by handle rather than by phone —
+        # see the route docstring for why this is a different upstream route and not the
+        # same one with a different field. `booked_service` is not forwarded on this leg
+        # (PreCheck's opening route does not declare it, and its model is `extra="forbid"`).
+        result = await request_portal_handoff(
+            payload.tenant_id,
+            str(payload.external_id),
+            patient_name=payload.patient_name,
+        )
+        return PrecheckHandoffOut(status=result["status"])
+
     # Context fields pass straight through — no gate of their own: "may this clinic
     # receive PreCheck" stays purely ent.status/ent.products.precheck, checked above.
     result = await request_handoff(
         payload.tenant_id,
-        payload.phone_number,
+        phone_number,
         patient_name=payload.patient_name,
         booked_service=payload.booked_service,
     )
@@ -398,7 +429,13 @@ async def request_pending_otp_internal(
     payload: PendingIdentityIn,
     session: AsyncSession = Depends(get_session),
 ) -> PendingOtpRequestOut:
-    """Service leg used by the post-booking hook; takes no address by design."""
+    """Service leg used by the post-booking hook; takes no address by design.
+
+    Answers with the address MASKED (TASK-003 §3) so the card secretarIA renders can name the
+    inbox the code went to. The raw value stays here: it is read from the visit row, handed to
+    the notification leg, and the only form of it that leaves this function is
+    `mask_email`'s. Nothing below logs it either — the lines here carry `tenant_id` only.
+    """
     pending = await patient_access.find_pending_identity(
         session, payload.tenant_id, payload.external_id
     )
@@ -426,7 +463,7 @@ async def request_pending_otp_internal(
         await session.commit()
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "notification_unavailable")
     logger.info("patient_pending_otp_requested_internal", tenant_id=str(payload.tenant_id))
-    return PendingOtpRequestOut(status="sent")
+    return PendingOtpRequestOut(status="sent", email_masked=mask_email(pending.email))
 
 
 @router.post(

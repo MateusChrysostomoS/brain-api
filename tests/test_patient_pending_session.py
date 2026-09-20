@@ -196,7 +196,9 @@ async def test_internal_inline_contract_promotes_only_on_the_browser_leg(
         client, monkeypatch, "pending-otp/request", seed.both, handle
     )
     assert requested.status_code == 200, requested.text
-    assert requested.json() == {"status": "sent"}
+    # The masked address rides along since TASK-003 §3, so secretarIA's code card can name
+    # the inbox. `PATIENT_EMAIL` is `paciente@exemplo.com`.
+    assert requested.json() == {"status": "sent", "email_masked": "p***e@exemplo.com"}
     status_response = await client.get(
         "/patient-access/pending/status", headers=_bearer(token)
     )
@@ -879,3 +881,89 @@ async def test_precheck_is_reachable_with_no_appointment_anywhere_in_sight(pclie
         headers=_bearer(account_body["clinics"][0]["access_token"]),
     )
     assert "precheck" in [t["product"] for t in after.json()["data"]]
+
+
+# --- 9) The masked address (TASK-003 §3) ---------------------------------------------------
+#
+# secretarIA renders "digite o código enviado para a***a@gmail.com", but it holds no copy of
+# the address — the claim lives on the service leg precisely so the browser never names an
+# inbox. So the mask has to come from here, and the RAW value must not come with it.
+
+
+async def _request_code_internally(client, monkeypatch, tenant_id, handle):
+    from brain_api.services import secretaria_provisioning
+
+    async def _queued(to, template, variables):
+        return True
+
+    monkeypatch.setattr(secretaria_provisioning, "send_notification_email", _queued)
+    return await _identity_call(client, monkeypatch, "pending-otp/request", tenant_id, handle)
+
+
+async def test_internal_otp_request_returns_the_masked_address(pclient, monkeypatch):
+    """The field secretarIA reads, on the route it actually calls."""
+    client, sessionmaker, seed = pclient
+    handle = (await _open(client, sessionmaker, seed.both)).json()["patient_ref"]
+    assert (await _claim(client, monkeypatch, seed.both, handle)).status_code == 200
+
+    resp = await _request_code_internally(client, monkeypatch, seed.both, handle)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"status": "sent", "email_masked": "p***e@exemplo.com"}
+
+
+async def test_the_raw_address_never_leaves_on_this_route(pclient, monkeypatch):
+    """The property, not the shape: the full address appears in NO part of the response.
+
+    Checked against the whole raw body rather than one field, so a future `email` or `to`
+    added anywhere in the payload fails here instead of shipping.
+    """
+    client, sessionmaker, seed = pclient
+    handle = (await _open(client, sessionmaker, seed.both)).json()["patient_ref"]
+    assert (await _claim(client, monkeypatch, seed.both, handle)).status_code == 200
+
+    resp = await _request_code_internally(client, monkeypatch, seed.both, handle)
+    assert PATIENT_EMAIL not in resp.text
+    # Nor the local part on its own — the half that identifies a person.
+    assert PATIENT_EMAIL.split("@")[0] not in resp.text
+
+
+async def test_the_raw_address_never_reaches_a_log_line_on_this_route(pclient, monkeypatch):
+    """structlog's `PrintLoggerFactory` bypasses stdlib logging, so `caplog` is blind to these
+    lines — record what the loggers are CALLED with instead (same technique as
+    `test_precheck_handoff.py::test_context_never_reaches_a_log_line`)."""
+    from brain_api.api import internal as internal_api
+
+    client, sessionmaker, seed = pclient
+    handle = (await _open(client, sessionmaker, seed.both)).json()["patient_ref"]
+    assert (await _claim(client, monkeypatch, seed.both, handle)).status_code == 200
+
+    logged: list[tuple] = []
+
+    def _record(*args: object, **kwargs: object) -> None:
+        logged.append((args, kwargs))
+
+    for level in ("debug", "info", "warning", "error"):
+        monkeypatch.setattr(internal_api.logger, level, _record, raising=False)
+
+    resp = await _request_code_internally(client, monkeypatch, seed.both, handle)
+    assert resp.status_code == 200, resp.text
+
+    # Non-vacuous: this path really did log before we assert on what is absent.
+    assert any("patient_pending_otp_requested_internal" in repr(c) for c in logged), logged
+    assert PATIENT_EMAIL not in repr(logged)
+    # The MASK must not be logged either: a log line is not a patient-facing notice, and the
+    # domain plus two characters is still more than `tenant_id` needs to be useful.
+    assert "p***e" not in repr(logged)
+
+
+async def test_a_visit_with_no_address_still_409s_rather_than_masking_nothing(
+    pclient, monkeypatch
+):
+    """The field is non-optional on a 200, and this is why that is honest: a visit with no
+    captured address never reaches a 200 at all."""
+    client, sessionmaker, seed = pclient
+    handle = (await _open(client, sessionmaker, seed.both)).json()["patient_ref"]
+
+    resp = await _request_code_internally(client, monkeypatch, seed.both, handle)
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "pending_email_missing"

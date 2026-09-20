@@ -705,7 +705,13 @@ Both are gated on the **resolved product being secretarIA** — the link's `prod
   network error, a `404` from a secretarIA that does not have the route yet, and a `500` all
   collapse to a log line. **Deploy order is therefore free** — this service may go live before
   secretarIA's side, and the only consequence is that no greeting happens yet.
-- **PreCheck gets no equivalent**, deliberately: see `CONTRACTS.md` §12.3.2.
+- **PreCheck now has one too** (TASK-004, 2026-09-20): the post-booking hand-off for a Portal
+  patient no longer answers `501`. It calls PreCheck's `POST /internal/brain-message/open`, which
+  opens the session with the welcome + LGPD gate and writes no patient-authored line. The
+  `/inbound` route with `text: null` was considered and REJECTED: it is only safe in `INIT`, and a
+  patient who opened the pre-consult tab before booking is already past it, where the same body
+  would reach `_turn()` and could record an answer nobody gave. Contract and deploy order in
+  `CONTRACTS.md` §12.3.2 (PreCheck first).
 
 ### 8.7 `email_masked` on `POST /internal/brain-message/pending-otp/request`
 
@@ -836,3 +842,13 @@ e-mail address, a cookie, or a JWT from this channel.
   real accounts). §10 drops the "not yet a delivery/read-receipt system" bullet — it shipped. A
   same-day owner follow-up (read-tick contrast, fixed interactive-bubble width) is noted in §8.5 as
   built but still uncommitted — update this section again once that lands.
+- **2026-09-20** — TASK-004 shipped the hand-off §8.6 used to describe as missing, and took a
+  bubble OUT of the Portal. `POST /internal/brain-message/open` (PreCheck) is the new leg; the
+  `501 precheck_portal_handoff_unsupported` is unreachable from every valid body. secretarIA's
+  post-booking hook stopped writing "abra a Pre-consulta" on the Portal conversation, because
+  `Brain-Message-Frontend` now switches the patient to the pre-consult thread by itself the moment
+  a hand-off fills it — no invitation, no tap, and no focus mode required. None of the three is
+  deployed. Same-day, still NOT executed: `z_prompts/PROMPT_PORTAL_CALENDARIO_COMPONENTE.md`
+  (`tasks/TASK-005`, a new availability endpoint this document does not describe yet — Portal
+  only) and `z_prompts/PROMPT_WHATSAPP_FLOW_POC_CALENDARIO.md` (research/POC, no contract here
+  unless it graduates).

@@ -12,7 +12,7 @@
 > não carregam: estado, decisões tomadas sem perguntar, ordem de deploy e o que não foi provado.
 
 **Rodada:** 2026-09-19 · **Branch:** `task/TASK-003-brain-api` (base `7796949`) ·
-**Estado: BUILT, commitado NA BRANCH, não mergeado em `main`, NÃO deployado** ·
+**Estado: BUILT, commitado NA BRANCH (`2852db6`), não mergeado em `main`, NÃO deployado** ·
 **Sem migração** (nenhuma coluna nova; nada para aplicar em produção).
 
 ## 1. O que entrou

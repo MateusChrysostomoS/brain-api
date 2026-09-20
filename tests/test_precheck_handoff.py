@@ -499,3 +499,210 @@ async def test_context_never_reaches_a_log_line(client, monkeypatch):
     assert any("precheck_handoff_ok" in repr(call) for call in logged), logged
     assert NAME not in repr(logged)
     assert SERVICE not in repr(logged)
+
+
+# --- TASK-003 §5.1: `external_id` (a Portal patient) — accepted, validated, and REFUSED ----
+#
+# A Portal patient has `wa_id IS NULL` by design, so `phone_number` can never name them. The
+# body now takes `external_id` INSTEAD — exactly one of the two, never both — and the leg
+# stops at a deliberate `501`, because PreCheck's own `/internal/precheck-handoff` requires a
+# phone number (verified against its live `openapi.json`) and this task may not change that
+# repo. These tests pin the refusal so it cannot quietly become a fabricated phone number or a
+# fabricated patient message later; see `api/internal.py::precheck_handoff`.
+
+PORTAL_REFUSAL = "precheck_portal_handoff_unsupported"
+
+
+def _body_portal(tenant_id: str, external_id: str | None = None) -> dict:
+    return {"tenant_id": tenant_id, "external_id": external_id or str(uuid4())}
+
+
+async def test_handoff_external_id_is_501_and_calls_nothing_upstream(client, monkeypatch):
+    """The stop point, and the thing that must stay true about it: NO upstream request.
+
+    A 501 that had already poked PreCheck would mean the refusal is cosmetic.
+    """
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    captured = _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {"status": "seeded"}))
+
+    resp = await client.post(
+        ROUTE, headers={"X-Internal-Api-Key": "pair-key"}, json=_body_portal(tenant_a_id)
+    )
+    assert resp.status_code == 501, resp.text
+    assert resp.json()["detail"] == PORTAL_REFUSAL
+    assert "path" not in captured, "the refusal must happen before any PreCheck call"
+
+
+async def test_handoff_external_id_refusal_is_permanent_not_503(client, monkeypatch):
+    """501, never 503. secretarIA distinguishes a permanent refusal from a transient outage
+    (`brain-mesh-permanent-vs-transient-refusal`); a 503 here would have it retry a handoff
+    that can never succeed, forever. A 422 would be worse still — it reads as a broken
+    contract and makes a healthy mesh look misdeployed."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {"status": "seeded"}))
+
+    resp = await client.post(
+        ROUTE, headers={"X-Internal-Api-Key": "pair-key"}, json=_body_portal(tenant_a_id)
+    )
+    assert resp.status_code == 501
+
+
+async def test_handoff_external_id_still_passes_the_entitlement_gate_first(client, monkeypatch):
+    """A clinic without PreCheck gets the SAME 403 it always did, even on the new leg.
+
+    403 is the more actionable of the two answers and must not be masked by the 501: "this
+    clinic has no PreCheck" is something the caller can fix; "brain-api cannot do Portal
+    handoffs" is not.
+    """
+    _set_pair_key(monkeypatch)
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    tenant_b_id = (await _tenant_ids(client, admin_token))[CLINIC_B]
+
+    resp = await client.post(
+        ROUTE, headers={"X-Internal-Api-Key": "pair-key"}, json=_body_portal(tenant_b_id)
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == "precheck_not_entitled"
+
+
+async def test_handoff_external_id_forwards_no_context_either(client, monkeypatch):
+    """Booking context alongside `external_id` validates but still reaches nothing."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    captured = _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {"status": "seeded"}))
+
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={**_body_portal(tenant_a_id), "patient_name": NAME, "booked_service": SERVICE},
+    )
+    assert resp.status_code == 501
+    assert "path" not in captured
+
+
+# --- The XOR itself ----------------------------------------------------------------------
+#
+# THESE ASSERT ON THE DETAIL, NOT JUST THE STATUS, and the reason is specific: before this
+# change `external_id` was an unknown field, so `extra="forbid"` already answered 422 to every
+# body below — for a completely different reason. A status-only assertion could not tell
+# "the XOR validator did its job" from "someone deleted the validator and `extra="forbid"`
+# happens to refuse the same bodies".
+
+XOR_MESSAGE = "exactly one of phone_number or external_id"
+
+
+async def test_handoff_both_handles_422(client, monkeypatch):
+    """Two handles describe two patients; there is no defensible rule for picking one."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {"status": "seeded"}))
+
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={"tenant_id": tenant_a_id, "phone_number": PHONE, "external_id": str(uuid4())},
+    )
+    assert resp.status_code == 422, resp.text
+    assert XOR_MESSAGE in resp.text, "422 came from somewhere other than the XOR validator"
+
+
+async def test_handoff_no_handle_at_all_422(client, monkeypatch):
+    """`phone_number` stopped being a REQUIRED field; it must not have stopped being
+    mandatory. A body with neither handle is the same 422 it was before this change —
+    and the detail proves it is now the XOR validator saying so, not a `missing` field."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+
+    resp = await client.post(
+        ROUTE, headers={"X-Internal-Api-Key": "pair-key"}, json={"tenant_id": tenant_a_id}
+    )
+    assert resp.status_code == 422, resp.text
+    assert XOR_MESSAGE in resp.text
+
+
+@pytest.mark.parametrize(
+    "body_extra",
+    [
+        {"phone_number": None},
+        {"external_id": None},
+        {"phone_number": None, "external_id": None},
+    ],
+)
+async def test_handoff_explicit_nulls_do_not_smuggle_a_missing_handle(
+    client, monkeypatch, body_extra: dict
+):
+    """An explicit `null` is an ABSENT handle, not a present one — same 422 as omitting it."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={"tenant_id": tenant_a_id, **body_extra},
+    )
+    assert resp.status_code == 422, resp.text
+    assert XOR_MESSAGE in resp.text
+
+
+async def test_handoff_explicit_null_phone_with_external_id_is_accepted(client, monkeypatch):
+    """`{"phone_number": null, "external_id": "..."}` is exactly one handle, so it validates
+    and reaches the documented 501 — not a 422. A caller that spells absence explicitly must
+    not be punished for it."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={"tenant_id": tenant_a_id, "phone_number": None, "external_id": str(uuid4())},
+    )
+    assert resp.status_code == 501, resp.text
+
+
+@pytest.mark.parametrize("bad", ["", "not-a-uuid", "12345", "  "])
+async def test_handoff_bad_external_id_422(client, monkeypatch, bad: str):
+    """The handle IS a `MessagePatient.id`; a value that could never be one is a 422 here
+    rather than a 404 three hops later.
+
+    The `loc` assertion matters: `extra="forbid"` would also 422 this body if the field were
+    never declared, so only an error POINTING AT `external_id` proves the UUID type is live."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={"tenant_id": tenant_a_id, "external_id": bad},
+    )
+    assert resp.status_code == 422, resp.text
+    locs = [err.get("loc", []) for err in resp.json()["detail"]]
+    assert any("external_id" in loc for loc in locs), resp.text
+
+
+async def test_handoff_phone_shape_still_enforced_alongside_external_id(client, monkeypatch):
+    """Making `phone_number` optional must not have relaxed its SHAPE."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={"tenant_id": tenant_a_id, "phone_number": "not-digits"},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+async def test_handoff_unknown_handle_name_still_422(client, monkeypatch):
+    """`extra="forbid"` survives the widening: `session_ref` is PreCheck's name for the same
+    handle and is NOT accepted here (`frozen-contract-migration`)."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={"tenant_id": tenant_a_id, "session_ref": str(uuid4())},
+    )
+    assert resp.status_code == 422, resp.text

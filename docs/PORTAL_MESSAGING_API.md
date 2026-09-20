@@ -656,6 +656,59 @@ consume it yet. Full contracts: `secretarIA/docs/CHECKPOINT_brain_message_status
   `applied: false` and changes nothing.
 - PreCheck: not covered.
 
+### 8.6 The automation speaks first — `POST {SECRETARIA}/internal/brain-message/open`
+
+Added 2026-09-19 (TASK-003 §2; brain-api side **BUILT on `task/TASK-003-brain-api`, uncommitted
+to `main`, not deployed**). Until this, a patient who opened a clinic's link landed in an
+**empty** conversation: secretarIA's `Conversation` is born only from an inbound message, and a
+patient who has not typed has not sent one. The owner asked for the automation to greet first.
+
+```
+POST {SECRETARIA_BASE_URL}/internal/brain-message/open     X-Internal-Api-Key: <pair key>
+{ "tenant_id": "<uuid>", "external_id": "<MessagePatient.id>", "patient_name": null }
+→ 202 {"status": "queued"}    conversation created, greeting enqueued
+→ 200 {"status": "exists"}    a conversation with a message already existed — NOTHING sent
+```
+
+**brain-api calls it from two places, both fire-and-forget**
+(`api/patient_access.py::_greet_if_secretaria`, `services/message_switchboard.py::
+open_conversation`):
+
+| trigger | when | why |
+|---|---|---|
+| `POST /patient-access/pending` | only when the visit is **created**, never on a cookie resume | a reload must not greet twice |
+| `POST /patient-access/clinics` | on every successful add | the owner's "paciente novo **da clínica**" already has a Portal account and never passes through `/pending` |
+
+Both are gated on the **resolved product being secretarIA** — the link's `product`, or
+`default_product(ent)` (the first offered tab) when the link names none.
+
+- **No inbound message is ever fabricated.** That is the entire reason this route exists rather
+  than relaying a synthetic "oi": a bubble the patient did not write must not appear in their
+  own transcript.
+- **Idempotence belongs to secretarIA**, not here. brain-api keeps no state about whether a
+  greeting is due, which is what makes two trigger points safe.
+- **It cannot fail or slow the patient's route.** It runs as a Starlette background task, after
+  the response body is sent, and `open_conversation` never raises: an unconfigured mesh, a
+  network error, a `404` from a secretarIA that does not have the route yet, and a `500` all
+  collapse to a log line. **Deploy order is therefore free** — this service may go live before
+  secretarIA's side, and the only consequence is that no greeting happens yet.
+- **PreCheck gets no equivalent**, deliberately: see `CONTRACTS.md` §12.3.2.
+
+### 8.7 `email_masked` on `POST /internal/brain-message/pending-otp/request`
+
+Added 2026-09-19 (TASK-003 §3, same rollout as §8.6). The response is now
+`{"status": "sent", "email_masked": "a***a@gmail.com"}` — first character of the local part,
+`***`, last character, `@`, and the **whole** domain (`core/email_mask.py`; a one-character
+local part becomes `a***@dominio`).
+
+secretarIA needs it because the code notice must say which inbox the code went to, and
+secretarIA holds no copy of the address: the claim travels on the service leg
+(`POST /internal/brain-message/pending-email`) precisely so the browser never names an inbox.
+**The full address still never leaves brain-api** — not in this response, not in a log line
+(`tests/test_patient_pending_session.py` pins both). `409 pending_email_missing` is unchanged,
+and the field is absent from it: a visit with no captured address never reaches a `200`.
+Additive — a consumer that ignores the field is unaffected.
+
 ---
 
 ## 9. How to adapt a new product to this channel
@@ -763,3 +816,10 @@ e-mail address, a cookie, or a JWT from this channel.
   gains the patient side — the poll relays the delivery state untouched (no brain-api cursor), and
   `POST /patient-access/threads/{product}/messages/read` relays the patient's read mark scoped by
   the session. §4.1 notes the `updated_at` cursor. Built, uncommitted, not deployed.
+- **2026-09-19** — `BRAIN/tasks/TASK-003` (brain-api leg): **§8.6** — the automation speaks first.
+  brain-api calls `POST {SECRETARIA}/internal/brain-message/open` fire-and-forget from two
+  triggers, so a patient who opens a clinic's link no longer lands in an empty conversation; no
+  inbound message is ever fabricated, and PreCheck gets no equivalent (`CONTRACTS.md` §12.3.2
+  says why). **§8.7** — `email_masked` on the internal OTP-request response, so the code notice
+  can name the inbox without the raw address leaving brain-api. Built on
+  `task/TASK-003-brain-api`, not merged, not deployed; deploy order is free in both directions.

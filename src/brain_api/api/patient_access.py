@@ -34,6 +34,7 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     Header,
     HTTPException,
@@ -83,6 +84,7 @@ from brain_api.models.patient_access import (
     MessagePatientSession,
     MessagePendingSession,
 )
+from brain_api.schemas.entitlement import EntitlementOut
 from brain_api.schemas.patient_access import (
     ClinicInviteIn,
     ClinicLookupIn,
@@ -722,6 +724,7 @@ async def logout(
 )
 async def add_clinic_by_invite(
     payload: ClinicInviteIn,
+    background_tasks: BackgroundTasks,
     login: tuple[MessagePatientAccount, MessagePatientSession] = Depends(get_current_account),
     session: AsyncSession = Depends(get_session),
 ) -> ClinicSessionOut:
@@ -732,6 +735,15 @@ async def add_clinic_by_invite(
     add clinics to that account and receive their tokens — the same reach page memory
     already has, since every clinic token of the account lives there too, and nothing
     outside that account becomes readable. The inbox was proven by the login's code.
+
+    THE SECOND GREETING TRIGGER (TASK-003 §2, correction of 2026-09-19). The owner asked for
+    the automation to speak first to a patient who is new **to the clinic**, not new to the
+    Portal — and that patient arrives HERE, not at `/pending`: they already have an account,
+    and opening a new clinic's link adds it to that account. Gating this on "was the clinic
+    actually new" is deliberately NOT done: the honest answer is not "is the row new" (the
+    identity may predate this account) but "does a conversation with a message exist", which
+    only secretarIA knows. It owns that answer and returns `exists` without sending anything,
+    so the greeting stays single without a second, drifting copy of the rule living here.
     """
     account, login_row = login
     login_session_id = login_row.id
@@ -746,6 +758,14 @@ async def add_clinic_by_invite(
     if login_row.patient_id is None:
         # A login opened by e-mail alone names its first clinic from now on (`login_clinic`).
         await patient_access.pin_login_clinic(session, login_session_id, patient)
+    # After `add_clinic`, which commits. No `product` to honour: this route carries no link
+    # parameter, so the portal lands on whatever tab `default_product` names.
+    _greet_if_secretaria(
+        background_tasks,
+        await resolve_entitlement(session, clinic.id),
+        tenant_id=clinic.id,
+        patient_ref=patient.id,
+    )
     return _clinic_session(patient, clinic, login_session_id)
 
 
@@ -820,9 +840,7 @@ async def list_threads(
         tenant_id=str(patient.tenant_id),
         count=len(products),
     )
-    return ThreadListOut(
-        data=[ThreadOut(product=p, clinic_name=ent.clinic_name) for p in products]
-    )
+    return ThreadListOut(data=[ThreadOut(product=p, clinic_name=ent.clinic_name) for p in products])
 
 
 # --- Sending: JSON (text) or multipart (a file), one resource (2026-09-18) ------------------
@@ -1368,6 +1386,49 @@ async def get_thread_media(
     )
 
 
+def _greet_if_secretaria(
+    background_tasks: BackgroundTasks,
+    ent: EntitlementOut,
+    *,
+    tenant_id: UUID,
+    patient_ref: UUID,
+    product: str | None = None,
+) -> None:
+    """Schedule the clinic's automation to SPEAK FIRST, once this response has been written.
+
+    The owner's requirement (TASK-003 §2): "todo link aberto por um paciente novo da clínica
+    (...) é preciso que a nossa automação mande mensagem automaticamente, sem a necessidade do
+    paciente mandar a mensagem". Until now a patient who opened a link landed in an EMPTY
+    conversation, because secretarIA's conversation is born from an inbound message and there
+    was none.
+
+    WHY A BACKGROUND TASK AND NOT AN `await` HERE. Starlette runs it after the response body
+    is sent, so the two properties the contract demands are structural rather than hopeful: a
+    failure cannot turn this route's `200` into an error (the answer is already gone), and a
+    slow or hung secretarIA cannot add a single millisecond the patient can perceive. A short
+    timeout would have bounded the damage; it would not have removed it.
+
+    ONLY FOR secretarIA, AND THAT IS A LIMITATION, NOT AN OVERSIGHT. `product="precheck"`
+    triggers nothing at all. PreCheck's session is opened either by its `/internal/precheck-
+    handoff` (which is keyed on a WhatsApp phone number a Portal patient does not have) or by
+    a patient message — and relaying a message the patient never sent is exactly the
+    fabricated bubble TASK-003 forbids. Giving PreCheck the same treatment needs a route in
+    the PreCheck repo, which this task may not touch. A PreCheck thread therefore stays empty
+    until the patient writes, as it does today. See `results/brain-api.md` §"peça 3".
+
+    `product` is the one the LINK named; `None` means the portal will land on
+    `default_product(ent)` — the same first-offered tab it renders.
+    """
+    resolved = product or message_switchboard.default_product(ent)
+    if resolved != message_switchboard.PRODUCT_SECRETARIA:
+        return
+    background_tasks.add_task(
+        message_switchboard.open_conversation,
+        tenant_id=tenant_id,
+        patient_ref=str(patient_ref),
+    )
+
+
 async def _public_products(session: AsyncSession, tenant_id: UUID) -> PublicProductsOut:
     """The clinic's products AS REACHABLE ON THIS CHANNEL — the same computation as `/threads`.
 
@@ -1416,9 +1477,7 @@ async def lookup_clinic(
         raise HTTPException(status.HTTP_404_NOT_FOUND, _INVITE_NOT_FOUND)
     products = await _public_products(session, clinic.id)
     logger.info("clinic_public_lookup", tenant_id=str(clinic.id))
-    return ClinicPublicOut(
-        tenant_id=clinic.id, clinic_name=clinic.clinic_name, products=products
-    )
+    return ClinicPublicOut(tenant_id=clinic.id, clinic_name=clinic.clinic_name, products=products)
 
 
 @router.post(
@@ -1441,6 +1500,7 @@ async def open_pending(
     payload: PendingSessionIn,
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ) -> PendingSessionOut:
     """The door a patient with no account walks through — for EITHER product.
@@ -1452,10 +1512,15 @@ async def open_pending(
     confirms an appointment stays a proactive behaviour elsewhere — it is not a condition of
     access, and nothing in this file treats it as one.
 
-    NOTHING IS PRE-CREATED UPSTREAM. PreCheck's conductor opens its own session on the first
-    inbound message (`resolve_session` is idempotent by `session_ref`), so the only way to
-    pre-create one here would be to relay a synthetic message the patient never sent. The
-    handle is enough: the session is born on the first real turn.
+    NOTHING IS PRE-CREATED UPSTREAM — **except secretarIA's greeting, since 2026-09-19**.
+    PreCheck's conductor opens its own session on the first inbound message (`resolve_session`
+    is idempotent by `session_ref`), so the only way to pre-create one here would be to relay a
+    synthetic message the patient never sent; for PreCheck that is still true and still
+    refused. secretarIA now has a route that opens the conversation and greets WITHOUT an
+    inbound (`_greet_if_secretaria`), so a patient who opens a link is spoken to first instead
+    of landing in an empty thread. It fires only on a CREATED visit — a reload that resumes
+    this same visit through the cookie must not produce a second greeting — and only when the
+    resolved product is secretarIA.
 
     RESUME, AND ITS ONE LIMIT: the cookie holds the most recent visit. Opening a DIFFERENT
     clinic's link replaces it, and the previous conversation stops being reachable from this
@@ -1488,6 +1553,15 @@ async def open_pending(
     if not resumed:
         pending, patient, raw_cookie = await patient_access.open_pending_session(session, clinic)
         set_patient_pending_cookie(response, raw_cookie)
+        # AFTER the visit is committed (`open_pending_session` commits), so secretarIA can
+        # already read the handle back over its own service leg when it runs.
+        _greet_if_secretaria(
+            background_tasks,
+            ent,
+            tenant_id=clinic.id,
+            patient_ref=patient.id,
+            product=payload.product,
+        )
 
     # The clinic and whether this was a resume — never the handle, never the address.
     logger.info("patient_pending_opened", tenant_id=str(clinic.id), resumed=resumed)

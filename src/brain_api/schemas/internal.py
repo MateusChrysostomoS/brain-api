@@ -7,10 +7,18 @@ arrives in the request body, is validated in-memory, and only booleans/ids leave
 
 import re
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from brain_api.services import catalog
 
@@ -88,10 +96,30 @@ class UsageEventOut(BaseModel):
 
 
 class PrecheckHandoffIn(BaseModel):
-    """`POST /internal/precheck-handoff` body — secretarIA identifies a patient by
-    tenant + WhatsApp phone; brain-api resolves entitlement and forwards to PreCheck
-    (CONTRACTS.md §12.3). `phone_number` is digits only (no `+`/spaces/punctuation),
-    8-15 chars — the same shape PreCheck's own contract expects.
+    """`POST /internal/precheck-handoff` body — secretarIA names the patient by tenant + ONE
+    handle; brain-api resolves entitlement and forwards to PreCheck (CONTRACTS.md §12.3).
+
+    `phone_number` is digits only (no `+`/spaces/punctuation), 8-15 chars — the same shape
+    PreCheck's own contract expects.
+
+    `external_id` (2026-09-19, TASK-003 §5.1) is the alternative for a patient of the **Portal**,
+    who has `wa_id IS NULL` by design and therefore no phone number to be named by. It is
+    brain-api's `MessagePatient.id`, spelled as the caller knows it — the same name and the same
+    value `PendingEmailClaimIn`/`PendingIdentityIn` already use, and the same handle
+    `message_switchboard.send_message` sends as `external_id` on every relayed message.
+
+    **EXACTLY ONE of the two, never both and never neither** — both present is `422`, as is
+    neither. The pair is not a preference order: a body carrying both would be describing two
+    different patients and there is no defensible rule for picking one.
+
+    Declared as `UUID` rather than the contract's literal `str | None`: the handle IS a UUID
+    here (`MessagePatient.id`) and both sibling internal schemas already type it that way, so a
+    value that cannot be one could never resolve to a patient. Registered as a deviation in
+    `tasks/TASK-003/results/brain-api.md`.
+
+    > **The `external_id` leg does not reach PreCheck today — it is a validated 501.** See
+    > `api/internal.py::precheck_handoff` for why (PreCheck's own contract is keyed on a phone
+    > number and this task may not change that repo).
 
     `patient_name`/`booked_service` are OPTIONAL booking context (FEAT 38) forwarded
     verbatim to PreCheck; they do not participate in any gate here."""
@@ -99,7 +127,10 @@ class PrecheckHandoffIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     tenant_id: UUID
-    phone_number: str = Field(min_length=8, max_length=15)
+    # Optional ONLY in the schema sense: the model validator below still demands one of the
+    # two handles, so the legacy two-field body validates and 422s exactly as it did.
+    phone_number: Annotated[str, StringConstraints(min_length=8, max_length=15)] | None = None
+    external_id: UUID | None = None
 
     # --- Optional booking context (FEAT 38) --------------------------------------
     # This model is the STRICT hop of the mesh (`extra="forbid"` above): until it knows
@@ -120,10 +151,25 @@ class PrecheckHandoffIn(BaseModel):
 
     @field_validator("phone_number")
     @classmethod
-    def _phone_shape(cls, v: str) -> str:
-        if not _PHONE_RE.match(v):
+    def _phone_shape(cls, v: str | None) -> str | None:
+        # `None` reaches here only when the caller sent an explicit `"phone_number": null`;
+        # an omitted field keeps the default without running validators. Either way the
+        # absence is the model validator's business, not the shape check's.
+        if v is not None and not _PHONE_RE.match(v):
             raise ValueError("phone_number must be 8-15 digits")
         return v
+
+    @model_validator(mode="after")
+    def _exactly_one_handle(self) -> "PrecheckHandoffIn":
+        """One handle, never two, never none — `422` otherwise (TASK-003 §5.1).
+
+        Written as an equality on two `is None` tests so both wrong shapes take the SAME
+        branch and produce the same message: a caller must not be able to learn, from the
+        error, which of the two this service would have preferred.
+        """
+        if (self.phone_number is None) == (self.external_id is None):
+            raise ValueError("exactly one of phone_number or external_id is required")
+        return self
 
 
 class PrecheckHandoffOut(BaseModel):
@@ -203,9 +249,24 @@ class PendingIdentityStatusOut(BaseModel):
 
 
 class PendingOtpRequestOut(BaseModel):
-    """The code was accepted for delivery; neither address nor credential leaves."""
+    """The code was accepted for delivery; neither address nor credential leaves.
+
+    `email_masked` (2026-09-19, TASK-003 §3) is the ONE exception, and it is not the address:
+    `core/email_mask.py` gives back first character + `***` + last character of the local part
+    plus the whole domain, so the notice secretarIA renders can say "digite o código enviado
+    para a***a@gmail.com" without the raw value ever crossing this boundary. secretarIA holds
+    no copy of the address — that is the whole point of the claim living on the service leg
+    (`PendingEmailClaimIn`) — so it cannot compute this itself, and it must not be given the
+    address just so it can.
+
+    ADDITIVE AND SAFE IN EITHER DEPLOY ORDER. A caller that ignores the field keeps working;
+    a caller that wants it gets it the moment this service is live. It is declared non-optional
+    because on a `200` there is always an address to describe — a visit with none is the `409
+    pending_email_missing` above, never a `200` with a null.
+    """
 
     status: Literal["sent"]
+    email_masked: str
 
 
 class PendingOtpVerifyIn(PendingIdentityIn):

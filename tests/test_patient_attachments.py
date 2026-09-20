@@ -52,11 +52,21 @@ def _png(text: bytes = b"") -> bytes:
     )
 
 
+# The greeting hop (2026-09-19, TASK-003 §2) is a background side effect of the `POST /pending`
+# SETUP step these tests use — one per created visit, finished before the upload is even sent.
+# It is answered here WITHOUT being recorded: counting it would make every "exactly N relays"
+# assertion below depend on an unrelated feature, and letting it reach `real_send` would make
+# each test wait on a real connection attempt to a host that does not exist. Where the greeting
+# itself is asserted is `tests/test_portal_auto_greeting.py`.
+_GREETING_PATH = "/internal/brain-message/open"
+
+
 def _mesh(monkeypatch, answer):
     """Serve every mesh hop from `answer(request) -> httpx.Response`, at the wire level.
 
     The test client's own hop and the OTP e-mail (same secretarIA base URL, fail-soft) pass
-    through untouched, so "nothing was relayed" assertions count switchboard hops only.
+    through untouched, and the greeting is stubbed out, so "nothing was relayed" assertions
+    count switchboard hops only.
     """
     calls: list[dict] = []
     real_send = httpx.AsyncClient.send
@@ -66,6 +76,8 @@ def _mesh(monkeypatch, answer):
         mesh = "secretaria:8000" in url or "precheck:8000" in url
         if not mesh or url.endswith("/internal/notifications/email"):
             return await real_send(self, request, **kwargs)
+        if request.url.path == _GREETING_PATH:
+            return httpx.Response(202, json={"status": "queued"}, request=request)
         calls.append(
             {
                 "method": request.method,

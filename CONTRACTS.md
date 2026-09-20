@@ -1200,7 +1200,7 @@ accepts `SECRETARIA_API_KEY_PREVIOUS` during rotation):
 | `POST` | `/internal/secretaria/hub-token/verify` | introspection above. Always `200` for an authenticated service caller — refusal is `active:false`, not an HTTP error |
 | `GET` | `/internal/tenants/{tenant_id}/entitlements` | entitlement summary `{tenant_id, status, active, secretaria_enabled, plan, secretaria_tier, addons, limits}` — the gate data secretarIA's plugin registry consumes (same `is_entitled` semantics, §3.2) |
 | `POST` | `/internal/usage-events` | metering leg only (`stripe-billing-entitlements`; NO Stripe call — meter forwarding is a later billing round). Body `{tenant_id, feature, amount, event_id}` — `feature` must be a catalog `LIMIT_KEYS` id (422 otherwise), `amount` `1..10000`, `event_id` is the CALLER's own idempotency key (e.g. `"reminder:24h:<appointment_id>"`). Inserts a `usage_events` row (§6.3d) AND increments `entitlements.usage[feature]` in ONE transaction (upserts the entitlement row if missing). Always `200 {recorded: bool}` — `false` means `event_id` was already applied (replay), no double-count, never an HTTP error |
-| `POST` | `/internal/precheck-handoff` | secretarIA → brain-api → PreCheck patient handoff (§12.3). Body `{tenant_id, phone_number}` plus the OPTIONAL booking context `patient_name?` / `booked_service?` (both `str|null`, ≤255 chars — FEAT 38) — `phone_number` digits only, `8..15` chars (422 otherwise). Entitlement-gated: `403 precheck_not_entitled` unless status active/trialing AND `precheck_enabled`. Forwards to PreCheck; full status matrix in §12.3. No DB write |
+| `POST` | `/internal/precheck-handoff` | secretarIA → brain-api → PreCheck patient handoff (§12.3). Body `{tenant_id}` + **exactly one** handle: `phone_number` (digits only, `8..15`) **or** `external_id` (UUID, the Portal patient's `MessagePatient.id` — TASK-003 §5.1); both or neither → `422`. Plus the OPTIONAL booking context `patient_name?` / `booked_service?` (both `str|null`, ≤255 chars — FEAT 38). Entitlement-gated: `403 precheck_not_entitled` unless status active/trialing AND `precheck_enabled`. `phone_number` forwards to PreCheck (full status matrix in §12.3); **`external_id` is a deliberate `501 precheck_portal_handoff_unsupported` — see §12.3.2**. No DB write |
 
 ### 12.3 secretarIA → PreCheck patient handoff (`POST /internal/precheck-handoff`)
 
@@ -1231,6 +1231,15 @@ service credential.
 unconfigured / `401` mismatch). Body `{"tenant_id": "<uuid>", "phone_number":
 "<digits>"}`; `phone_number` must match `^\d{8,15}$` and `tenant_id` must parse as a
 UUID, else `422`.
+
+**Two handles since 2026-09-19 (TASK-003 §5.1), exactly one per request.** A patient of the
+**Portal** has `wa_id IS NULL` by design, so no phone number can name them; the body therefore
+also accepts `external_id` (a UUID — brain-api's `MessagePatient.id`, the same handle
+`message_switchboard.send_message` already sends secretarIA as `external_id`). `phone_number`
+stopped being a *required field* but did not stop being *mandatory*: a model validator demands
+exactly one of the two, so **both → `422`** and **neither → `422`**, and an explicit `null`
+counts as absent. The legacy two-field body is byte-for-byte unaffected. **The `external_id`
+leg does not reach PreCheck — it is a validated `501`; §12.3.2 says why.**
 
 **Optional booking context (FEAT 38):** the body also accepts `patient_name` and
 `booked_service` — both `str | None`, default `None`, `max_length=255`, both forwarded
@@ -1344,6 +1353,32 @@ operational reason to log it. `services/precheck_handoff.py` logs `tenant_id` + 
 only, and `tests/test_precheck_handoff.py::test_context_never_reaches_a_log_line` fails if
 either value reaches a logger call (asserting on the recorded call args — structlog's
 `PrintLoggerFactory` bypasses stdlib logging, so `caplog` cannot see these lines).
+
+### 12.3.2 `external_id` (a Portal patient) — why it stops here at `501`
+
+Added 2026-09-19 (TASK-003 §5.1). The body shape is implemented and validated; **the upstream
+call is not**, and that is a decision with a stated reason rather than an omission.
+
+| what was asked | why it is not here |
+|---|---|
+| Open the PreCheck session for a Portal patient by `external_id` | PreCheck's only session-seeding route, `POST {PRECHECK}/internal/precheck-handoff`, **requires** `phone_number` matching `^\d{8,15}$`. Verified 2026-09-19 against the live service's own `openapi.json`: `PrecheckHandoffRequest.required = ["brain_tenant_id", "phone_number"]`, and it publishes no `session_ref`/`external_id` alternative. Synthesising digits would key a clinical session to a phone number that belongs to a real person, and PreCheck's WhatsApp side is production-critical and out of scope (memory `feedback-precheck-whatsapp-producao-intocavel`) |
+| Use `POST {PRECHECK}/internal/brain-message/inbound` instead — it DOES take `session_ref`, and its `text` is nullable | It is the **inbound** route: calling it asserts the patient wrote something. Whether a null `text` records an `inbound` message or is scored as an empty ANSWER to the open question is PreCheck-side behaviour, and TASK-003 forbids both reading/changing that repo and fabricating a patient bubble. Left as the one candidate a future round should evaluate, from inside PreCheck |
+
+So the route answers `501 {"detail": "precheck_portal_handoff_unsupported"}`, after the
+entitlement gate and **before any upstream call** (pinned by
+`tests/test_precheck_handoff.py::test_handoff_external_id_is_501_and_calls_nothing_upstream`).
+
+**`501`, not `503`, and not `422`** — the status is the whole message to the caller
+(`brain-mesh-permanent-vs-transient-refusal`). `503` means "try again" and would have
+secretarIA retry a handoff that can never succeed. `422` reads as a broken contract and would
+make a healthy, correctly deployed mesh look misdeployed (`frozen-contract-migration`). `501`
+is a permanent, understood refusal: record it, do not retry.
+
+Closing the gap needs a route **in the PreCheck repo** that opens/ensures a session from
+`(brain_tenant_id, session_ref)` with no message — i.e. the pre-seeding half of
+`/internal/precheck-handoff` keyed on the Brain-Message handle instead of a phone number. Once
+that exists, the only change here is the body of the `phone_number is None` branch in
+`api/internal.py::precheck_handoff`.
 
 ---
 

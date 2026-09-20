@@ -446,8 +446,8 @@ visitors, `PATIENT_PENDING_ATTACHMENT_RATE_LIMIT_PER_MIN` (20/clinic, shared); k
 `tenant_id` + `external_id` (from the session), optional `text`/`patient_name`/
 `interactive_reply_id`, and one part `file` (sanitized name, sniffed `Content-Type`). secretarIA
 must accept both encodings on that path, re-validate with the same constants, and accept whatever
-brain-api accepted — a refusal after brain-api's check surfaces as `503 product_error` (contract
-drift, not 502 — see §8.1), except the two refusals only secretarIA can make (§7.4, lower table). Timeout `ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS` (60 s per network operation). New:
+brain-api accepted — a refusal after brain-api's check surfaces as `502 product_error` (contract
+drift), except the two refusals only secretarIA can make (§7.4, lower table). Timeout `ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS` (60 s per network operation). New:
 `GET /internal/brain-message/media/{message_id}?tenant_id=&external_id=` → raw bytes, or one `404`
 for "missing / not this conversation / no attachment" — looked up in ONE query by
 `(message id, tenant_id, external_id)`: this route, not brain-api, is what keeps patient B out of
@@ -574,7 +574,8 @@ place before this document.
 | 422 | Malformed body | `extra="forbid"`, field length/shape violations (FastAPI validation) |
 | 429 | Rate limited | Per-IP/per-address/per-account limiters, route-dependent (`patient_access.py` header comments name each budget); uploads have their own per-patient budget |
 | 409 / 413 / 415 / 429 (+ some 404/422) | Attachment refusals | `{"detail": {"code", "message"}}` — full table in §7.4 |
-| 503 | `product_unreachable` / `product_error` / `product_channel_unconfigured` / `product_temporarily_unavailable` | **Fixed 2026-09-19 (`Z_QUESTÕES _PENDENTES.md` item 4, `CHECKPOINT_brain_message_anexos.md` §10.6):** these four codes ALL answer 503 now, never 502 — EasyPanel's gateway replaces any 502 the app sends with its own HTML "Service is not reachable" page, but a 503 on the same route passes through intact (observed 2026-09-18/19). `product_unreachable`/`product_error` mean the product's leg is down or answered something brain-api could not parse/trust; `product_channel_unconfigured` means brain-api itself has no base URL/key for that product (operator fact); `product_temporarily_unavailable` means the product answered its **own** 503 (passed through, because PreCheck's `stage_unsupported_on_channel`/`clinic_flow_not_configured` are real "not available here" facts worth showing as such). **Never** the same code as 403 — a missing tab and a real outage must read differently to a support call. A client distinguishes the four by the `detail`/`code` string, not by status; an operator reads brain-api's log (`switchboard_upstream_error status=...`) before assuming a crash. (502 is no longer used by this route at all — kept out of this table on purpose.) |
+| 502 | `product_unreachable` / `product_error` | The product's leg is down, or answered something brain-api could not parse/trust. **Never** the same code as 403 — a missing tab and a real outage must read differently to a support call. **In production the browser never sees this JSON:** EasyPanel's gateway replaces any 502 the app sends with its own HTML "Service is not reachable" page (observed 2026-09-18/19; a 503 passes through intact) — a client must treat a non-JSON 502 as this row, and an operator must read brain-api's log (`switchboard_upstream_error status=...`) before assuming a crash |
+| 503 | `product_channel_unconfigured` / `product_temporarily_unavailable` | brain-api itself has no base URL/key for that product (operator fact), or the product answered its **own** 503 (passed through, because PreCheck's `stage_unsupported_on_channel`/`clinic_flow_not_configured` are real "not available here" facts worth showing as such) |
 
 ### 8.2 brain-api ↔ secretarIA (`/internal/brain-message/*`)
 
@@ -645,7 +646,7 @@ contracts: `secretarIA/docs/CHECKPOINT_brain_message_status_entrega.md` §4 (pro
   exactly one of `{"up_to_message_id": "<uuid>"}` or `{"up_to": "<ISO 8601 with offset>"}` —
   the same names as secretarIA's models, `extra="forbid"`. A body naming `tenant_id`,
   `external_id` or anything else is a **422** and nothing is relayed; so is a missing, double or
-  naive cursor (checked here so it never becomes an upstream 422 → `product_error` 503).
+  naive cursor (checked here so it never becomes an upstream 422 → `product_error` 502).
   `tenant_id` + `external_id` upstream are the SESSION's. Answers `RelayOut` whose `payload` is
   secretarIA's `{"marked", "applied"}`. On `precheck` it answers `{"marked": 0, "applied": false}`
   with no network call, so the portal may mark every thread it shows. No limiter of its own
@@ -775,11 +776,3 @@ e-mail address, a cookie, or a JWT from this channel.
   real accounts). §10 drops the "not yet a delivery/read-receipt system" bullet — it shipped. A
   same-day owner follow-up (read-tick contrast, fixed interactive-bubble width) is noted in §8.5 as
   built but still uncommitted — update this section again once that lands.
-- **2026-09-19** — `Z_QUESTÕES _PENDENTES.md` item 4 (fixing the gap §8.1/§10 had left open):
-  `product_unreachable`/`product_error` in `message_switchboard.py` now answer 503, not 502 — the
-  status EasyPanel's gateway had been swapping for its own HTML page on every route. §8.1's table
-  updated to show all four "product unavailable" codes under 503; no client-visible `code`/`message`
-  changed, only the HTTP status. Built, uncommitted, not deployed; the 3 frontends already treat 502
-  and 503 the same way where checked (`Brain-Message-Frontend/lib/attachments.ts`,
-  `components/portal/PortalConversation.tsx`), so no frontend change was needed — see
-  `CHECKPOINT_brain_message_anexos.md` §10.6.

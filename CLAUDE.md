@@ -228,17 +228,12 @@ dia ao mudar este lado do contrato.
   tarefa de código — é deploy + validação, com autorização do dono em cada etapa. **NÃO
   EXECUTADO.**
 - `z_prompts/PROMPT_502_EASYPANEL_HTML_CONTRATO_3_FRONTENDS.md` (raiz de BRAIN, gerado 2026-09-19
-  via `/prompt-generator`, aparentemente por outra sessão em paralelo — gerado no mesmo minuto em
-  que este item foi implementado direto numa sessão diferente, sem coordenação entre as duas) —
-  fecha o achado do §10.6 acima: todo `502` de `product_error`/`product_unreachable`
-  (`message_switchboard.py::_call`) chega ao navegador como a página HTML do EasyPanel, não como
-  JSON (503 na mesma rota passa intacto, provado em produção). **Este prompt NÃO precisa mais ser
-  executado — o mesmo problema já foi resolvido diretamente em 2026-09-19** (as 4 respostas viraram
-  503, os 3 frontends conferidos, nenhum precisou mudar): ver `docs/CHECKPOINT_brain_message_anexos.md`
-  §10.6 para a correção real, com provas. Mantido aqui só como referência histórica de que dois
-  caminhos chegaram ao mesmo achado de forma independente.
+  via `/prompt-generator`) — fecha o achado do §10.6 acima: todo `502` de
+  `product_error`/`product_unreachable` (`message_switchboard.py::_call`) chega ao navegador como
+  a página HTML do EasyPanel, não como JSON. Muda o contrato dos 3 frontends — releia o prompt
+  antes de executar. **NÃO EXECUTADO.**
 - `z_prompts/PROMPT_POLL_THREAD_MESSAGES_DB_SESSION_LEAK.md` (raiz de BRAIN, gerado 2026-09-19 via
-  `/prompt-generator`, mesma situação do item acima — outra sessão, mesmo minuto) — `poll_thread_messages`
+  `/prompt-generator`) — `poll_thread_messages`
   (`api/patient_access.py:1192`, a rota GET mais chamada) ainda não fechava a sessão do banco
   (`await session.close()`) antes da chamada de rede ao switchboard, ao contrário de
   `send_thread_message` (linha 1159) e `mark_thread_read` (linha 1264), que já seguiam esse padrão.

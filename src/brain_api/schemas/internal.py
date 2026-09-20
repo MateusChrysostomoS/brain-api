@@ -117,12 +117,13 @@ class PrecheckHandoffIn(BaseModel):
     value that cannot be one could never resolve to a patient. Registered as a deviation in
     `tasks/TASK-003/results/brain-api.md`.
 
-    > **The `external_id` leg does not reach PreCheck today — it is a validated 501.** See
-    > `api/internal.py::precheck_handoff` for why (PreCheck's own contract is keyed on a phone
-    > number and this task may not change that repo).
+    > **The `external_id` leg reaches PreCheck through a DIFFERENT route** —
+    > `/internal/brain-message/open`, not `/internal/precheck-handoff`, which is keyed on a
+    > phone number. See CONTRACTS.md §12.3.2 (TASK-004) for why the inbound route was not it.
 
     `patient_name`/`booked_service` are OPTIONAL booking context (FEAT 38) forwarded
-    verbatim to PreCheck; they do not participate in any gate here."""
+    verbatim to PreCheck; they do not participate in any gate here. `booked_service` rides
+    only the `phone_number` leg — PreCheck's opening route does not declare it."""
 
     model_config = ConfigDict(extra="forbid")
 

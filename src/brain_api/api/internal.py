@@ -57,7 +57,7 @@ from brain_api.schemas.internal import (
 )
 from brain_api.services import onboarding_sync, patient_access, secretaria_provisioning
 from brain_api.services.entitlements import ACTIVE_STATUSES, resolve_entitlement
-from brain_api.services.precheck_handoff import request_handoff
+from brain_api.services.precheck_handoff import request_handoff, request_portal_handoff
 from brain_api.services.usage import record_usage
 
 logger = get_logger(__name__)
@@ -265,10 +265,6 @@ async def create_usage_event(
         },
         404: {"description": "No PreCheck clinic mapped to this tenant."},
         409: {"description": "Patient already has a conflicting active PreCheck session."},
-        501: {
-            "description": "`external_id` (a Portal patient) — PreCheck exposes no way to "
-            "open a session for a patient without a phone number. Permanent, never retry."
-        },
         502: {
             "description": "PreCheck upstream error / network failure "
             "(generic detail, never the upstream body)."
@@ -293,31 +289,23 @@ async def precheck_handoff(
     response 1:1 (see that module's docstring for the full status matrix). No DB write
     on this path; nothing is cached or retried here.
 
-    ### The `external_id` leg is a validated `501`, and that is a decision
+    ### The `external_id` leg (a Portal patient) — no longer a `501`
 
     TASK-003 §5.1 asked for a Portal patient (`wa_id IS NULL`, so no phone number) to be
-    handed off by `external_id`. The body shape is implemented and validated here; the
-    upstream call is **not**, because no version of it is both honest and permitted:
+    handed off by `external_id`, and stopped at a deliberate `501`: PreCheck's
+    `/internal/precheck-handoff` requires `phone_number` (`^\\d{8,15}$`), and the only
+    route that takes a `session_ref` was `/internal/brain-message/inbound` — the *inbound*
+    route, whose empty-`text` behaviour that task could not read the PreCheck repo to
+    verify. TASK-004 read it, and the answer is that `inbound` is safe ONLY at `INIT`:
+    past it, an empty text reaches PreCheck's `_turn()` and can save an answer the patient
+    never gave. So the fix was not to reuse `inbound` — it was
+    `POST {PRECHECK}/internal/brain-message/open`, which never calls the questionnaire
+    agent, never writes a patient line, and writes nothing at all on a session that has
+    already started. `services/precheck_handoff.request_portal_handoff` is that leg; the
+    `501` is gone and unreachable from any valid body.
 
-    * `POST {PRECHECK}/internal/precheck-handoff` — the only PreCheck route that pre-seeds a
-      session — **requires** `phone_number` matching `^\\d{8,15}$` (verified 2026-09-19 against
-      the live service's own `openapi.json`: `PrecheckHandoffRequest.required =
-      ["brain_tenant_id", "phone_number"]`). There is no `session_ref`/`external_id`
-      alternative. Synthesising digits would key a clinical session to a phone number that
-      belongs to somebody — the WhatsApp side of PreCheck is production-critical and, per the
-      memory `feedback-precheck-whatsapp-producao-intocavel`, untouchable.
-    * `POST {PRECHECK}/internal/brain-message/inbound` DOES take `session_ref`, and its `text`
-      is nullable — but it is the *inbound* route. Calling it asserts the patient wrote
-      something. Whether a null `text` records an `inbound` message or is scored as an empty
-      ANSWER to the open question is PreCheck's business, and this task may not read or change
-      that repo to find out. TASK-003 forbids fabricating a patient bubble outright.
-
-    So the leg stops at the boundary of this service with a **permanent** refusal
-    (`brain-mesh-permanent-vs-transient-refusal`): `501`, never `503`, so secretarIA records a
-    handoff that will not happen instead of retrying forever. `422` would have been worse
-    still — it reads as a broken contract and would make a healthy mesh look misdeployed
-    (`frozen-contract-migration`). What is missing, and where, is written up in
-    `tasks/TASK-003/results/brain-api.md`.
+    Both legs answer with the same two words (`seeded` / `already_active`) and the same
+    status matrix, so secretarIA branches once, not per channel.
     """
     ent = await resolve_entitlement(session, payload.tenant_id)
     entitled = ent.status in ACTIVE_STATUSES and ent.products.precheck
@@ -331,11 +319,16 @@ async def precheck_handoff(
 
     phone_number = payload.phone_number
     if phone_number is None:
-        # A PORTAL patient (`external_id`). STOPPED HERE ON PURPOSE, not unimplemented by
-        # accident — see the route docstring. Nothing upstream is called: there is no request
-        # to make that would be both true and safe.
-        logger.info("precheck_handoff_portal_unsupported", tenant_id=str(payload.tenant_id))
-        raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "precheck_portal_handoff_unsupported")
+        # A PORTAL patient (`external_id`), handed off by handle rather than by phone —
+        # see the route docstring for why this is a different upstream route and not the
+        # same one with a different field. `booked_service` is not forwarded on this leg
+        # (PreCheck's opening route does not declare it, and its model is `extra="forbid"`).
+        result = await request_portal_handoff(
+            payload.tenant_id,
+            str(payload.external_id),
+            patient_name=payload.patient_name,
+        )
+        return PrecheckHandoffOut(status=result["status"])
 
     # Context fields pass straight through — no gate of their own: "may this clinic
     # receive PreCheck" stays purely ent.status/ent.products.precheck, checked above.

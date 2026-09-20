@@ -501,52 +501,143 @@ async def test_context_never_reaches_a_log_line(client, monkeypatch):
     assert SERVICE not in repr(logged)
 
 
-# --- TASK-003 §5.1: `external_id` (a Portal patient) — accepted, validated, and REFUSED ----
+# --- TASK-004: `external_id` (a Portal patient) — the leg that TASK-003 stopped at 501 -----
 #
-# A Portal patient has `wa_id IS NULL` by design, so `phone_number` can never name them. The
-# body now takes `external_id` INSTEAD — exactly one of the two, never both — and the leg
-# stops at a deliberate `501`, because PreCheck's own `/internal/precheck-handoff` requires a
-# phone number (verified against its live `openapi.json`) and this task may not change that
-# repo. These tests pin the refusal so it cannot quietly become a fabricated phone number or a
-# fabricated patient message later; see `api/internal.py::precheck_handoff`.
+# A Portal patient has `wa_id IS NULL` by design, so `phone_number` can never name them.
+# TASK-003 accepted `external_id` in the body and then refused with 501: PreCheck's
+# `/internal/precheck-handoff` requires a phone number, and the only route that takes a
+# `session_ref` was the INBOUND one, whose empty-text behaviour that task could not verify.
+# TASK-004 verified it — inbound is safe only at `INIT` — and PreCheck grew
+# `POST /internal/brain-message/open`, which opens or no-ops and never calls its agent.
+# These tests pin the new leg AND the thing the 501 was protecting: this route must never
+# reach `/brain-message/inbound`, and must never send a `text`.
 
-PORTAL_REFUSAL = "precheck_portal_handoff_unsupported"
+OPEN_PATH = "/internal/brain-message/open"
+INBOUND_PATH = "/internal/brain-message/inbound"
 
 
 def _body_portal(tenant_id: str, external_id: str | None = None) -> dict:
     return {"tenant_id": tenant_id, "external_id": external_id or str(uuid4())}
 
 
-async def test_handoff_external_id_is_501_and_calls_nothing_upstream(client, monkeypatch):
-    """The stop point, and the thing that must stay true about it: NO upstream request.
+async def test_handoff_external_id_opens_the_precheck_session(client, monkeypatch):
+    """The symptom the owner reported: a brand-new Portal patient books, and the
+    questionnaire is waiting for them — introduction included — without them writing."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    captured = _install_fake_httpx(
+        monkeypatch, response=_FakeResponse(200, {"status": "awaiting_consent"})
+    )
+    handle = str(uuid4())
 
-    A 501 that had already poked PreCheck would mean the refusal is cosmetic.
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json=_body_portal(tenant_a_id, handle),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"status": "seeded"}
+    assert captured["path"] == OPEN_PATH
+    assert captured["json"] == {"tenant_id": tenant_a_id, "session_ref": handle}
+
+
+async def test_handoff_external_id_never_calls_the_inbound_route(client, monkeypatch):
+    """The invariant TASK-003 stopped at 501 to protect, now enforced instead of avoided.
+
+    `/internal/brain-message/inbound` asserts the patient wrote something; past `INIT` an
+    empty text reaches PreCheck's `_turn()` and can save an answer nobody gave. This leg
+    must therefore never touch that path, and must never send a `text` field at all.
     """
     _set_pair_key(monkeypatch)
     tenant_a_id = await _entitled_tenant(client)
-    captured = _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {"status": "seeded"}))
+    captured = _install_fake_httpx(
+        monkeypatch, response=_FakeResponse(200, {"status": "awaiting_consent"})
+    )
 
-    resp = await client.post(
+    await client.post(
         ROUTE, headers={"X-Internal-Api-Key": "pair-key"}, json=_body_portal(tenant_a_id)
     )
-    assert resp.status_code == 501, resp.text
-    assert resp.json()["detail"] == PORTAL_REFUSAL
-    assert "path" not in captured, "the refusal must happen before any PreCheck call"
+    assert captured["path"] != INBOUND_PATH
+    assert "text" not in captured["json"]
 
 
-async def test_handoff_external_id_refusal_is_permanent_not_503(client, monkeypatch):
-    """501, never 503. secretarIA distinguishes a permanent refusal from a transient outage
-    (`brain-mesh-permanent-vs-transient-refusal`); a 503 here would have it retry a handoff
-    that can never succeed, forever. A 422 would be worse still — it reads as a broken
-    contract and makes a healthy mesh look misdeployed."""
+async def test_handoff_external_id_on_a_session_already_open_is_already_active(
+    client, monkeypatch
+):
+    """PreCheck's `exists` — the patient opened the pre-consult tab before booking — is the
+    `already_active` this contract already had a word for. secretarIA still invites them."""
     _set_pair_key(monkeypatch)
     tenant_a_id = await _entitled_tenant(client)
-    _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {"status": "seeded"}))
+    _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {"status": "exists"}))
 
     resp = await client.post(
         ROUTE, headers={"X-Internal-Api-Key": "pair-key"}, json=_body_portal(tenant_a_id)
     )
-    assert resp.status_code == 501
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"status": "already_active"}
+
+
+async def test_handoff_external_id_unknown_upstream_status_is_502(client, monkeypatch):
+    """A 200 whose `status` is neither known word is a broken contract, not a guess."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {"status": "who_knows"}))
+
+    resp = await client.post(
+        ROUTE, headers={"X-Internal-Api-Key": "pair-key"}, json=_body_portal(tenant_a_id)
+    )
+    assert resp.status_code == 502, resp.text
+
+
+@pytest.mark.parametrize(
+    "upstream, expected", [(404, 404), (503, 503), (422, 502), (500, 502)]
+)
+async def test_handoff_external_id_maps_upstream_like_the_whatsapp_leg(
+    client, monkeypatch, upstream: int, expected: int
+):
+    """One status matrix for both channels, so secretarIA branches once."""
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    _install_fake_httpx(monkeypatch, response=_FakeResponse(upstream, {}))
+
+    resp = await client.post(
+        ROUTE, headers={"X-Internal-Api-Key": "pair-key"}, json=_body_portal(tenant_a_id)
+    )
+    assert resp.status_code == expected, resp.text
+
+
+async def test_501_is_unreachable_from_every_valid_body(client, monkeypatch):
+    """The refusal TASK-003 documented is gone, not merely bypassed in the happy path.
+
+    Every body the contract accepts — either handle, with and without context — crossed
+    with every upstream outcome the mesh can produce. None may answer 501 any more.
+    """
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    # The 200 bodies differ per leg because the two upstream routes speak different
+    # vocabularies — that is exactly what `request_portal_handoff` translates.
+    portal_ok = [{"status": "awaiting_consent"}, {"status": "exists"}]
+    whatsapp_ok = [{"status": "seeded"}, {"status": "already_active"}]
+    failures = [(404, {}), (409, {}), (503, {}), (500, {})]
+    cases = [
+        (_body_portal(tenant_a_id), portal_ok),
+        (
+            {**_body_portal(tenant_a_id), "patient_name": NAME, "booked_service": SERVICE},
+            portal_ok,
+        ),
+        ({"tenant_id": tenant_a_id, "phone_number": None, "external_id": str(uuid4())}, portal_ok),
+        ({"tenant_id": tenant_a_id, "phone_number": PHONE}, whatsapp_ok),
+        ({"tenant_id": tenant_a_id, "phone_number": PHONE, "patient_name": NAME}, whatsapp_ok),
+    ]
+    for body, ok_bodies in cases:
+        outcomes = [_FakeResponse(200, ok) for ok in ok_bodies]
+        outcomes += [_FakeResponse(code, payload) for code, payload in failures]
+        for outcome in outcomes:
+            _install_fake_httpx(monkeypatch, response=outcome)
+            resp = await client.post(
+                ROUTE, headers={"X-Internal-Api-Key": "pair-key"}, json=body
+            )
+            assert resp.status_code != 501, (body, outcome.status_code, resp.text)
 
 
 async def test_handoff_external_id_still_passes_the_entitlement_gate_first(client, monkeypatch):
@@ -567,19 +658,27 @@ async def test_handoff_external_id_still_passes_the_entitlement_gate_first(clien
     assert resp.json()["detail"] == "precheck_not_entitled"
 
 
-async def test_handoff_external_id_forwards_no_context_either(client, monkeypatch):
-    """Booking context alongside `external_id` validates but still reaches nothing."""
+async def test_handoff_external_id_forwards_the_name_but_not_the_service(client, monkeypatch):
+    """`patient_name` rides along (FEAT 40 skips asking it twice); `booked_service` does NOT.
+
+    PreCheck's opening route does not declare `booked_service` and its request model is
+    `extra="forbid"`, so sending it would be a 422 from a service that is working
+    perfectly (`frozen-contract-migration`). The WhatsApp leg still sends both.
+    """
     _set_pair_key(monkeypatch)
     tenant_a_id = await _entitled_tenant(client)
-    captured = _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {"status": "seeded"}))
+    captured = _install_fake_httpx(
+        monkeypatch, response=_FakeResponse(200, {"status": "awaiting_consent"})
+    )
 
     resp = await client.post(
         ROUTE,
         headers={"X-Internal-Api-Key": "pair-key"},
         json={**_body_portal(tenant_a_id), "patient_name": NAME, "booked_service": SERVICE},
     )
-    assert resp.status_code == 501
-    assert "path" not in captured
+    assert resp.status_code == 200, resp.text
+    assert captured["json"]["patient_name"] == NAME
+    assert "booked_service" not in captured["json"]
 
 
 # --- The XOR itself ----------------------------------------------------------------------
@@ -648,17 +747,20 @@ async def test_handoff_explicit_nulls_do_not_smuggle_a_missing_handle(
 
 async def test_handoff_explicit_null_phone_with_external_id_is_accepted(client, monkeypatch):
     """`{"phone_number": null, "external_id": "..."}` is exactly one handle, so it validates
-    and reaches the documented 501 — not a 422. A caller that spells absence explicitly must
-    not be punished for it."""
+    and takes the Portal leg — not a 422. A caller that spells absence explicitly must not
+    be punished for it."""
     _set_pair_key(monkeypatch)
     tenant_a_id = await _entitled_tenant(client)
+    _install_fake_httpx(
+        monkeypatch, response=_FakeResponse(200, {"status": "awaiting_consent"})
+    )
 
     resp = await client.post(
         ROUTE,
         headers={"X-Internal-Api-Key": "pair-key"},
         json={"tenant_id": tenant_a_id, "phone_number": None, "external_id": str(uuid4())},
     )
-    assert resp.status_code == 501, resp.text
+    assert resp.status_code == 200, resp.text
 
 
 @pytest.mark.parametrize("bad", ["", "not-a-uuid", "12345", "  "])

@@ -220,9 +220,31 @@ class PendingEmailClaimOut(BaseModel):
     handle, wrong clinic, expired, already verified — is a 404 with ONE detail for every
     reason: secretarIA must not be able to tell them apart, and there is nothing it could do
     differently if it could.
+
+    `account_exists`/`email_masked` (2026-09-21) say whether the address just claimed is
+    already an account's, so secretarIA can ask the right next question: a name for somebody
+    new, the six-digit code for somebody returning. `email_masked` is `core/email_mask.py`'s
+    form of that SAME address — first character, `***`, last character, whole domain — and
+    is present only alongside `account_exists=True`; the raw value never crosses this
+    boundary, here or anywhere else in this file.
+
+    ADDITIVE AND SAFE IN EITHER DEPLOY ORDER, like `PendingOtpRequestOut.email_masked` below:
+    both fields carry a default, and today's consumer reads the STATUS CODE only and never
+    parses this body (`secretarIA/services/pending_identity.py::claim_email`). A secretarIA
+    older than this service therefore keeps working unchanged, and a newer one reads the
+    fields best-effort — their absence is an older brain-api, not an error.
+
+    WHY `account_exists` IS NOT AN ENUMERATION LEAK WORTH REFUSING (owner's decision,
+    2026-09-20): this is the SERVICE leg, reachable only with `X-Internal-Api-Key`, and the
+    one bit it adds is about an address the visitor typed themselves. The mask describes that
+    same typed address, so it tells its owner nothing they did not just write. That the
+    product then says "your e-mail is already with us" in the chat is the owner's explicit
+    decision, recorded in `docs/CHECKPOINT_portal_email_ja_cadastrado.md`.
     """
 
     status: Literal["claimed"]
+    account_exists: bool = False
+    email_masked: str | None = None
 
 
 class PendingIdentityIn(BaseModel):

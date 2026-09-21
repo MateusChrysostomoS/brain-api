@@ -369,15 +369,28 @@ async def claim_pending_email(
     `tenant_id` and `external_id` must BOTH match the visit, so a clinic's key cannot move an
     address onto another clinic's conversation.
     """
-    pending = await patient_access.claim_pending_email(
+    claim = await patient_access.claim_pending_email(
         session, payload.tenant_id, payload.external_id, payload.email
     )
-    if pending is None:
+    if claim is None:
         logger.info("pending_email_claim_not_found", tenant_id=str(payload.tenant_id))
         raise HTTPException(status.HTTP_404_NOT_FOUND, "pending_session_not_found")
     # The clinic only — never the address, never the handle (see the module's PII note).
-    logger.info("pending_email_claimed", tenant_id=str(payload.tenant_id))
-    return PendingEmailClaimOut(status="claimed")
+    # `account_exists` names no inbox, so it may ride along; the mask may not be logged.
+    logger.info(
+        "pending_email_claimed",
+        tenant_id=str(payload.tenant_id),
+        account_exists=claim.account_exists,
+    )
+    # Both extra fields come STRAIGHT FROM THE SERVICE: the mask is built next to the address
+    # it describes (`patient_access.PendingEmailClaim`) precisely so this layer never holds a
+    # raw one to mask. `email_masked` is `None` unless an account was found — there is no
+    # inbox to help anybody recognise when nobody is being asked to log back in.
+    return PendingEmailClaimOut(
+        status="claimed",
+        account_exists=claim.account_exists,
+        email_masked=claim.email_masked,
+    )
 
 
 @router.post(

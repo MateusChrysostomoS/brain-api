@@ -1,5 +1,10 @@
 # CHECKPOINT — portal do paciente: login só por e-mail + clínica entra por convite (2026-09-15)
 
+> **Ponteiro 2026-09-21**: a detecção de "e-mail já cadastrado" na abertura do Portal
+> (`CHECKPOINT_portal_email_ja_cadastrado.md`) LÊ a existência de uma conta sem vincular
+> nada — mas expõe um fato de PLATAFORMA dentro do chat de UMA clínica. A tensão com o
+> vínculo por convite deste documento está registrada no §4 de lá, em aberto para o dono.
+
 Origem: `TECH/BRAIN/z_prompts/PROMPT_BRAIN_MESSAGE_PORTAL_CLINICAS_BACKEND.md` (decisões fechadas com o
 dono em 2026-09-14). Irmão, a rodar DEPOIS do deploy deste: `PROMPT_BRAIN_MESSAGE_PORTAL_CLINICAS_FRONTEND.md`
 (Brain-Message-Frontend), que lê o contrato do §4.

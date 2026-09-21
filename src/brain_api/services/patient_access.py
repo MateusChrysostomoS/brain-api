@@ -45,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from brain_api.config import get_settings
+from brain_api.core.email_mask import mask_email
 from brain_api.core.invite_codes import parse_invite
 from brain_api.core.logging import get_logger
 from brain_api.core.security import generate_refresh_token, hash_refresh_token
@@ -794,9 +795,32 @@ async def find_pending_identity(
     return row
 
 
+@dataclass(frozen=True)
+class PendingEmailClaim:
+    """What `claim_pending_email` hands back: the visit, plus whether it is a RETURN.
+
+    `account_exists` is the whole reason this dataclass exists (2026-09-21). The address a
+    visitor types in the chat is either new to the platform or already an account's, and
+    secretarIA has to ask a different next question in each case: a name for a newcomer, the
+    six-digit code for somebody we already know. It could not tell them apart before, because
+    the claim answered only "recorded".
+
+    `email_masked` is `mask_email` of that same address, and ONLY when `account_exists` is
+    true — there is nothing to recognise when no account is being claimed back. The mask is
+    computed HERE, not by the route, so no layer above this one ever holds the raw address
+    (`core/email_mask.py`, and the module PII note below). It is the same value the later
+    `PendingOtpRequestOut.email_masked` will carry for this visit, by construction: both mask
+    the normalized address, so the patient cannot be shown two different masks of one inbox.
+    """
+
+    pending: MessagePendingSession
+    account_exists: bool
+    email_masked: str | None
+
+
 async def claim_pending_email(
     session: AsyncSession, tenant_id: UUID, patient_ref: UUID, email: str
-) -> MessagePendingSession | None:
+) -> PendingEmailClaim | None:
     """Write the address the patient TYPED IN THE CHAT onto their visit. Commits.
 
     Called service-to-service by secretarIA (`POST /internal/brain-message/pending-email`),
@@ -808,6 +832,10 @@ async def claim_pending_email(
 
     `None` for a visit that is unknown, dead, or whose clinic/handle disagree with the caller's
     — one answer for every reason, like every refusal in this module.
+
+    On success it hands back a `PendingEmailClaim`, not the row: since 2026-09-21 the
+    caller also needs to know whether the address is ALREADY an account's, because that
+    is what decides secretarIA's next question.
     """
     now = datetime.now(UTC)
     row = await session.scalar(
@@ -818,12 +846,39 @@ async def claim_pending_email(
     )
     if row is None or not _pending_is_live(row, now):
         return None
-    row.email = normalize_email(email)
+    address = normalize_email(email)
+    # Asked BEFORE the write, inside the transaction the claim commits, so the answer and the
+    # claim describe ONE snapshot — a caller can never be told "new address" by a read that
+    # happened in a different transaction from the write it is about. The account is only
+    # READ: nothing here creates, adopts or links one (`_ensure_account`/`_adopt` stay where
+    # they are, behind a proven code). Same query shape as `_row_account`'s non-adopting leg,
+    # narrowed to the key — existence is the whole question, and pulling the entity would put
+    # an account this request never uses into the identity map.
+    account_exists = (
+        await session.scalar(
+            select(MessagePatientAccount.id).where(MessagePatientAccount.email == address)
+        )
+    ) is not None
+    # The address is claimed either way. It is the same visit capturing the same inbox, and
+    # the visit's `email` is what `issue_pending_otp` reads to mail the code — skipping the
+    # write for a known account would break the code for exactly the returning patients this
+    # branch exists to serve. What an existing account changes is the NEXT QUESTION secretarIA
+    # asks, nothing about the claim itself (`docs/CHECKPOINT_portal_email_ja_cadastrado.md`).
+    row.email = address
     row.claimed_at = now
     await session.commit()
-    # The clinic and the fact, never the address.
-    logger.info("patient_pending_email_claimed", tenant_id=str(tenant_id))
-    return row
+    # The clinic and the facts, never the address. `account_exists` is a boolean about a
+    # clinic, not about a person: it names no inbox and identifies nobody.
+    logger.info(
+        "patient_pending_email_claimed",
+        tenant_id=str(tenant_id),
+        account_exists=account_exists,
+    )
+    return PendingEmailClaim(
+        pending=row,
+        account_exists=account_exists,
+        email_masked=mask_email(address) if account_exists else None,
+    )
 
 
 async def issue_pending_otp(

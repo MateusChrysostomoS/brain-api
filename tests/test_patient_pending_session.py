@@ -360,7 +360,13 @@ async def test_the_handle_is_the_same_id_from_the_first_message_to_the_code(pcli
 
     claimed = await _claim(client, monkeypatch, seed.both, handle)
     assert claimed.status_code == 200, claimed.text
-    assert claimed.json() == {"status": "claimed"}
+    # An address nobody has an account for yet, so both 2026-09-21 fields sit at their
+    # defaults here; the branch that fills them has its own tests at the end of this file.
+    assert claimed.json() == {
+        "status": "claimed",
+        "account_exists": False,
+        "email_masked": None,
+    }
 
     verified = await _prove(client, sessionmaker, opened["pending_token"])
     assert verified.status_code == 200, verified.text
@@ -967,3 +973,102 @@ async def test_a_visit_with_no_address_still_409s_rather_than_masking_nothing(
     resp = await _request_code_internally(client, monkeypatch, seed.both, handle)
     assert resp.status_code == 409
     assert resp.json()["detail"] == "pending_email_missing"
+
+
+# --- The address that already belongs to an account (2026-09-21) --------------------------
+#
+# The owner's ask: a visitor who types an address the platform already knows must be told so
+# and sent straight to the code — "seu e-mail ja esta no nosso sistema, digite o codigo que
+# mandamos para p***e@exemplo.com" — instead of being asked their name like a newcomer. The
+# claim could not tell the two apart before, so secretarIA had no way to choose the question.
+
+
+async def test_a_first_time_address_is_claimed_without_naming_an_account(pclient, monkeypatch):
+    """Today's answer, unchanged. Nobody is being recognised, so there is nothing to describe,
+    and the mask is `None` rather than `***`: absent, not redacted."""
+    client, sessionmaker, seed = pclient
+    handle = (await _open(client, sessionmaker, seed.both)).json()["patient_ref"]
+
+    resp = await _claim(client, monkeypatch, seed.both, handle)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"status": "claimed", "account_exists": False, "email_masked": None}
+
+
+async def test_an_address_that_already_has_an_account_comes_back_masked(pclient, monkeypatch):
+    """The branch the owner asked for, on the route secretarIA actually calls."""
+    client, sessionmaker, seed = pclient
+    async with sessionmaker() as session:
+        await patient_access.open_account(session, PATIENT_EMAIL)
+    handle = (await _open(client, sessionmaker, seed.both)).json()["patient_ref"]
+
+    resp = await _claim(client, monkeypatch, seed.both, handle)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "status": "claimed",
+        "account_exists": True,
+        "email_masked": "p***e@exemplo.com",
+    }
+
+    # ONE inbox, ONE spelling: the notice that asks for the code must not show a second mask
+    # of the same address. Both sides mask the normalized value, and this proves it stays so.
+    asked = await _request_code_internally(client, monkeypatch, seed.both, handle)
+    assert asked.json()["email_masked"] == resp.json()["email_masked"]
+
+
+async def test_a_known_address_is_still_claimed_and_no_account_is_created_or_linked(
+    pclient, monkeypatch
+):
+    """Detection READS. The visit records the address exactly as before — `issue_pending_otp`
+    mails the code off `pending.email`, so a branch that skipped the write would break the code
+    for precisely the returning patients it exists to serve — and no second account appears:
+    an account is still only ever opened behind a proven code."""
+    client, sessionmaker, seed = pclient
+    async with sessionmaker() as session:
+        await patient_access.open_account(session, PATIENT_EMAIL)
+    handle = (await _open(client, sessionmaker, seed.both)).json()["patient_ref"]
+
+    assert (await _claim(client, monkeypatch, seed.both, handle)).status_code == 200
+
+    async with sessionmaker() as session:
+        visit = await session.scalar(select(MessagePendingSession))
+    assert visit.email == PATIENT_EMAIL
+    assert visit.claimed_at is not None
+    assert await _count(sessionmaker, MessagePatientAccount) == 1
+
+
+async def test_the_claim_leaks_neither_the_raw_address_nor_the_mask_into_a_log(
+    pclient, monkeypatch
+):
+    """The property, not the shape, on the claim route — same technique as the OTP route's
+    twin above (structlog bypasses stdlib logging, so record the CALLS).
+
+    `account_exists` is allowed in a log line: it names a clinic's fact, not an inbox. The
+    mask is not — a log is nobody's notice, and two characters plus a domain is more than
+    `tenant_id` needs to be useful.
+    """
+    from brain_api.api import internal as internal_api
+
+    client, sessionmaker, seed = pclient
+    async with sessionmaker() as session:
+        await patient_access.open_account(session, PATIENT_EMAIL)
+    handle = (await _open(client, sessionmaker, seed.both)).json()["patient_ref"]
+
+    logged: list[tuple] = []
+
+    def _record(*args: object, **kwargs: object) -> None:
+        logged.append((args, kwargs))
+
+    for level in ("debug", "info", "warning", "error"):
+        monkeypatch.setattr(internal_api.logger, level, _record, raising=False)
+
+    resp = await _claim(client, monkeypatch, seed.both, handle)
+    assert resp.status_code == 200, resp.text
+
+    assert PATIENT_EMAIL not in resp.text
+    # Nor the local part on its own — the half that identifies a person.
+    assert PATIENT_EMAIL.split("@")[0] not in resp.text
+
+    # Non-vacuous: this path really did log before we assert on what is absent.
+    assert any("pending_email_claimed" in repr(c) for c in logged), logged
+    assert PATIENT_EMAIL not in repr(logged)
+    assert "p***e" not in repr(logged)

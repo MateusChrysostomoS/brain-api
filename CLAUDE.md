@@ -152,6 +152,14 @@ dia ao mudar este lado do contrato.
   `POST /pending/complete` uma única vez (a segunda chamada devolve `401`), com `patient_ref`
   preservado e a visita sobrevivendo a F5 via cookie `__Host-`. O contrato deste repo não mudou;
   o defeito corrigido estava na secretarIA. Ver `docs/CHECKPOINT_portal_sessao_pendente.md` §12.
+- `z_prompts/PROMPT_BRAIN_MESSAGE_ABERTURA_EMAIL_NOME_1_BRAIN_API.md` (raiz de BRAIN, gerado
+  2026-09-20 via `/prompt-generator`, parte 1/2 — parte 2 é `..._2_SECRETARIA.md` na secretarIA) —
+  item 2 da Prioridade 1 de `PLANO_PORTAL_COMO_WHATSAPP.md`: `services/patient_access.py::claim_pending_email`
+  (linha 797) passa a detectar se o e-mail digitado já pertence a uma `MessagePatientAccount`
+  existente e, quando sim, devolver o endereço mascarado via `core/email_mask.py::mask_email`
+  (mesmo padrão que `RequestCodeResult.email_masked` já usa) — para a secretarIA pular a pergunta
+  de nome estilizada e pedir o código direto. Só Portal (`brain_message`); WhatsApp não toca este
+  repo. **NÃO EXECUTADO ainda.**
 - `z_prompts/PROMPT_BRAIN_MESSAGE_PRECHECK_PARIDADE_4_EXAMES_BRAIN_API.md` (raiz de BRAIN, gerado 2026-09-14;
   **Opus 5, esforço alto**) — parte 4 da série de paridade do PreCheck no Portal: `PatientMessageIn`
   (`extra="forbid"`) passa a aceitar anexo só no produto precheck, com validação de tipo real/tamanho antes de

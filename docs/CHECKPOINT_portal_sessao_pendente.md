@@ -435,6 +435,11 @@ autorização permanente para dado de teste em produção (`PROMPT_BRAIN_MESSAGE
 
 ## §12 — Emenda para OTP inline da secretarIA (onda 2, 2026-09-17)
 
+> **Emenda 2026-09-21**: a resposta de `POST /internal/brain-message/pending-email` ganhou
+> `account_exists`/`email_masked` (aditivos, com default) — o claim agora diz se o endereço
+> já é de uma conta. Contrato e tensões em `CHECKPOINT_portal_email_ja_cadastrado.md`.
+
+
 **Estado:** **COMMITADO (`main@3ee89b7`), DEPLOYADO E PROVADO EM PRODUÇÃO** (2026-09-17) — ver "Rollout comprovado" no fim desta seção. Esta seção amplia o contrato da onda
 1; não altera a evidência de produção da §11, que continua valendo somente para a revisão `0021`.
 

@@ -20,8 +20,8 @@
 | Peça | Arquivo |
 |---|---|
 | Saudação automática (cliente) | `src/brain_api/services/message_switchboard.py` — `open_conversation` (fire-and-forget, nunca levanta) + `default_product` |
-| Saudação automática (gatilhos) | `src/brain_api/api/patient_access.py` — `_greet_if_secretaria`, chamado de `open_pending` (só em visita CRIADA) e de `add_clinic_by_invite` |
-| Máscara de e-mail | `src/brain_api/core/email_mask.py` (**novo**, função pura) + `schemas/internal.py::PendingOtpRequestOut.email_masked` + `api/internal.py::request_pending_otp_internal` |
+| Saudação automática (gatilhos) | `src/brain_api/api/portal/patient_access.py` — `_greet_if_secretaria`, chamado de `open_pending` (só em visita CRIADA) e de `add_clinic_by_invite` |
+| Máscara de e-mail | `src/brain_api/core/email_mask.py` (**novo**, função pura) + `schemas/portal/internal.py::PendingOtpRequestOut.email_masked` + `api/portal/internal.py::request_pending_otp_internal` |
 | Handoff do Portal | `schemas/internal.py::PrecheckHandoffIn` (`external_id` XOR `phone_number`) + `api/internal.py::precheck_handoff` (ramo `501`) |
 | Testes | **+79**: `tests/test_email_mask.py` (**novo**, 33), `tests/test_portal_auto_greeting.py` (**novo**, 26), `tests/test_precheck_handoff.py` (35 → 51), `tests/test_patient_pending_session.py` (28 → 32, e 1 asserção de igualdade exata atualizada). Suíte: **717 → 796 passando, 0 falhando** nas duas pontas |
 | Contrato (doc) | `CONTRACTS.md` §12 (linha da tabela), §12.3 (dois handles), **§12.3.2** (nova); `docs/PORTAL_MESSAGING_API.md` **§8.6** e **§8.7** (novas) |
@@ -66,7 +66,7 @@
    possível. `Exception` e não `BaseException`, para um `CancelledError` de shutdown continuar
    propagando. Coberto por `test_a_malformed_base_url_never_fails_the_patients_route`.
 10. **`ruff format` rodado em 3 arquivos que JÁ eram "would reformat" no HEAD**
-   (`api/internal.py`, `api/patient_access.py`, `services/message_switchboard.py`). Isso
+   (`api/internal.py`, `api/portal/patient_access.py`, `services/message_switchboard.py`). Isso
    contraria a prática registrada em `CHECKPOINT_precheck_handoff_context.md` §4 de não
    reformatar código pré-existente — feito mesmo assim porque o custo real foram **3 hunks de
    uma linha cada** (uma string de `description`, um `return ThreadListOut(...)`, um

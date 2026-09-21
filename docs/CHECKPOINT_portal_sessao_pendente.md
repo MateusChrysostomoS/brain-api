@@ -57,7 +57,7 @@ PreCheck tem `session_ref` — não há conversa.
 **Por que tabela própria e não uma linha de `message_patient_sessions` com `account_id` nulo:**
 aquela forma **já significa outra coisa** — um login de antes do modelo de conta, cuja identidade
 entra na conta do endereço quando o cookie daquele login renova
-(`services/patient_access.py::_adopt`). Um visitante pendente não tem endereço para entrar em
+(`services/portal/patient_access.py::_adopt`). Um visitante pendente não tem endereço para entrar em
 nada. Juntar as duas na mesma tabela transformaria essa distinção em "leia três colunas
 anuláveis na ordem certa"; separadas, ela é estrutural e `_authenticate_patient` / `/refresh`
 nunca veem uma visita.
@@ -304,11 +304,11 @@ superfícies (pré-login, pendente, com conta) para que não volte por acidente.
 | `core/security.py` | `PATIENT_PENDING_TOKEN_SCOPE`, `create_patient_pending_token`, `decode_patient_pending_token` |
 | `core/cookies.py` | `PATIENT_PENDING_COOKIE_NAME` + set/clear/read |
 | `config.py` | `PATIENT_PENDING_EXPIRE_HOURS`, `PATIENT_PENDING_RATE_LIMIT_PER_MIN` |
-| `services/patient_access.py` | regra 5 nova no docstring; guarda de `email is None` em `_row_account`; `open_pending_session`, `_pending_is_live`, `find_pending_by_token`, `find_live_pending`, `claim_pending_email`, `adopt_pending_identity`, `close_pending_session` |
-| `schemas/patient_access.py` | `PublicProductsOut`, `ClinicLookupIn`, `ClinicPublicOut`, `PendingSessionIn`, `PendingSessionOut`, `PendingVerifyIn` |
-| `schemas/internal.py` | `PendingEmailClaimIn`, `PendingEmailClaimOut` |
-| `api/internal.py` | `POST /internal/brain-message/pending-email` |
-| `api/patient_access.py` | `_pending_limiter`, `_PENDING_EMAIL_MISSING`, `_authenticate_pending`, `get_thread_patient`, `get_current_pending`, `_public_products`, as 4 rotas do §5; as 3 rotas de thread passam a `get_thread_patient`; docstring do módulo reescrito para três tokens |
+| `services/portal/patient_access.py` | regra 5 nova no docstring; guarda de `email is None` em `_row_account`; `open_pending_session`, `_pending_is_live`, `find_pending_by_token`, `find_live_pending`, `claim_pending_email`, `adopt_pending_identity`, `close_pending_session` |
+| `schemas/portal/patient_access.py` | `PublicProductsOut`, `ClinicLookupIn`, `ClinicPublicOut`, `PendingSessionIn`, `PendingSessionOut`, `PendingVerifyIn` |
+| `schemas/portal/internal.py` | `PendingEmailClaimIn`, `PendingEmailClaimOut` |
+| `api/portal/internal.py` | `POST /internal/brain-message/pending-email` |
+| `api/portal/patient_access.py` | `_pending_limiter`, `_PENDING_EMAIL_MISSING`, `_authenticate_pending`, `get_thread_patient`, `get_current_pending`, `_public_products`, as 4 rotas do §5; as 3 rotas de thread passam a `get_thread_patient`; docstring do módulo reescrito para três tokens |
 | `tests/test_patient_pending_session.py` (novo) | 25 testes |
 | `tests/conftest.py` | zera o quinto balde (`PATIENT_PENDING_RATE_LIMIT_PER_MIN`) |
 | `docs/CHECKPOINT_portal_clinicas_convite.md` | corrigido: aquele prompt está **commitado** (`bc29f76`), não "UNCOMMITTED" |

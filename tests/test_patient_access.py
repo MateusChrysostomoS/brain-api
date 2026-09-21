@@ -61,7 +61,7 @@ from brain_api.models.patient_access import (
     MessagePatientSession,
     PatientConsentEvent,
 )
-from brain_api.services import patient_access
+from brain_api.services.portal import patient_access
 
 PATIENT_EMAIL = "paciente@exemplo.com"
 
@@ -446,7 +446,7 @@ async def test_request_otp_rate_limit_trips_per_ip(pclient, monkeypatch):
     convention `tests/test_signup.py` already follows: `conftest` disables these buckets
     globally so the rest of the suite can log in freely.
     """
-    from brain_api.api import patient_access as router_mod
+    from brain_api.api.portal import patient_access as router_mod
 
     client, sessionmaker, seed = pclient
     # Module-level limiters keep their buckets between tests: start from an empty
@@ -468,7 +468,7 @@ async def test_request_otp_rate_limit_trips_per_address(pclient, monkeypatch):
     The per-IP limiter is left wide open here on purpose — this is precisely the attack
     it cannot see, and the reason there are two buckets instead of one.
     """
-    from brain_api.api import patient_access as router_mod
+    from brain_api.api.portal import patient_access as router_mod
 
     client, sessionmaker, seed = pclient
     router_mod._ip_limiter._hits.clear()
@@ -1188,7 +1188,7 @@ async def test_confirm_body_must_name_the_same_clinic_and_nothing_else(pclient, 
 async def test_confirm_rate_limit_is_per_account_not_per_ip(pclient, monkeypatch):
     """Keyed by the authenticated address: a fresh X-Forwarded-For buys nothing, and
     another address keeps its own budget."""
-    from brain_api.api import patient_access as router_mod
+    from brain_api.api.portal import patient_access as router_mod
 
     client, sessionmaker, seed = pclient
     login, _ = await _two_clinic_account(client, sessionmaker, seed)
@@ -1209,7 +1209,7 @@ async def test_confirm_rate_limit_is_per_account_not_per_ip(pclient, monkeypatch
 async def test_a_bearer_without_the_cookie_cannot_spend_the_link_budget(pclient, monkeypatch):
     """The budget is counted only after the cookie and recency checks, so a leaked token
     replayed from another browser cannot lock the real patient out of linking."""
-    from brain_api.api import patient_access as router_mod
+    from brain_api.api.portal import patient_access as router_mod
 
     client, sessionmaker, seed = pclient
     login, _ = await _two_clinic_account(client, sessionmaker, seed)

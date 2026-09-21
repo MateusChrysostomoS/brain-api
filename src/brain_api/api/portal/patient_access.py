@@ -85,7 +85,7 @@ from brain_api.models.patient_access import (
     MessagePendingSession,
 )
 from brain_api.schemas.entitlement import EntitlementOut
-from brain_api.schemas.patient_access import (
+from brain_api.schemas.portal.patient_access import (
     ClinicInviteIn,
     ClinicLookupIn,
     ClinicPublicOut,
@@ -108,8 +108,9 @@ from brain_api.schemas.patient_access import (
     ThreadListOut,
     ThreadOut,
 )
-from brain_api.services import message_switchboard, patient_access, secretaria_provisioning
+from brain_api.services import message_switchboard, secretaria_provisioning
 from brain_api.services.entitlements import resolve_entitlement
+from brain_api.services.portal import patient_access
 
 logger = get_logger(__name__)
 

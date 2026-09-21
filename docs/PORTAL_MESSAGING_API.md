@@ -88,7 +88,7 @@ checked by a different piece of code and a token from one is rejected by all the
 
 The patient never holds a credential a product recognizes. brain-api mints purpose-scoped
 JWTs of its own (`auth-jwt-multitenant` skill), verified in
-`brain-api/src/brain_api/api/patient_access.py` (module docstring spells out the trust
+`brain-api/src/brain_api/api/portal/patient_access.py` (module docstring spells out the trust
 boundary):
 
 | Token | Scope claim | Grants | Since |
@@ -150,8 +150,8 @@ service is healthy.
 
 One call runs in the opposite direction: secretarIA calls brain-api at
 `POST /internal/brain-message/pending-email` to record the e-mail a visitor typed **in the
-chat**, before any code is sent (`brain-api/src/brain_api/api/internal.py::
-claim_pending_email`, `schemas/internal.py::PendingEmailClaimIn`). This exists solely so a
+chat**, before any code is sent (`brain-api/src/brain_api/api/portal/internal.py::
+claim_pending_email`, `schemas/portal/internal.py::PendingEmailClaimIn`). This exists solely so a
 browser can never name the inbox a login code goes to — the address must have been captured
 server-to-server, from the conversation itself. A new product does not need to implement this
 to appear on the channel (§9); it is part of the *pending visitor* flow, which is optional.
@@ -161,12 +161,12 @@ to appear on the channel (§9); it is part of the *pending visitor* flow, which 
 ## 2. Send — patient → clinic
 
 **`POST /patient-access/threads/{product}/messages`** (brain-api,
-`api/patient_access.py::send_thread_message`). `product` is `"secretaria"` or `"precheck"` —
+`api/portal/patient_access.py::send_thread_message`). `product` is `"secretaria"` or `"precheck"` —
 chosen by the client (the tab the patient is on), never inferred from text. Authorization:
 a clinic token or a pending token (`get_thread_patient`), for the tenant that token names —
 there is no field in the body that could point at another clinic.
 
-Request body (`schemas/patient_access.py::PatientMessageIn`, `extra="forbid"`):
+Request body (`schemas/portal/patient_access.py::PatientMessageIn`, `extra="forbid"`):
 
 ```jsonc
 {
@@ -243,7 +243,7 @@ Response: **200**, synchronously, with the *whole next turn* already computed �
 This is why brain-api's client just returns each product's payload through an envelope
 (`RelayOut`, `extra="allow"`) instead of a shared shape: freezing one would force a
 synchronized deploy the moment either side adds a field
-(`schemas/patient_access.py::RelayOut` docstring cites `frozen-contract-migration`).
+(`schemas/portal/patient_access.py::RelayOut` docstring cites `frozen-contract-migration`).
 
 `interactive_reply_id` (§5) rides **only** on the secretarIA leg — PreCheck's inbound model is
 `extra="forbid"` with no such field, and the switchboard drops it before calling PreCheck
@@ -390,7 +390,7 @@ straight from the patient's own browser through the switchboard. secretarIA's wo
 own recent cards actually offered on that conversation; anything else is routed as plain text
 (`schemas/internal.py::BrainMessageInbound` docstring). Bound at 256 chars — the longest id a
 reply-button card can carry (`secretaria.core.whatsapp_limits.MAX_INTERACTIVE_REPLY_ID_CHARS`,
-the same bound `brain-api/schemas/patient_access.py::PatientMessageIn.interactive_reply_id`
+the same bound `brain-api/schemas/portal/patient_access.py::PatientMessageIn.interactive_reply_id`
 enforces). As noted in §2.2, this field is **secretarIA-only** — PreCheck's questionnaire
 takes the option's **label** as plain `text` instead, so a client sends the same tap either
 way and the switchboard decides which shape to build.
@@ -684,7 +684,7 @@ POST {SECRETARIA_BASE_URL}/internal/brain-message/open     X-Internal-Api-Key: <
 ```
 
 **brain-api calls it from two places, both fire-and-forget**
-(`api/patient_access.py::_greet_if_secretaria`, `services/message_switchboard.py::
+(`api/portal/patient_access.py::_greet_if_secretaria`, `services/message_switchboard.py::
 open_conversation`):
 
 | trigger | when | why |

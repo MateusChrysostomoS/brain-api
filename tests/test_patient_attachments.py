@@ -386,7 +386,7 @@ async def test_any_patient_uploads_even_unverified_within_the_budgets_and_the_ki
     of the file is read: each patient's own budget, a budget shared by the UNVERIFIED uploads
     of one clinic (a visit is minted per call, so its own budget alone bounds nothing), and
     the kill switch."""
-    from brain_api.api import patient_access as router_mod
+    from brain_api.api.portal import patient_access as router_mod
     from brain_api.config import get_settings
 
     client, _, seed = pclient

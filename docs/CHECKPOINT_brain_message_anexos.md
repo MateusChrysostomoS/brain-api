@@ -22,9 +22,9 @@ Este arquivo é **o contrato que a parte 2 (secretarIA) consome**; o resumo púb
 | Arquivo | O quê |
 |---|---|
 | `core/attachments.py` (novo) | `MAX_ATTACHMENT_BYTES`, `MULTIPART_OVERHEAD_BYTES`, `ALLOWED_KINDS`, `sniff_kind`, `safe_filename`, `extension_conflicts`, `check_attachment`, `REFUSALS` + `AttachmentRefused`, `MEDIA_ID_PATTERN`/`is_media_id` |
-| `api/patient_access.py` | `send_thread_message` (JSON **ou** multipart), `get_thread_identity`, `_relay_attachment`/`_checked_relay`, `_CappedReceive`, `_read_json_message`, `_attachment_limiter`, `get_thread_media`, `_media_headers` |
+| `api/portal/patient_access.py` | `send_thread_message` (JSON **ou** multipart), `get_thread_identity`, `_relay_attachment`/`_checked_relay`, `_CappedReceive`, `_read_json_message`, `_attachment_limiter`, `get_thread_media`, `_media_headers` |
 | `services/message_switchboard.py` | `ATTACHMENT_PRODUCTS`, `send_attachment`, `_project_attachments`/`_attachment_ref`, `open_media`/`MediaStream`, `_capped`; `_call` ganhou `data`/`files`/`timeout` opcionais |
-| `schemas/patient_access.py` | `PatientAttachmentForm` (campos de texto do multipart) |
+| `schemas/portal/patient_access.py` | `PatientAttachmentForm` (campos de texto do multipart) |
 | `config.py` | `PATIENT_ATTACHMENTS_ENABLED`, `PATIENT_ATTACHMENT_RATE_LIMIT_PER_MIN`, `ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS` |
 | `tests/test_patient_attachments.py` (novo) | 23 testes (12 funções + parametrizações; ver §8) |
 
@@ -424,7 +424,7 @@ Registrado também em `docs/PORTAL_MESSAGING_API.md` §8.1. Prompt em
 
 O achado MEDIUM já corrigido (rota de envio) fechava a sessão do banco ANTES da chamada de rede
 pra secretarIA/PreCheck; o texto da revisão já registrava que `GET .../threads/{product}/messages`
-(`poll_thread_messages`, `api/patient_access.py`) — a rota mais chamada do sistema, uma vez por
+(`poll_thread_messages`, `api/portal/patient_access.py`) — a rota mais chamada do sistema, uma vez por
 poll de cada cliente — tinha a MESMA lacuna e ficou de fora "pra manter o diff restrito". Corrigido
 agora: `await session.close()` logo após `require_product`, mesmo padrão de
 `send_thread_message`/`mark_thread_read`. Teste novo,

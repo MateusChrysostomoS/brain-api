@@ -15,7 +15,7 @@ das duas metades fica em `docs/PORTAL_MESSAGING_API.md` §8.5.
 
 | Suposição do prompt | Realidade |
 |---|---|
-| "o schema de cada mensagem na listagem ganha o campo de status" | **Não existe schema por mensagem.** `schemas/patient_access.py::RelayOut` é um envelope sem tipo (`payload: dict`, `extra="allow"`), escolhido de propósito (`frozen-contract-migration`). `status`/`delivered_at`/`read_at`/`updated_at` já atravessavam sem nenhuma mudança de código. O que faltava era a prova, e agora ela é um teste. |
+| "o schema de cada mensagem na listagem ganha o campo de status" | **Não existe schema por mensagem.** `schemas/portal/patient_access.py::RelayOut` é um envelope sem tipo (`payload: dict`, `extra="allow"`), escolhido de propósito (`frozen-contract-migration`). `status`/`delivered_at`/`read_at`/`updated_at` já atravessavam sem nenhuma mudança de código. O que faltava era a prova, e agora ela é um teste. |
 | "confirme se este repo tem cursor próprio" | **Não tem.** `since` é repassado opaco (`message_switchboard.py::list_messages`). Aqui nada filtra, deduplica ou reordena linhas. O único item reescrito é `attachment` (`_project_attachments`), e ele não leva o status junto (há teste). |
 | "reaproveite o limitador existente de `/patient-access`, igual a enviar mensagem" | **O envio de texto não tem limitador**: só o upload tem (`_attachment_limiter`, `_pending_attachment_limiter`). Aplicar o critério da decisão 4 ("nem mais permissivo nem mais restritivo que enviar mensagem") dá **nenhum limitador novo**. Reusar o de upload tornaria a marcação mais restrita que o texto e ainda consumiria a cota de anexo. |
 | corpo com `read_up_to` | O contrato da parte 1 (§4.3) usa **`up_to_message_id` xor `up_to`**, o mesmo par da rota do staff. O processo manda seguir o contrato publicado, então usei os mesmos nomes. Com isso a decisão 3 ("mapeie no schema se o nome mudar") não precisou de mapeamento nenhum. |
@@ -24,12 +24,12 @@ das duas metades fica em `docs/PORTAL_MESSAGING_API.md` §8.5.
 
 | Onde | O quê |
 |---|---|
-| `schemas/patient_access.py::PatientReadMarkIn` | `extra="forbid"`, exatamente um entre `up_to_message_id: UUID` e `up_to: AwareDatetime` (as mesmas regras de `MessagesReadMark` da secretarIA). Não aceita tenant nem paciente. |
+| `schemas/portal/patient_access.py::PatientReadMarkIn` | `extra="forbid"`, exatamente um entre `up_to_message_id: UUID` e `up_to: AwareDatetime` (as mesmas regras de `MessagesReadMark` da secretarIA). Não aceita tenant nem paciente. |
 | `services/message_switchboard.py::READ_RECEIPT_PRODUCTS` | `{"secretaria"}` (PreCheck fora, decisão 1) |
 | `services/message_switchboard.py::mark_read` | `POST /internal/brain-message/messages/read` com o corpo montado campo a campo (`tenant_id`, `external_id` e o cursor). Produto fora da lista → `{"marked": 0, "applied": false}` sem chamada de rede. |
 | `services/message_switchboard.py::list_messages` | Só docstring: o estado é da secretarIA, `since` = "alterado depois de", o cliente faz upsert por `id`. |
-| `api/patient_access.py::mark_thread_read` | Rota nova `POST /patient-access/threads/{product}/messages/read`, com `get_thread_patient` (token de clínica ou pendente) e `require_product` antes de qualquer chamada de rede. A resposta é `RelayOut` com o payload da secretarIA. |
-| `api/patient_access.py::poll_thread_messages` | Descrição do `since` corrigida: "linhas **alteradas** estritamente depois", upsert por `id`. |
+| `api/portal/patient_access.py::mark_thread_read` | Rota nova `POST /patient-access/threads/{product}/messages/read`, com `get_thread_patient` (token de clínica ou pendente) e `require_product` antes de qualquer chamada de rede. A resposta é `RelayOut` com o payload da secretarIA. |
+| `api/portal/patient_access.py::poll_thread_messages` | Descrição do `since` corrigida: "linhas **alteradas** estritamente depois", upsert por `id`. |
 
 ## 3. Contrato para o frontend (parte 3)
 
@@ -87,7 +87,7 @@ Content-Type: application/json
   Além disso: visitante pendente, PreCheck sem rede, e secretarIA sem a rota (ordem de deploy)
   → `502 product_error` opaco.
 - `uv run ruff check` nos 4 arquivos tocados: limpo. O `ruff format --check` acusa diferença em
-  `api/patient_access.py` e `services/message_switchboard.py`, mas ela **já existia no HEAD**
+  `api/portal/patient_access.py` e `services/message_switchboard.py`, mas ela **já existia no HEAD**
   (conferido com `git show HEAD:<arquivo> | ruff format --check -`) e fica em linhas que esta
   mudança não toca. Os arquivos não foram reformatados, para não misturar diff.
 - Revisões: `ecc:security-reviewer` não achou nada acima de LOW. O LOW é a falta de limitador,

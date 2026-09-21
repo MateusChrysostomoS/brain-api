@@ -47,7 +47,7 @@ from brain_api.models.patient_access import (
     MessagePendingSession,
     PatientConsentEvent,
 )
-from brain_api.services import patient_access
+from brain_api.services.portal import patient_access
 from tests.test_patient_access import (
     CLINIC_BOTH,
     PATIENT_EMAIL,
@@ -762,7 +762,7 @@ async def test_the_unauthenticated_routes_share_one_tight_per_ip_budget(pclient,
     lookup route shares the bucket deliberately — both are reachable with no credential, and
     splitting them would just double what one IP gets for free.
     """
-    from brain_api.api import patient_access as patient_api
+    from brain_api.api.portal import patient_access as patient_api
 
     monkeypatch.setattr(patient_api._pending_limiter, "_limit_getter", lambda: 2)
     invite = await _invite(sessionmaker=pclient[1], tenant_id=pclient[2].both)
@@ -937,7 +937,7 @@ async def test_the_raw_address_never_reaches_a_log_line_on_this_route(pclient, m
     """structlog's `PrintLoggerFactory` bypasses stdlib logging, so `caplog` is blind to these
     lines — record what the loggers are CALLED with instead (same technique as
     `test_precheck_handoff.py::test_context_never_reaches_a_log_line`)."""
-    from brain_api.api import internal as internal_api
+    from brain_api.api.portal import internal as internal_api
 
     client, sessionmaker, seed = pclient
     handle = (await _open(client, sessionmaker, seed.both)).json()["patient_ref"]
@@ -1046,7 +1046,7 @@ async def test_the_claim_leaks_neither_the_raw_address_nor_the_mask_into_a_log(
     mask is not — a log is nobody's notice, and two characters plus a domain is more than
     `tenant_id` needs to be useful.
     """
-    from brain_api.api import internal as internal_api
+    from brain_api.api.portal import internal as internal_api
 
     client, sessionmaker, seed = pclient
     async with sessionmaker() as session:

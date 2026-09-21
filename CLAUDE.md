@@ -40,7 +40,7 @@ dia ao mudar este lado do contrato.
 - `z_prompts/PROMPT_BRAIN_MESSAGE_PORTAL_INTERACTIVE_TAP.md` (raiz de BRAIN, gerado 2026-09-11,
   com autorização explícita do dono pra tocar este repo) — toque real em botões/listas no Portal
   do paciente (`/conversa`), continuação de `PROMPT_BRAIN_MESSAGE_INTERACTIVE_BUBBLES_RENDERING.md`
-  (que só cobriu o console de staff). `PatientMessageIn` (`schemas/patient_access.py`,
+  (que só cobriu o console de staff). `PatientMessageIn` (`schemas/portal/patient_access.py`,
   `extra="forbid"`) e `message_switchboard.py::send_message` ganham um campo novo
   (`interactive_reply_id`) só no ramo secretarIA — PreCheck fica intocado. **NÃO EXECUTADO
   ainda.** Confirmar com o dono antes de qualquer deploy real aqui (ver §0 do prompt).
@@ -154,7 +154,7 @@ dia ao mudar este lado do contrato.
   o defeito corrigido estava na secretarIA. Ver `docs/CHECKPOINT_portal_sessao_pendente.md` §12.
 - `z_prompts/PROMPT_BRAIN_MESSAGE_ABERTURA_EMAIL_NOME_1_BRAIN_API.md` (raiz de BRAIN, gerado
   2026-09-20 via `/prompt-generator`, parte 1/2 — parte 2 é `..._2_SECRETARIA.md` na secretarIA) —
-  item 2 da Prioridade 1 de `PLANO_PORTAL_COMO_WHATSAPP.md`: `services/patient_access.py::claim_pending_email`
+  item 2 da Prioridade 1 de `PLANO_PORTAL_COMO_WHATSAPP.md`: `services/portal/patient_access.py::claim_pending_email`
   (linha 797) passa a detectar se o e-mail digitado já pertence a uma `MessagePatientAccount`
   existente e, quando sim, devolver o endereço mascarado via `core/email_mask.py::mask_email`
   (mesmo padrão que `RequestCodeResult.email_masked` já usa) — para a secretarIA pular a pergunta
@@ -258,9 +258,9 @@ dia ao mudar este lado do contrato.
   antes de executar. **NÃO EXECUTADO.**
 - `z_prompts/PROMPT_POLL_THREAD_MESSAGES_DB_SESSION_LEAK.md` (raiz de BRAIN, gerado 2026-09-19 via
   `/prompt-generator`) — `poll_thread_messages`
-  (`api/patient_access.py:1192`, a rota GET mais chamada) ainda não fechava a sessão do banco
-  (`await session.close()`) antes da chamada de rede ao switchboard, ao contrário de
-  `send_thread_message` (linha 1159) e `mark_thread_read` (linha 1264), que já seguiam esse padrão.
+  (`api/portal/patient_access.py::poll_thread_messages`, a rota GET mais chamada) ainda não
+  fechava a sessão do banco (`await session.close()`) antes da chamada de rede ao switchboard, ao
+  contrário de `send_thread_message` e `mark_thread_read`, que já seguiam esse padrão.
   **Este prompt NÃO precisa mais ser executado — já corrigido diretamente em 2026-09-19**: ver
   `docs/CHECKPOINT_brain_message_anexos.md` §10.7 para a correção real, com o teste de regressão que
   prova a ordem certa.

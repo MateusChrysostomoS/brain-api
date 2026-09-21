@@ -12,10 +12,10 @@ no §6.
 
 ## §1 — Causa raiz (reconfirmada no código antes de programar)
 
-`services/patient_access.py::claim_pending_email` recebia `(tenant_id, patient_ref, email)`, achava a
+`services/portal/patient_access.py::claim_pending_email` recebia `(tenant_id, patient_ref, email)`, achava a
 `MessagePendingSession` viva da visita e **sobrescrevia incondicionalmente** `row.email =
 normalize_email(email)`. Nunca perguntava se aquele endereço já era o de uma `MessagePatientAccount`.
-O endpoint `POST /internal/brain-message/pending-email` (`api/internal.py`) devolvia, em consequência,
+O endpoint `POST /internal/brain-message/pending-email` (`api/portal/internal.py`) devolvia, em consequência,
 só `{"status": "claimed"}` — um "registrado" que não distingue quem é novo de quem está voltando.
 
 A consulta que faltava já existia duas vezes no MESMO arquivo — `_ensure_account` (upsert com
@@ -115,7 +115,7 @@ pedido literal do dono ("seu e-mail já está no nosso sistema") e está anotado
 ## §5 — PII: o que pode e o que não pode sair
 
 O endereço cru **não sai deste serviço** — nem no campo novo, nem em log, nem em detail de erro
-(a nota de PII de `api/patient_access.py`, `CHECKPOINT_portal_sessao_pendente.md`). A única forma
+(a nota de PII de `api/portal/patient_access.py`, `CHECKPOINT_portal_sessao_pendente.md`). A única forma
 permitida continua sendo a de `core/email_mask.py`, e ela agora tem dois pontos de saída em vez de
 um (`pending-otp/request` e este claim).
 
@@ -137,8 +137,8 @@ seguia.
 
 ## §6 — Validação (comandos e resultado reais)
 
-Arquivos tocados: `src/brain_api/services/patient_access.py`, `src/brain_api/api/internal.py`,
-`src/brain_api/schemas/internal.py`, `tests/test_patient_pending_session.py`.
+Arquivos tocados: `src/brain_api/services/portal/patient_access.py`, `src/brain_api/api/portal/internal.py`,
+`src/brain_api/schemas/portal/internal.py`, `tests/test_patient_pending_session.py`.
 
 Testes novos, todos em `tests/test_patient_pending_session.py` (bloco final, "The address that
 already belongs to an account"):

@@ -12,9 +12,9 @@ usuário (nota §0 do prompt) e não foi feito.**
 
 | Onde | O quê |
 |---|---|
-| `schemas/patient_access.py` | `PatientMessageIn.interactive_reply_id: str | None` (1..256 chars, o mesmo limite da secretarIA). Continua `extra="forbid"`. |
+| `schemas/portal/patient_access.py` | `PatientMessageIn.interactive_reply_id: str | None` (1..256 chars, o mesmo limite da secretarIA). Continua `extra="forbid"`. |
 | `services/message_switchboard.py` | `send_message(..., interactive_reply_id=None)`: entra no corpo **só no ramo `PRODUCT_SECRETARIA`**, e só quando presente. O ramo do PreCheck ficou intocado (é `extra="forbid"` sem o campo). |
-| `api/patient_access.py` | `send_thread_message` repassa `payload.interactive_reply_id`. |
+| `api/portal/patient_access.py` | `send_thread_message` repassa `payload.interactive_reply_id`. |
 
 brain-api não interpreta o id: quem decide se ele é válido é a secretarIA, contra os cartões que ela
 mesma ofereceu naquela conversa. Nada aqui permite à paciente apontar outra clínica ou outra

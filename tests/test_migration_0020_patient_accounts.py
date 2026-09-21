@@ -44,7 +44,7 @@ from brain_api.core.security import decode_token
 from brain_api.main import app
 from brain_api.models import Tenant
 from brain_api.models.patient_access import MessagePatientAccount
-from brain_api.services import patient_access
+from brain_api.services.portal import patient_access
 
 PG_URL = os.environ.get("BRAIN_MIGRATION_PG_URL", "")
 pytestmark = pytest.mark.skipif(

@@ -19,7 +19,7 @@ arquivos não tocados — `api/internal.py`, `api/public_signup.py`, `services/c
 
 O sintoma do dono: reabrir o portal `/conversa` pedia código de novo. Cadeia:
 
-- `api/patient_access.py` (router `/patient-access`) tinha `request-otp`, `verify-otp`, `logout`,
+- `api/portal/patient_access.py` (router `/patient-access`) tinha `request-otp`, `verify-otp`, `logout`,
   `siblings/{tenant_id}/confirm`, `threads*`. **Nenhuma rota de refresh.**
 - `core/cookies.py::set_patient_session_cookie` só era chamado em `verify_otp`;
   `read_patient_session_cookie` só em `logout` e `confirm_sibling` — nunca para EMITIR um token.
@@ -38,9 +38,9 @@ Resultado: cookie de 30 dias que não servia para nada além de logout e confirm
 | `migrations/versions/0019_patient_session_rotation.py` | `message_patient_sessions.previous_token_hash` (String 64, nullable, índice) + `rotated_at` (tz). Aditiva. |
 | `models/patient_access.py::MessagePatientSession` | as duas colunas + docstring "renovada NO LUGAR". |
 | `config.py` | `PATIENT_SESSION_EXPIRE_DAYS = 90` (comentário reescrito: é TETO desde a última renovação, decisão do dono); nova `PATIENT_SESSION_ROTATION_GRACE_SECONDS = 60`; comentário de `PATIENT_LINK_CONFIRM_WINDOW_MINUTES` reescrito (Risco C). |
-| `services/patient_access.py` | `rotate_patient_session` (renova in-place, CAS, janela de graça, detecção de reuso), `reopen_linked_clinic` (reemite clínica já vinculada), `PatientSessionRenewal`, docstring de `session_is_recent`. |
-| `schemas/patient_access.py` | `PatientRefreshOut(PatientSessionOut)` + `linked_sessions: list[ClinicSessionOut]`. |
-| `api/patient_access.py` | `POST /patient-access/refresh`; helpers `_sibling_report`/`_candidates_out` (compartilhados com `verify_otp`), `_expired_patient_cookie_headers`. |
+| `services/portal/patient_access.py` | `rotate_patient_session` (renova in-place, CAS, janela de graça, detecção de reuso), `reopen_linked_clinic` (reemite clínica já vinculada), `PatientSessionRenewal`, docstring de `session_is_recent`. |
+| `schemas/portal/patient_access.py` | `PatientRefreshOut(PatientSessionOut)` + `linked_sessions: list[ClinicSessionOut]`. |
+| `api/portal/patient_access.py` | `POST /patient-access/refresh`; helpers `_sibling_report`/`_candidates_out` (compartilhados com `verify_otp`), `_expired_patient_cookie_headers`. |
 | `tests/test_patient_access.py` | seção 8, 13 testes (12 funções, 1 parametrizada ×3). |
 
 Nada mudou em `verify_otp`, `confirm_sibling`, `logout` ou nas rotas de thread além do refactor de

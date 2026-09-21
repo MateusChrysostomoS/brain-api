@@ -40,7 +40,7 @@ from brain_api.models.patient_access import (
     MessagePatientSession,
     PatientConsentEvent,
 )
-from brain_api.services import patient_access
+from brain_api.services.portal import patient_access
 from tests.test_patient_access import (
     CLINIC_BOTH,
     CLINIC_ONLY_SECRETARIA,
@@ -488,7 +488,7 @@ async def test_an_invite_that_races_a_logout_dies_with_the_login(pclient, monkey
 async def test_the_invite_budget_is_per_account_and_spent_only_when_authenticated(
     pclient, monkeypatch
 ):
-    from brain_api.api import patient_access as router_mod
+    from brain_api.api.portal import patient_access as router_mod
 
     client, sessionmaker, seed = pclient
     login = (await _email_login(client, sessionmaker)).json()
@@ -608,7 +608,7 @@ async def test_the_staff_reads_its_own_invite(pclient, monkeypatch):
 async def test_account_logs_carry_no_address_no_clinic_name_no_account_id_no_handle(
     pclient, monkeypatch
 ):
-    from brain_api.api import patient_access as router_mod
+    from brain_api.api.portal import patient_access as router_mod
 
     events: list[tuple[str, dict]] = []
 

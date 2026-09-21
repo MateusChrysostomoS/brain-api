@@ -21,12 +21,12 @@ from brain_api.api import (
     internal,
     internal_precheck,
     onboarding,
-    patient_access,
     privacy,
     public_signup,
     public_waitlist,
     sso,
 )
+from brain_api.api.portal import internal as portal_internal, patient_access
 from brain_api.config import get_settings
 from brain_api.core.logging import get_logger, setup_logging
 
@@ -73,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(billing.router, tags=["billing"])
     app.include_router(patient_access.router)
     app.include_router(internal.router)
+    app.include_router(portal_internal.router)
     app.include_router(internal_precheck.router)
     return app
 

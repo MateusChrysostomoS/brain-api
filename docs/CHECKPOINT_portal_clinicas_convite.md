@@ -23,8 +23,8 @@ O bug da auditoria (com a conta aberta, `/conversa/?clinica=<outra>` é ignorado
 (`Brain-Message-Frontend/lib/patient-account.ts::portalScreen` nunca lê a URL quando já há clínicas) e uma
 causa de fundo neste repo: **o login era por clínica**.
 
-- `schemas/patient_access.py::OtpRequestIn` / `OtpVerifyIn` exigiam `tenant_id`.
-- `services/patient_access.py::issue_otp(session, tenant_id, email)` / `verify_otp(...)` só emitiam e
+- `schemas/portal/patient_access.py::OtpRequestIn` / `OtpVerifyIn` exigiam `tenant_id`.
+- `services/portal/patient_access.py::issue_otp(session, tenant_id, email)` / `verify_otp(...)` só emitiam e
   aceitavam código para um par `(tenant_id, email)` (`MessagePatientOtp` único por esse par), e
   `_resolve_patient` criava a identidade daquela clínica.
 - `models/patient_access.py::MessagePatientSession.patient_id` / `tenant_id` eram `NOT NULL`: uma sessão de
@@ -67,9 +67,9 @@ entrou junto.
 | `core/invite_codes.py` (novo) | alfabeto, gerador, normalizador, `parse_invite` (código, UUID, link novo, link antigo), `invite_link`. |
 | `core/security.py` | `PATIENT_ACCOUNT_TOKEN_SCOPE`, `create_patient_account_token`, `decode_patient_account_token`. |
 | `config.py` | `BRAIN_MESSAGE_PORTAL_URL` (não secreta); comentários de `PATIENT_LINK_RATE_LIMIT_PER_MIN` e `PATIENT_LINK_CONFIRM_WINDOW_MINUTES` (não é mais lida). |
-| `services/patient_access.py` | reescrito: `issue_account_otp` (upsert), `verify_account_otp` (tentativa gasta por UPDATE condicional antes de comparar + queima por CAS), `open_account`/`_ensure_account`/`_adopt`, `resolve_invite`, `add_clinic` (upsert + consentimento `INSERT … SELECT … WHERE NOT EXISTS`), `account_clinics`, `login_clinic`/`pin_login_clinic`, `session_account`, sessões por conta, `rotate_patient_session` (um commit só, depois do CAS), `revoke_account_sessions(email)`. Saíram `issue_otp`, `verify_otp`, `_resolve_patient`, `session_is_recent`, `reopen_linked_clinic`, `find_sibling_candidates`, `linked_identities`, `confirm_sibling_link`. |
-| `schemas/patient_access.py` | `PatientAccountOut` (novo + campos de transição marcados `deprecated` no OpenAPI), `ClinicInviteIn`, `OtpRequestIn`/`OtpVerifyIn` com `tenant_id` opcional e `invite`. Saíram `PatientSessionOut`/`PatientRefreshOut`. |
-| `api/patient_access.py` | reescrito sobre o serviço novo; rota nova `POST /patient-access/clinics`; `confirm_sibling` vira transição (`deprecated=True`); logout por endereço, sem criar nem adotar nada. |
+| `services/portal/patient_access.py` | reescrito: `issue_account_otp` (upsert), `verify_account_otp` (tentativa gasta por UPDATE condicional antes de comparar + queima por CAS), `open_account`/`_ensure_account`/`_adopt`, `resolve_invite`, `add_clinic` (upsert + consentimento `INSERT … SELECT … WHERE NOT EXISTS`), `account_clinics`, `login_clinic`/`pin_login_clinic`, `session_account`, sessões por conta, `rotate_patient_session` (um commit só, depois do CAS), `revoke_account_sessions(email)`. Saíram `issue_otp`, `verify_otp`, `_resolve_patient`, `session_is_recent`, `reopen_linked_clinic`, `find_sibling_candidates`, `linked_identities`, `confirm_sibling_link`. |
+| `schemas/portal/patient_access.py` | `PatientAccountOut` (novo + campos de transição marcados `deprecated` no OpenAPI), `ClinicInviteIn`, `OtpRequestIn`/`OtpVerifyIn` com `tenant_id` opcional e `invite`. Saíram `PatientSessionOut`/`PatientRefreshOut`. |
+| `api/portal/patient_access.py` | reescrito sobre o serviço novo; rota nova `POST /patient-access/clinics`; `confirm_sibling` vira transição (`deprecated=True`); logout por endereço, sem criar nem adotar nada. |
 | `api/entitlements.py` + `schemas/entitlement.py` | `GET /entitlements/patient-invite` (`PatientInviteOut`), cunhagem condicional do código. |
 | `tests/test_patient_account_invites.py` (novo), `tests/test_migration_0020_patient_accounts.py` (novo), `tests/test_patient_access.py`, `tests/conftest.py` | §9. |
 

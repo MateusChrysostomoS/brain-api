@@ -448,6 +448,66 @@ async def open_conversation(
     return OPEN_FAILED
 
 
+async def open_precheck_session(*, tenant_id: UUID, patient_ref: str) -> str:
+    """Ask PreCheck to open this patient's session and greet — FIRE AND FORGET, like above.
+
+    The PreCheck twin of `open_conversation`, for a link that names PreCheck (2026-09-22). It
+    calls the SAME route the portal hand-off already uses (`services/precheck_handoff.py::
+    request_portal_handoff`): `POST {PRECHECK}/internal/brain-message/open`, which seeds the
+    session at `INIT` and asks the conductor for its welcome + LGPD consent WITHOUT an inbound
+    message. So nothing is fabricated in the patient's transcript — the reason this module
+    refused to greet PreCheck until PreCheck grew that route.
+
+    Everything `open_conversation` promises holds here too, for the same reasons: it never
+    raises, it logs neither the handle nor a name, and idempotence is the callee's. PreCheck
+    answers `200 {"status": "exists"}` for a session already open and writes nothing past
+    `INIT`, which is what lets the caller fire on a RESUMED visit as well (see
+    `api/portal/patient_access.py::_open_if_precheck`).
+
+    Outcomes: `200 awaiting_consent` → `OPEN_QUEUED` (opened, greeting on its way),
+    `200 exists` → `OPEN_EXISTS`, anything else → `OPEN_FAILED` / `OPEN_UNCONFIGURED`.
+    `patient_name` is deliberately not sent: a visit that opened from a link has none, and
+    PreCheck's request model is `extra="forbid"`, so only declared keys travel.
+    """
+    try:
+        base, headers = _upstream(PRODUCT_PRECHECK)
+    except HTTPException:
+        logger.warning("precheck_open_unconfigured", tenant_id=str(tenant_id))
+        return OPEN_UNCONFIGURED
+
+    body = {"tenant_id": str(tenant_id), "session_ref": patient_ref}
+    try:
+        async with httpx.AsyncClient(
+            base_url=base, timeout=get_settings().PRECHECK_TIMEOUT_SECONDS
+        ) as client:
+            resp = await client.request("POST", _OPEN_PATH, headers=headers, json=body)
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "precheck_open_unreachable", tenant_id=str(tenant_id), error=type(exc).__name__
+        )
+        return OPEN_FAILED
+    except Exception as exc:  # noqa: BLE001 - same absolute promise as `open_conversation`
+        logger.error(
+            "precheck_open_unexpected_error", tenant_id=str(tenant_id), error=type(exc).__name__
+        )
+        return OPEN_FAILED
+
+    if resp.status_code == status.HTTP_200_OK:
+        try:
+            upstream = resp.json().get("status")
+        except (ValueError, AttributeError):
+            upstream = None
+        outcome = OPEN_EXISTS if upstream == "exists" else OPEN_QUEUED
+        logger.info("precheck_open_ok", tenant_id=str(tenant_id), outcome=outcome)
+        return outcome
+    # 404 included: a clinic without `brain_tenant_id`, or a PreCheck without the route yet.
+    # The patient can still write first — an `INIT` session greets on any message.
+    logger.warning(
+        "precheck_open_refused", tenant_id=str(tenant_id), upstream_status=resp.status_code
+    )
+    return OPEN_FAILED
+
+
 # --- Read receipts (2026-09-19): the patient's "I have seen up to here" --------------------
 
 

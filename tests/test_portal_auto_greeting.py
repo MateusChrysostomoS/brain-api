@@ -7,8 +7,8 @@ places, and the interesting part of this feature is entirely in WHEN it does and
 
 * **only on a CREATED visit** — a reload resumes the same visit through `__Host-patient_pending`
   and must not produce a second greeting;
-* **only when the resolved product is secretarIA** — `produto=precheck` triggers nothing at all
-  (the limitation is deliberate and documented in `api/internal.py::precheck_handoff`);
+* **only when the resolved product is secretarIA** — `produto=precheck` opens PreCheck instead,
+  through PreCheck's own `/internal/brain-message/open` (2026-09-22, section 2 and 6);
 * **also on `POST /patient-access/clinics`** — the owner's "paciente novo *da clínica*" is
   somebody who already has a Portal account and is opening THIS clinic for the first time; they
   never touch `/pending`;
@@ -148,22 +148,59 @@ async def test_a_clinic_with_only_secretaria_greets(pclient, monkeypatch):
     assert len(_open_calls(calls)) == 1
 
 
-# --- 2) The PreCheck link greets NOTHING — the documented limitation -----------------------
+# --- 2) The PreCheck link opens PreCheck — and ONLY PreCheck (2026-09-22) -------------------
 
 
-async def test_a_precheck_link_triggers_nothing(pclient, monkeypatch):
-    """`?produto=precheck` must make NO outbound call — not to secretarIA, not to PreCheck.
+async def test_a_precheck_link_asks_precheck_to_open(pclient, monkeypatch):
+    """`?produto=precheck`: one call, to PreCheck's `/open`, under PreCheck's own pair.
 
-    Opening a PreCheck session would need either a route PreCheck does not have or a
-    fabricated patient message, and TASK-003 forbids both. The PreCheck thread therefore stays
-    empty until the patient writes, exactly as it did before this feature.
+    Never to secretarIA: a patient who scanned the pre-consult QR code did not come to book.
     """
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    calls = _spy_transport(monkeypatch, status_code=200, payload={"status": "awaiting_consent"})
+
+    resp = await _open(client, sessionmaker, seed.both, product="precheck")
+    assert resp.status_code == 200, resp.text
+
+    (call,) = _open_calls(calls)
+    assert call["base_url"].startswith("http://precheck:8000")
+    assert call["headers"]["X-Internal-Token"] == "precheck-token-BBB"
+    assert "X-Internal-Api-Key" not in call["headers"]
+    # `session_ref`, not `external_id`, and no `patient_name`: PreCheck's model is
+    # `extra="forbid"`, so only declared keys may travel.
+    assert call["json"] == {"tenant_id": str(seed.both), "session_ref": resp.json()["patient_ref"]}
+
+
+async def test_a_resumed_precheck_visit_asks_again(pclient, monkeypatch):
+    """The deliberate difference from secretarIA: a resume ALSO fires. The patient who opened
+    the booking link and later scans the PreCheck QR resumes that visit; PreCheck's `exists`
+    absorbs the repeat."""
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    calls = _spy_transport(monkeypatch, status_code=200, payload={"status": "exists"})
+
+    first = await _open(client, sessionmaker, seed.both)
+    second = await _open(client, sessionmaker, seed.both, product="precheck")
+    assert second.json()["patient_ref"] == first.json()["patient_ref"], "not a resume"
+
+    precheck_calls = [c for c in _open_calls(calls) if "precheck:8000" in c["base_url"]]
+    assert len(precheck_calls) == 1
+
+
+@pytest.mark.parametrize("product", [None, "secretaria"])
+async def test_a_clinic_with_both_products_never_opens_precheck_uninvited(
+    pclient, monkeypatch, product
+):
+    """The negative that matters most. On a two-product clinic the portal polls the PreCheck
+    thread in the background and SWITCHES to it once it has messages. Opening PreCheck from a
+    booking (or plain) link would yank the patient out of booking."""
     client, sessionmaker, seed = pclient
     _configure_mesh(monkeypatch)
     calls = _spy_transport(monkeypatch, status_code=202, payload={"status": "queued"})
 
-    assert (await _open(client, sessionmaker, seed.both, product="precheck")).status_code == 200
-    assert calls == [], "a PreCheck link must not reach the mesh at all"
+    assert (await _open(client, sessionmaker, seed.both, product=product)).status_code == 200
+    assert all("precheck:8000" not in c["base_url"] for c in calls), calls
 
 
 async def test_a_clinic_with_the_channel_off_greets_nothing(pclient, monkeypatch):
@@ -408,3 +445,56 @@ async def test_open_conversation_never_raises_or_logs_the_handle(monkeypatch):
     assert any("brain_message_open_queued" in repr(call) for call in logged), logged
     assert handle not in repr(logged)
     assert name not in repr(logged)
+
+
+# --- 6) `open_precheck_session`, the PreCheck twin -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("upstream_status", "payload", "expected"),
+    [
+        (200, {"status": "awaiting_consent"}, message_switchboard.OPEN_QUEUED),
+        (200, {"status": "exists"}, message_switchboard.OPEN_EXISTS),
+        (404, {"detail": "no_clinic"}, message_switchboard.OPEN_FAILED),
+        (503, {"detail": "down"}, message_switchboard.OPEN_FAILED),
+    ],
+)
+async def test_open_precheck_session_outcomes(monkeypatch, upstream_status, payload, expected):
+    _configure_mesh(monkeypatch)
+    _spy_transport(monkeypatch, status_code=upstream_status, payload=payload)
+    outcome = await message_switchboard.open_precheck_session(
+        tenant_id=uuid.uuid4(), patient_ref=str(uuid.uuid4())
+    )
+    assert outcome == expected
+
+
+async def test_open_precheck_session_unconfigured_and_never_raises(monkeypatch):
+    """No PreCheck leg → `OPEN_UNCONFIGURED`; an InvalidURL (not an HTTPError) → `OPEN_FAILED`."""
+    calls = _spy_transport(monkeypatch, status_code=200, payload={"status": "exists"})
+    assert (
+        await message_switchboard.open_precheck_session(
+            tenant_id=uuid.uuid4(), patient_ref=str(uuid.uuid4())
+        )
+        == message_switchboard.OPEN_UNCONFIGURED
+    )
+    assert calls == []
+
+    _configure_mesh(monkeypatch)
+    _boom_on_open(monkeypatch, httpx.InvalidURL("no host in URL"))
+    assert (
+        await message_switchboard.open_precheck_session(
+            tenant_id=uuid.uuid4(), patient_ref=str(uuid.uuid4())
+        )
+        == message_switchboard.OPEN_FAILED
+    )
+
+
+async def test_a_precheck_refusal_never_fails_the_patients_route(pclient, monkeypatch):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    calls = _spy_transport(monkeypatch, status_code=500, payload={"detail": "boom"})
+
+    resp = await _open(client, sessionmaker, seed.both, product="precheck")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pending_token"]
+    assert len(_open_calls(calls)) == 1, "the opening was never attempted"

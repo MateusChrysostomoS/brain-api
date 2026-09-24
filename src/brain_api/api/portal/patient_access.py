@@ -1107,7 +1107,7 @@ async def _checked_relay(
         "`application/json` (`PatientMessageIn`) sends text, exactly as before. "
         "`multipart/form-data` sends ONE file in the part `file` plus the same fields as form "
         "fields, `text` becoming an optional caption: JPEG, PNG, WEBP, GIF or PDF judged by "
-        "its content, up to 20 MiB, only on a product that takes files (secretaria) — from any "
+        "its content, up to 20 MiB, on a product that takes files (secretaria, precheck) — any "
         "patient, clinic or pending token alike. Refusals of a file are 4xx with "
         '`{"detail": {"code", "message"}}` (docs/CHECKPOINT_brain_message_anexos.md).'
     ),
@@ -1127,8 +1127,9 @@ async def _checked_relay(
         415: {"description": "The file's real type is not an accepted one."},
         422: {
             "description": (
-                "Malformed body; a file whose name contradicts its content; or a product that "
-                "takes no files (precheck)."
+                "Malformed body; a file whose name contradicts its content; or a conversation "
+                "that takes no files (the kill switch off, or a PreCheck clinic without an "
+                "exam pipeline)."
             )
         },
         429: {

@@ -25,7 +25,7 @@ never be spelled the same as "the service is down" (502/503), or a support call 
 missing tab becomes unanswerable.
 """
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, BinaryIO
@@ -47,11 +47,15 @@ PRODUCT_SECRETARIA = "secretaria"
 PRODUCT_PRECHECK = "precheck"
 #: Display order of the tabs the patient sees; also the iteration order of `/threads`.
 PRODUCTS: tuple[str, ...] = (PRODUCT_SECRETARIA, PRODUCT_PRECHECK)
-#: Products whose relay CODE carries a file (`send_attachment`, `open_media`, the transcript
-#: reference). PreCheck is out of this round on purpose (z_prompts/PLANO_PORTAL_API_MVP.md,
-#: decision 1): adapting it is adding it here plus its branch in those functions — the
-#: validation in `core/attachments.py` is product-agnostic and does not change.
-ATTACHMENT_PRODUCTS: frozenset[str] = frozenset({PRODUCT_SECRETARIA})
+#: Products that take a file FROM the patient (`send_attachment`). The validation in
+#: `core/attachments.py` is product-agnostic and is the same for both. PreCheck joined on
+#: 2026-09-22 with its own wire (raw bytes, see `send_attachment`).
+ATTACHMENT_PRODUCTS: frozenset[str] = frozenset({PRODUCT_SECRETARIA, PRODUCT_PRECHECK})
+#: Products whose transcript carries a file reference that streams BACK to the browser
+#: (`_project_attachments`, `open_media`). Not the same set: PreCheck keeps an exam for its
+#: pipeline and answers with a plain text bubble ("📎 Imagem enviada"), never a reference, so
+#: it has no media route to stream from.
+MEDIA_PRODUCTS: frozenset[str] = frozenset({PRODUCT_SECRETARIA})
 #: Products whose transcript carries a delivery state and that take a patient read mark
 #: (`mark_read`). PreCheck is out of this round for the same reason as attachments
 #: (z_prompts/PROMPT_BRAIN_MESSAGE_STATUS_ENTREGA_2_BRAIN_API.md, decision 1).
@@ -576,9 +580,15 @@ async def send_attachment(
     in this service's log (brain-mesh-opaque-5xx-diagnosis). The exception is what only the
     product can know — consent in THIS conversation, its daily quota — relayed as the
     patient's own 4xx (`attachments.PRODUCT_REFUSALS`).
+
+    PreCheck takes a different wire (`_send_precheck_attachment`).
     """
     if product not in ATTACHMENT_PRODUCTS:  # pragma: no cover - the router refuses first.
         raise attachments.AttachmentRefused(attachments.ATTACHMENT_UNSUPPORTED_FOR_PRODUCT)
+    if product == PRODUCT_PRECHECK:
+        return await _send_precheck_attachment(
+            tenant_id=tenant_id, patient_ref=patient_ref, attachment=attachment, file=file
+        )
     data = {"tenant_id": str(tenant_id), "external_id": patient_ref}
     if text:
         data["text"] = text
@@ -611,6 +621,47 @@ async def send_attachment(
 
 
 _INBOUND_PATH = "/internal/brain-message/inbound"
+_PRECHECK_MEDIA_PATH = "/internal/brain-message/inbound-media"
+#: What PreCheck may refuse a file with and have the patient read it as its own 4xx: the shared
+#: product refusals, plus "this conversation takes no files" — PreCheck's answer for a clinic
+#: whose conductor has no exam pipeline, which is the patient's fact, not an outage.
+_PRECHECK_REFUSALS = attachments.PRODUCT_REFUSALS | {attachments.ATTACHMENT_UNSUPPORTED_FOR_PRODUCT}
+_FILE_CHUNK_BYTES = 64 * 1024
+
+
+async def _send_precheck_attachment(
+    *, tenant_id: UUID, patient_ref: str, attachment: CheckedAttachment, file: BinaryIO
+) -> dict[str, Any]:
+    """PreCheck's file wire (2026-09-22): the RAW bytes, addressed by query, no multipart.
+
+    `POST {PRECHECK}/internal/brain-message/inbound-media?tenant_id=..&session_ref=..`, body =
+    the file itself, `Content-Type` = the SNIFFED type. PreCheck has no multipart parser and
+    re-sniffs the bytes on its side. It answers in the same shape as its `/inbound`, and its
+    reply (the "exam received" bubble) arrives through the ordinary poll.
+
+    The caption, the patient's name and a tap id are deliberately NOT sent: PreCheck treats an
+    exam as pure media, and a name in a query string is PII in every access log on the way.
+    The tenant and the handle come off the session, exactly as on every other hop.
+    """
+    return await _call(
+        PRODUCT_PRECHECK,
+        "POST",
+        _PRECHECK_MEDIA_PATH,
+        params={"tenant_id": str(tenant_id), "session_ref": patient_ref},
+        content=_off_the_loop(_file_chunks(file)),
+        content_headers={
+            "Content-Type": attachment.kind.content_type,
+            "Content-Length": str(attachment.size_bytes),
+        },
+        timeout=get_settings().ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS,
+        refusals=_PRECHECK_REFUSALS,
+    )
+
+
+def _file_chunks(file: BinaryIO) -> Iterator[bytes]:
+    """The spooled upload, from its start, in chunks — read in a worker thread by the caller."""
+    while chunk := file.read(_FILE_CHUNK_BYTES):
+        yield chunk
 
 
 async def _off_the_loop(stream: Iterable[bytes]) -> AsyncIterator[bytes]:
@@ -695,7 +746,7 @@ async def open_media(
     refused, never streamed), a declared length over the ceiling is refused, and the body is
     cut at the ceiling whatever the upstream claimed.
     """
-    if product not in ATTACHMENT_PRODUCTS or not attachments.is_media_id(message_id):
+    if product not in MEDIA_PRODUCTS or not attachments.is_media_id(message_id):
         raise _media_not_found()
     base, headers = _upstream(product)
     client = httpx.AsyncClient(

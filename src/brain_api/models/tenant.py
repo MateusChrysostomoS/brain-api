@@ -90,7 +90,8 @@ class Tenant(Base):
         DateTime(timezone=True), nullable=True
     )
 
-    # --- Delivery channels (migration 0017_message_channels) ---------------------------
+    # --- Delivery channels (migration 0017_message_channels, default flipped in
+    # 0023_brain_message_default_on) -----------------------------------------------------
     # HOW this clinic talks to its patients, not WHAT it bought: a channel is an
     # operational property of the TENANT, never of the plan (`services/catalog.py`'s
     # `PlanDef` is deliberately untouched — a clinic switches channel without switching
@@ -98,19 +99,25 @@ class Tenant(Base):
     #
     # Two booleans, not one enum: they mirror `Entitlement.precheck_enabled` /
     # `secretaria_enabled`, which already model "which ones" as a SET rather than an
-    # exclusive choice. A clinic plausibly migrates gradually (keeps WhatsApp for its
-    # existing patients, offers Brain-Message to the new ones); a single enum would force
-    # an all-or-nothing cutover that does not match the real case.
+    # exclusive choice — a clinic can be on both channels at once.
     #
-    # 0017 backfilled `whatsapp_enabled` for every tenant with a stamped `connected_at` —
-    # the only signal available in this repo that a WABA was actually connected
-    # (`services/onboarding.py::record_attempt` stamps it on a 'pass' attempt). No new
-    # tenant is born with a channel on; whoever provisions the channel turns it on.
+    # `whatsapp_enabled` stays opt-in: 0017 backfilled it for every tenant with a stamped
+    # `connected_at` (the only signal that a WABA was actually connected,
+    # `services/onboarding.py::record_attempt` on a 'pass' attempt) and no new tenant is
+    # born with it on — whoever connects a WhatsApp number turns it on.
+    #
+    # `brain_message_enabled` used to be opt-in the same way, but nothing outside a direct
+    # DB edit ever set it — a tenant created any way other than the Stripe webhook /
+    # `/doctor/onboarding` self-heal (e.g. straight from an admin panel) was permanently
+    # locked out of its own Brain-Message login, 403 `modulo_nao_contratado`, with no UI to
+    # fix it. 0023 reversed the product decision (dono, 2026-09-23): Brain-Message is now
+    # the unified Portal every tenant/doctor gets by default — WhatsApp remains an
+    # additional, independent channel a clinic may also turn on, never a substitute.
     whatsapp_enabled: Mapped[bool] = mapped_column(
         Boolean, server_default=text("false"), default=False
     )
     brain_message_enabled: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("false"), default=False
+        Boolean, server_default=text("true"), default=True
     )
 
     # --- Patient invite (migration 0020_patient_accounts) ------------------------------

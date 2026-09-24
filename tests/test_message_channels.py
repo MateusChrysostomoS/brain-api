@@ -43,23 +43,25 @@ BACKFILL_SQL = "UPDATE tenants SET whatsapp_enabled = true WHERE connected_at IS
 # ---------------------------------------------------------------------------
 
 
-async def test_new_tenant_has_both_channels_off(db_session):
-    """A tenant created through the ORM is born with no channel enabled."""
+async def test_new_tenant_is_born_on_brain_message_off_whatsapp(db_session):
+    """A tenant created through the ORM gets the unified Portal by default (0023);
+    WhatsApp stays opt-in — nobody is born with a connected number."""
     tenant = Tenant(clinic_name="Clínica Sem Canal")
     db_session.add(tenant)
     await db_session.commit()
     await db_session.refresh(tenant)
 
     assert tenant.whatsapp_enabled is False
-    assert tenant.brain_message_enabled is False
+    assert tenant.brain_message_enabled is True
 
 
 async def test_server_default_covers_rows_the_orm_never_touched(db_session):
-    """A raw INSERT that never mentions the columns still lands `false`/`false`.
+    """A raw INSERT that never mentions the columns still lands `false`/`true` (0023).
 
-    This is the layer that matters for the migration: `NOT NULL DEFAULT false` is what
-    keeps `op.add_column` from failing on a populated `tenants` table, and what the raw
-    backfill UPDATE reads before it writes.
+    This is the layer that matters for the migration: the DDL `server_default`, not just
+    the ORM's Python-side `default=`, is what keeps `op.add_column`/`op.alter_column` from
+    failing on a populated `tenants` table, and what any raw backfill UPDATE reads before
+    it writes.
     """
     raw_id = uuid.uuid4()
     await db_session.execute(
@@ -71,7 +73,7 @@ async def test_server_default_covers_rows_the_orm_never_touched(db_session):
     tenant = await db_session.get(Tenant, raw_id)
     assert tenant is not None
     assert tenant.whatsapp_enabled is False
-    assert tenant.brain_message_enabled is False
+    assert tenant.brain_message_enabled is True
 
 
 # ---------------------------------------------------------------------------
@@ -85,10 +87,15 @@ async def test_backfill_marks_only_tenants_with_a_connected_number(db_session):
     `services/onboarding.py::record_attempt` stamps `connected_at` on a 'pass' attempt —
     it is the only signal in this repo that a WABA was actually connected. A tenant still
     in onboarding must come out untouched: marking it would invent a channel it does not
-    have, and `brain_message_enabled` must not move for ANYONE.
+    have. This pins 0017's ORIGINAL backfill statement (`BACKFILL_SQL` above) in isolation
+    — `brain_message_enabled` is set explicitly here so the assertion below stays about
+    that one historical SQL statement, not about 0023's later default (see the "2) The
+    backfill predicate" tests above for the current default).
     """
-    connected = Tenant(clinic_name="Clínica Conectada", connected_at=datetime.now(UTC))
-    never_connected = Tenant(clinic_name="Clínica Em Onboarding")
+    connected = Tenant(
+        clinic_name="Clínica Conectada", connected_at=datetime.now(UTC), brain_message_enabled=False
+    )
+    never_connected = Tenant(clinic_name="Clínica Em Onboarding", brain_message_enabled=False)
     db_session.add_all([connected, never_connected])
     await db_session.commit()
 
@@ -99,7 +106,8 @@ async def test_backfill_marks_only_tenants_with_a_connected_number(db_session):
 
     assert connected.whatsapp_enabled is True
     assert never_connected.whatsapp_enabled is False
-    # The backfill touches ONE column: nobody is born on Brain-Message.
+    # 0017's backfill statement touches ONE column, whatever brain_message_enabled was
+    # before it ran.
     assert connected.brain_message_enabled is False
     assert never_connected.brain_message_enabled is False
 
@@ -113,7 +121,8 @@ async def test_resolve_entitlement_reports_channels_without_an_entitlement_row(d
     """The default-resolution branch still tells the truth about the channel.
 
     Channel lives on `tenants`, plan lives on `entitlements` — a tenant that has never
-    been billed can still be on WhatsApp, and the portal has to see that.
+    been billed can still be on WhatsApp (opt-in), and is on Brain-Message by default
+    (0023) regardless of billing state; the portal has to see both.
     """
     tenant = Tenant(clinic_name="Clínica Sem Entitlement", whatsapp_enabled=True)
     db_session.add(tenant)
@@ -124,7 +133,7 @@ async def test_resolve_entitlement_reports_channels_without_an_entitlement_row(d
     assert out.plan == "free"
     assert out.status == "inactive"
     assert out.channels.whatsapp is True
-    assert out.channels.brain_message is False
+    assert out.channels.brain_message is True
 
 
 async def test_channels_are_a_set_not_an_exclusive_choice(db_session):
@@ -189,6 +198,6 @@ async def test_get_entitlements_serializes_channels(client):
         resp = await client.get("/entitlements", headers=_bearer(token))
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["channels"] == {"whatsapp": False, "brain_message": False}
+        assert body["channels"] == {"whatsapp": False, "brain_message": True}
         # The additive field did not disturb what the frontend already consumes.
         assert set(body["products"]) == {"precheck", "secretaria"}

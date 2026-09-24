@@ -205,22 +205,108 @@ async def test_every_accepted_kind_travels_captionless_as_its_sniffed_type(
     assert parts["file"]["content"] == content
 
 
-# --- 2) PreCheck keeps refusing, exactly as before ---------------------------------------------
+# --- 2) PreCheck takes an exam on its own wire: raw bytes, addressed by query (2026-09-22) ------
+
+_PRECHECK_TURN = {"messages": [], "status": "question", "state": "MEDIA_WAITING"}
 
 
-async def test_precheck_still_refuses_a_file_and_nothing_is_relayed(pclient, monkeypatch):
-    """Checklist 2: PreCheck takes no file this round — the same 422 a file always got there,
-    now saying why — and zero network."""
+def _precheck_turn(request):
+    return httpx.Response(200, json=_PRECHECK_TURN, request=request)
+
+
+async def test_an_exam_is_relayed_to_precheck_as_its_raw_bytes(pclient, monkeypatch):
+    """The whole wire: PreCheck's route and header, the handle off the session as a QUERY, the
+    body = the file itself typed by its bytes, framed by length — and no caption or name, which
+    in a query string would be PII in every access log."""
+    client, _, seed = pclient
+    _configure_mesh(monkeypatch)
+    calls = _mesh(monkeypatch, _precheck_turn)
+    login = await _patient(pclient)
+    image = _png()
+
+    resp = await _upload(
+        client,
+        login["access_token"],
+        "exame.jpg",
+        image,
+        url=PRECHECK_MESSAGES,
+        text="meu exame",
+        patient_name="Maria",
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["product"] == "precheck"
+    assert resp.json()["payload"] == _PRECHECK_TURN
+    (call,) = calls
+    assert (call["method"], call["path"]) == ("POST", "/internal/brain-message/inbound-media")
+    assert call["params"] == {"tenant_id": str(seed.both), "session_ref": login["patient_ref"]}
+    assert call["headers"]["x-internal-token"] == "precheck-token-BBB"
+    assert "x-internal-api-key" not in call["headers"]
+    assert call["headers"]["content-type"] == "image/png"  # the bytes, not the browser's claim
+    assert call["headers"]["content-length"] == str(len(image))
+    assert "transfer-encoding" not in call["headers"]
+    assert call["body"] == image  # never re-encoded, never wrapped
+
+
+async def test_a_pdf_bigger_than_one_chunk_reaches_precheck_whole(pclient, monkeypatch):
+    """Several read chunks, one body: nothing lost or duplicated at a chunk boundary."""
     client, _, _ = pclient
     _configure_mesh(monkeypatch)
-    calls = _mesh(monkeypatch, _queued)
+    calls = _mesh(monkeypatch, _precheck_turn)
+    login = await _patient(pclient)
+    pdf = _PDF + bytes(range(256)) * 1024  # ~256 KiB, four 64 KiB chunks and change
+
+    resp = await _upload(client, login["access_token"], "laudo.pdf", pdf, url=PRECHECK_MESSAGES)
+
+    assert resp.status_code == 200, resp.text
+    assert calls[0]["headers"]["content-type"] == "application/pdf"
+    assert calls[0]["body"] == pdf
+
+
+@pytest.mark.parametrize(
+    ("code", "status_code"),
+    [
+        ("attachment_consent_required", 409),  # before the LGPD terms were accepted
+        ("attachment_unsupported_for_product", 422),  # a clinic with no exam pipeline
+    ],
+)
+async def test_precheck_refusals_reach_the_patient_in_this_services_words(
+    pclient, monkeypatch, code, status_code
+):
+    client, _, _ = pclient
+    _configure_mesh(monkeypatch)
+    calls = _mesh(
+        monkeypatch, _refusing(status_code, {"code": code, "message": _UPSTREAM_SENTENCE})
+    )
     login = await _patient(pclient)
 
-    resp = await _upload(client, login["access_token"], "exame.pdf", _PDF, url=PRECHECK_MESSAGES)
-    assert resp.status_code == 422, resp.text
-    assert resp.json()["detail"]["code"] == "attachment_unsupported_for_product"
+    resp = await _upload(client, login["access_token"], "exame.png", _png(), url=PRECHECK_MESSAGES)
 
-    # The JSON contract keeps refusing any file-shaped field there too, exactly as before.
+    assert resp.status_code == status_code, resp.text
+    assert resp.json() == {"detail": {"code": code, "message": attachments.REFUSALS[code][1]}}
+    assert _UPSTREAM_SENTENCE not in resp.text
+    assert len(calls) == 1
+
+
+async def test_any_other_precheck_refusal_stays_the_opaque_product_error(pclient, monkeypatch):
+    client, _, _ = pclient
+    _configure_mesh(monkeypatch)
+    _mesh(monkeypatch, _refusing(422, {"code": "something_else", "message": _UPSTREAM_SENTENCE}))
+    login = await _patient(pclient)
+
+    resp = await _upload(client, login["access_token"], "exame.png", _png(), url=PRECHECK_MESSAGES)
+
+    assert resp.status_code == 502, resp.text
+    assert resp.json() == {"detail": "product_error"}
+
+
+async def test_precheck_json_still_refuses_a_file_shaped_field(pclient, monkeypatch):
+    """A file travels only as multipart; the JSON contract is unchanged there."""
+    client, _, _ = pclient
+    _configure_mesh(monkeypatch)
+    calls = _mesh(monkeypatch, _precheck_turn)
+    login = await _patient(pclient)
+
     resp = await client.post(
         PRECHECK_MESSAGES,
         headers=_bearer(login["access_token"]),

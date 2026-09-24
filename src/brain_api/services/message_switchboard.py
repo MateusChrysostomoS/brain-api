@@ -25,7 +25,7 @@ never be spelled the same as "the service is down" (502/503), or a support call 
 missing tab becomes unanswerable.
 """
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, BinaryIO
@@ -47,11 +47,15 @@ PRODUCT_SECRETARIA = "secretaria"
 PRODUCT_PRECHECK = "precheck"
 #: Display order of the tabs the patient sees; also the iteration order of `/threads`.
 PRODUCTS: tuple[str, ...] = (PRODUCT_SECRETARIA, PRODUCT_PRECHECK)
-#: Products whose relay CODE carries a file (`send_attachment`, `open_media`, the transcript
-#: reference). PreCheck is out of this round on purpose (z_prompts/PLANO_PORTAL_API_MVP.md,
-#: decision 1): adapting it is adding it here plus its branch in those functions — the
-#: validation in `core/attachments.py` is product-agnostic and does not change.
-ATTACHMENT_PRODUCTS: frozenset[str] = frozenset({PRODUCT_SECRETARIA})
+#: Products that take a file FROM the patient (`send_attachment`). The validation in
+#: `core/attachments.py` is product-agnostic and is the same for both. PreCheck joined on
+#: 2026-09-22 with its own wire (raw bytes, see `send_attachment`).
+ATTACHMENT_PRODUCTS: frozenset[str] = frozenset({PRODUCT_SECRETARIA, PRODUCT_PRECHECK})
+#: Products whose transcript carries a file reference that streams BACK to the browser
+#: (`_project_attachments`, `open_media`). Not the same set: PreCheck keeps an exam for its
+#: pipeline and answers with a plain text bubble ("📎 Imagem enviada"), never a reference, so
+#: it has no media route to stream from.
+MEDIA_PRODUCTS: frozenset[str] = frozenset({PRODUCT_SECRETARIA})
 #: Products whose transcript carries a delivery state and that take a patient read mark
 #: (`mark_read`). PreCheck is out of this round for the same reason as attachments
 #: (z_prompts/PROMPT_BRAIN_MESSAGE_STATUS_ENTREGA_2_BRAIN_API.md, decision 1).
@@ -448,6 +452,66 @@ async def open_conversation(
     return OPEN_FAILED
 
 
+async def open_precheck_session(*, tenant_id: UUID, patient_ref: str) -> str:
+    """Ask PreCheck to open this patient's session and greet — FIRE AND FORGET, like above.
+
+    The PreCheck twin of `open_conversation`, for a link that names PreCheck (2026-09-22). It
+    calls the SAME route the portal hand-off already uses (`services/precheck_handoff.py::
+    request_portal_handoff`): `POST {PRECHECK}/internal/brain-message/open`, which seeds the
+    session at `INIT` and asks the conductor for its welcome + LGPD consent WITHOUT an inbound
+    message. So nothing is fabricated in the patient's transcript — the reason this module
+    refused to greet PreCheck until PreCheck grew that route.
+
+    Everything `open_conversation` promises holds here too, for the same reasons: it never
+    raises, it logs neither the handle nor a name, and idempotence is the callee's. PreCheck
+    answers `200 {"status": "exists"}` for a session already open and writes nothing past
+    `INIT`, which is what lets the caller fire on a RESUMED visit as well (see
+    `api/portal/patient_access.py::_open_if_precheck`).
+
+    Outcomes: `200 awaiting_consent` → `OPEN_QUEUED` (opened, greeting on its way),
+    `200 exists` → `OPEN_EXISTS`, anything else → `OPEN_FAILED` / `OPEN_UNCONFIGURED`.
+    `patient_name` is deliberately not sent: a visit that opened from a link has none, and
+    PreCheck's request model is `extra="forbid"`, so only declared keys travel.
+    """
+    try:
+        base, headers = _upstream(PRODUCT_PRECHECK)
+    except HTTPException:
+        logger.warning("precheck_open_unconfigured", tenant_id=str(tenant_id))
+        return OPEN_UNCONFIGURED
+
+    body = {"tenant_id": str(tenant_id), "session_ref": patient_ref}
+    try:
+        async with httpx.AsyncClient(
+            base_url=base, timeout=get_settings().PRECHECK_TIMEOUT_SECONDS
+        ) as client:
+            resp = await client.request("POST", _OPEN_PATH, headers=headers, json=body)
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "precheck_open_unreachable", tenant_id=str(tenant_id), error=type(exc).__name__
+        )
+        return OPEN_FAILED
+    except Exception as exc:  # noqa: BLE001 - same absolute promise as `open_conversation`
+        logger.error(
+            "precheck_open_unexpected_error", tenant_id=str(tenant_id), error=type(exc).__name__
+        )
+        return OPEN_FAILED
+
+    if resp.status_code == status.HTTP_200_OK:
+        try:
+            upstream = resp.json().get("status")
+        except (ValueError, AttributeError):
+            upstream = None
+        outcome = OPEN_EXISTS if upstream == "exists" else OPEN_QUEUED
+        logger.info("precheck_open_ok", tenant_id=str(tenant_id), outcome=outcome)
+        return outcome
+    # 404 included: a clinic without `brain_tenant_id`, or a PreCheck without the route yet.
+    # The patient can still write first — an `INIT` session greets on any message.
+    logger.warning(
+        "precheck_open_refused", tenant_id=str(tenant_id), upstream_status=resp.status_code
+    )
+    return OPEN_FAILED
+
+
 # --- Read receipts (2026-09-19): the patient's "I have seen up to here" --------------------
 
 
@@ -516,9 +580,15 @@ async def send_attachment(
     in this service's log (brain-mesh-opaque-5xx-diagnosis). The exception is what only the
     product can know — consent in THIS conversation, its daily quota — relayed as the
     patient's own 4xx (`attachments.PRODUCT_REFUSALS`).
+
+    PreCheck takes a different wire (`_send_precheck_attachment`).
     """
     if product not in ATTACHMENT_PRODUCTS:  # pragma: no cover - the router refuses first.
         raise attachments.AttachmentRefused(attachments.ATTACHMENT_UNSUPPORTED_FOR_PRODUCT)
+    if product == PRODUCT_PRECHECK:
+        return await _send_precheck_attachment(
+            tenant_id=tenant_id, patient_ref=patient_ref, attachment=attachment, file=file
+        )
     data = {"tenant_id": str(tenant_id), "external_id": patient_ref}
     if text:
         data["text"] = text
@@ -551,6 +621,47 @@ async def send_attachment(
 
 
 _INBOUND_PATH = "/internal/brain-message/inbound"
+_PRECHECK_MEDIA_PATH = "/internal/brain-message/inbound-media"
+#: What PreCheck may refuse a file with and have the patient read it as its own 4xx: the shared
+#: product refusals, plus "this conversation takes no files" — PreCheck's answer for a clinic
+#: whose conductor has no exam pipeline, which is the patient's fact, not an outage.
+_PRECHECK_REFUSALS = attachments.PRODUCT_REFUSALS | {attachments.ATTACHMENT_UNSUPPORTED_FOR_PRODUCT}
+_FILE_CHUNK_BYTES = 64 * 1024
+
+
+async def _send_precheck_attachment(
+    *, tenant_id: UUID, patient_ref: str, attachment: CheckedAttachment, file: BinaryIO
+) -> dict[str, Any]:
+    """PreCheck's file wire (2026-09-22): the RAW bytes, addressed by query, no multipart.
+
+    `POST {PRECHECK}/internal/brain-message/inbound-media?tenant_id=..&session_ref=..`, body =
+    the file itself, `Content-Type` = the SNIFFED type. PreCheck has no multipart parser and
+    re-sniffs the bytes on its side. It answers in the same shape as its `/inbound`, and its
+    reply (the "exam received" bubble) arrives through the ordinary poll.
+
+    The caption, the patient's name and a tap id are deliberately NOT sent: PreCheck treats an
+    exam as pure media, and a name in a query string is PII in every access log on the way.
+    The tenant and the handle come off the session, exactly as on every other hop.
+    """
+    return await _call(
+        PRODUCT_PRECHECK,
+        "POST",
+        _PRECHECK_MEDIA_PATH,
+        params={"tenant_id": str(tenant_id), "session_ref": patient_ref},
+        content=_off_the_loop(_file_chunks(file)),
+        content_headers={
+            "Content-Type": attachment.kind.content_type,
+            "Content-Length": str(attachment.size_bytes),
+        },
+        timeout=get_settings().ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS,
+        refusals=_PRECHECK_REFUSALS,
+    )
+
+
+def _file_chunks(file: BinaryIO) -> Iterator[bytes]:
+    """The spooled upload, from its start, in chunks — read in a worker thread by the caller."""
+    while chunk := file.read(_FILE_CHUNK_BYTES):
+        yield chunk
 
 
 async def _off_the_loop(stream: Iterable[bytes]) -> AsyncIterator[bytes]:
@@ -635,7 +746,7 @@ async def open_media(
     refused, never streamed), a declared length over the ceiling is refused, and the body is
     cut at the ceiling whatever the upstream claimed.
     """
-    if product not in ATTACHMENT_PRODUCTS or not attachments.is_media_id(message_id):
+    if product not in MEDIA_PRODUCTS or not attachments.is_media_id(message_id):
         raise _media_not_found()
     base, headers = _upstream(product)
     client = httpx.AsyncClient(

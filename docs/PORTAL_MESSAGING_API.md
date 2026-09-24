@@ -434,7 +434,7 @@ decisions and proofs:
 (JPEG/PNG/WEBP/GIF/PDF **judged by its bytes**, 1 to 20 971 520 bytes) plus the JSON fields as form
 fields, `text` becoming an optional caption. Any other field is a 422. Any patient may upload —
 clinic token or pending (e-mail not verified) token alike — but only on a product in
-`ATTACHMENT_PRODUCTS` (today `secretaria`; PreCheck → 422). The type relayed is the sniffed one — never the browser's `Content-Type` or the
+`ATTACHMENT_PRODUCTS` (`secretaria`, and `precheck` since 2026-09-22 — its wire is §7.2a). The type relayed is the sniffed one — never the browser's `Content-Type` or the
 extension; a same-family wrong extension is corrected, a cross-family one refused; names are
 sanitized. Budgets: `PATIENT_ATTACHMENT_RATE_LIMIT_PER_MIN` (10/patient) and, for unverified
 visitors, `PATIENT_PENDING_ATTACHMENT_RATE_LIMIT_PER_MIN` (20/clinic, shared); kill switch
@@ -455,6 +455,26 @@ patient A's file. Transcript items gain `attachment: {content_type, size_bytes, 
 and no field anywhere in the transcript carries a storage key or URL (brain-api rewrites only
 `attachment`). secretarIA must also enforce a **persisted byte quota** per patient and per clinic
 where it stores files — brain-api's limit is a best-effort count per process.
+
+### 7.2a brain-api → PreCheck (2026-09-22)
+
+A different wire, because PreCheck has no multipart parser
+(`message_switchboard.py::_send_precheck_attachment`):
+
+```
+POST {PRECHECK_BASE_URL}/internal/brain-message/inbound-media?tenant_id=<uuid>&session_ref=<MessagePatient.id>
+X-Internal-Token: <pair key>    Content-Type: <sniffed type>    Content-Length: <size>
+<the file's raw bytes>
+→ 200  same shape as PreCheck's /inbound (messages: [], status); its "exam received" bubble arrives by the poll
+→ 409 {"detail": {"code": "attachment_consent_required"}}         before the LGPD terms were accepted
+→ 422 {"detail": {"code": "attachment_unsupported_for_product"}}  a clinic without an exam pipeline
+```
+
+Those two refusals reach the patient as their own 4xx (§7.4 sentences); any other refusal is the
+opaque `502 product_error`. The caption, the patient's name and a tap id are NOT sent — an exam is
+pure media there, and a name in a query string is PII in every access log. PreCheck's transcript
+answers with a text bubble, never an `attachment` reference, so `open_media` stays secretarIA-only
+(`MEDIA_PRODUCTS`) and `GET .../threads/precheck/media/{id}` is still a `404`.
 
 ### 7.3 Receive: the reference in the poll, the bytes in the media route
 
@@ -479,7 +499,7 @@ Body `{"detail": {"code", "message"}}` (+ `max_bytes` on 413); `message` is Port
 | `attachment_type_mismatch` | 422 | the name claims another family, or an extension outside the list |
 | `attachment_empty` | 422 | 0 bytes |
 | `attachment_malformed` | 422 | no `file`, two files, a repeated field, broken multipart |
-| `attachment_unsupported_for_product` | 422 | product takes no files (PreCheck), or kill switch off |
+| `attachment_unsupported_for_product` | 422 | kill switch off, or (from PreCheck) a clinic with no exam pipeline |
 | `attachment_not_found` | 404 | media route, every reason |
 
 Decided by the **product** after brain-api accepted the file (since 2026-09-19 relayed as these
@@ -712,6 +732,15 @@ Both are gated on the **resolved product being secretarIA** — the link's `prod
   patient who opened the pre-consult tab before booking is already past it, where the same body
   would reach `_turn()` and could record an answer nobody gave. Contract and deploy order in
   `CONTRACTS.md` §12.3.2 (PreCheck first).
+- **A PreCheck link speaks first too** (2026-09-22). `api/portal/patient_access.py::
+  _open_if_precheck` → `message_switchboard.open_precheck_session`, fire-and-forget, calls that
+  same PreCheck route with `{tenant_id, session_ref}` (no `patient_name`; PreCheck answers `200
+  awaiting_consent` or `200 exists`). Triggers: `POST /pending` on a created **or resumed** visit
+  (a patient who opened the booking link and later scans the PreCheck QR code resumes that visit,
+  and PreCheck's `exists` absorbs repeats), and `POST /clinics`. Gated on the resolved product
+  being **PreCheck** — never on a two-product clinic whose link names secretarIA or nothing: the
+  portal polls the PreCheck thread in the background there and switches the patient to it as soon
+  as it has messages (the hand-off reveal), so opening it would pull a patient away from booking.
 
 ### 8.7 `email_masked` on `POST /internal/brain-message/pending-otp/request`
 
@@ -852,3 +881,10 @@ e-mail address, a cookie, or a JWT from this channel.
   (`tasks/TASK-005`, a new availability endpoint this document does not describe yet — Portal
   only) and `z_prompts/PROMPT_WHATSAPP_FLOW_POC_CALENDARIO.md` (research/POC, no contract here
   unless it graduates).
+- **2026-09-22** — PreCheck on the Portal, driven by its n8n conductor (sessions with Lucas and
+  the PreCheck repo). **§8.6** — a PreCheck link speaks first: `_open_if_precheck` calls PreCheck's
+  `/internal/brain-message/open` fire-and-forget on `/pending` (created or resumed) and `/clinics`,
+  only when the resolved product is PreCheck (commit `85035c6`). **§7.1/§7.2a/§7.4** — PreCheck
+  takes an exam: `ATTACHMENT_PRODUCTS` gains `precheck`, relayed as raw bytes to
+  `/internal/brain-message/inbound-media`; `MEDIA_PRODUCTS` (secretarIA only) now gates the stream
+  back. PreCheck's side of both is in production.

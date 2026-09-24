@@ -761,12 +761,9 @@ async def add_clinic_by_invite(
         await patient_access.pin_login_clinic(session, login_session_id, patient)
     # After `add_clinic`, which commits. No `product` to honour: this route carries no link
     # parameter, so the portal lands on whatever tab `default_product` names.
-    _greet_if_secretaria(
-        background_tasks,
-        await resolve_entitlement(session, clinic.id),
-        tenant_id=clinic.id,
-        patient_ref=patient.id,
-    )
+    ent = await resolve_entitlement(session, clinic.id)
+    _greet_if_secretaria(background_tasks, ent, tenant_id=clinic.id, patient_ref=patient.id)
+    _open_if_precheck(background_tasks, ent, tenant_id=clinic.id, patient_ref=patient.id)
     return _clinic_session(patient, clinic, login_session_id)
 
 
@@ -1110,7 +1107,7 @@ async def _checked_relay(
         "`application/json` (`PatientMessageIn`) sends text, exactly as before. "
         "`multipart/form-data` sends ONE file in the part `file` plus the same fields as form "
         "fields, `text` becoming an optional caption: JPEG, PNG, WEBP, GIF or PDF judged by "
-        "its content, up to 20 MiB, only on a product that takes files (secretaria) — from any "
+        "its content, up to 20 MiB, on a product that takes files (secretaria, precheck) — any "
         "patient, clinic or pending token alike. Refusals of a file are 4xx with "
         '`{"detail": {"code", "message"}}` (docs/CHECKPOINT_brain_message_anexos.md).'
     ),
@@ -1130,8 +1127,9 @@ async def _checked_relay(
         415: {"description": "The file's real type is not an accepted one."},
         422: {
             "description": (
-                "Malformed body; a file whose name contradicts its content; or a product that "
-                "takes no files (precheck)."
+                "Malformed body; a file whose name contradicts its content; or a conversation "
+                "that takes no files (the kill switch off, or a PreCheck clinic without an "
+                "exam pipeline)."
             )
         },
         429: {
@@ -1414,13 +1412,9 @@ def _greet_if_secretaria(
     slow or hung secretarIA cannot add a single millisecond the patient can perceive. A short
     timeout would have bounded the damage; it would not have removed it.
 
-    ONLY FOR secretarIA, AND THAT IS A LIMITATION, NOT AN OVERSIGHT. `product="precheck"`
-    triggers nothing at all. PreCheck's session is opened either by its `/internal/precheck-
-    handoff` (which is keyed on a WhatsApp phone number a Portal patient does not have) or by
-    a patient message — and relaying a message the patient never sent is exactly the
-    fabricated bubble TASK-003 forbids. Giving PreCheck the same treatment needs a route in
-    the PreCheck repo, which this task may not touch. A PreCheck thread therefore stays empty
-    until the patient writes, as it does today. See `results/brain-api.md` §"peça 3".
+    ONLY FOR secretarIA. `product="precheck"` triggers nothing HERE: PreCheck's opening lives in
+    `_open_if_precheck` (2026-09-22), through PreCheck's own `/internal/brain-message/open` —
+    never through a relayed message the patient did not send, which TASK-003 forbids.
 
     `product` is the one the LINK named; `None` means the portal will land on
     `default_product(ent)` — the same first-offered tab it renders.
@@ -1430,6 +1424,42 @@ def _greet_if_secretaria(
         return
     background_tasks.add_task(
         message_switchboard.open_conversation,
+        tenant_id=tenant_id,
+        patient_ref=str(patient_ref),
+    )
+
+
+def _open_if_precheck(
+    background_tasks: BackgroundTasks,
+    ent: EntitlementOut,
+    *,
+    tenant_id: UUID,
+    patient_ref: UUID,
+    product: str | None = None,
+) -> None:
+    """The PreCheck twin of `_greet_if_secretaria` (2026-09-22): a PreCheck link speaks first.
+
+    PreCheck grew `POST /internal/brain-message/open` (the route the portal hand-off already
+    calls), so the limitation `_greet_if_secretaria` documents is lifted for PreCheck through
+    that route — never through a fabricated inbound.
+
+    Fires ONLY when the resolved product is PreCheck: an explicit `produto=precheck` link, or a
+    clinic whose sole offered product is PreCheck. NEVER on a clinic that offers both and a link
+    that names secretarIA or nothing — the portal polls the PreCheck thread in the background on
+    such clinics and SWITCHES the patient to that tab as soon as it has messages (the hand-off
+    reveal). Opening a PreCheck session there would pull a patient who came to book away from
+    the booking.
+
+    Unlike the secretarIA greeting, it also fires on a RESUMED visit: a patient who opened the
+    clinic's booking link earlier and now scans its PreCheck QR code resumes the same visit,
+    and without this their PreCheck thread would sit empty. PreCheck's `exists` makes a repeat
+    cost one round trip and nothing else.
+    """
+    resolved = product or message_switchboard.default_product(ent)
+    if resolved != message_switchboard.PRODUCT_PRECHECK:
+        return
+    background_tasks.add_task(
+        message_switchboard.open_precheck_session,
         tenant_id=tenant_id,
         patient_ref=str(patient_ref),
     )
@@ -1518,15 +1548,14 @@ async def open_pending(
     confirms an appointment stays a proactive behaviour elsewhere — it is not a condition of
     access, and nothing in this file treats it as one.
 
-    NOTHING IS PRE-CREATED UPSTREAM — **except secretarIA's greeting, since 2026-09-19**.
-    PreCheck's conductor opens its own session on the first inbound message (`resolve_session`
-    is idempotent by `session_ref`), so the only way to pre-create one here would be to relay a
-    synthetic message the patient never sent; for PreCheck that is still true and still
-    refused. secretarIA now has a route that opens the conversation and greets WITHOUT an
-    inbound (`_greet_if_secretaria`), so a patient who opens a link is spoken to first instead
-    of landing in an empty thread. It fires only on a CREATED visit — a reload that resumes
-    this same visit through the cookie must not produce a second greeting — and only when the
-    resolved product is secretarIA.
+    NOTHING IS PRE-CREATED UPSTREAM — **except each product's opening**: secretarIA's greeting
+    since 2026-09-19, PreCheck's since 2026-09-22 (`_open_if_precheck`, through PreCheck's
+    `/internal/brain-message/open`, on a created OR resumed visit — its docstring says why).
+    A synthetic patient message is still never relayed. secretarIA's route opens the
+    conversation and greets WITHOUT an inbound (`_greet_if_secretaria`), so a patient who opens
+    a link is spoken to first instead of landing in an empty thread. It fires only on a CREATED
+    visit — a reload that resumes this same visit through the cookie must not produce a second
+    greeting — and only when the resolved product is secretarIA.
 
     RESUME, AND ITS ONE LIMIT: the cookie holds the most recent visit. Opening a DIFFERENT
     clinic's link replaces it, and the previous conversation stops being reachable from this
@@ -1568,6 +1597,14 @@ async def open_pending(
             patient_ref=patient.id,
             product=payload.product,
         )
+    # Created OR resumed — see `_open_if_precheck` for why a resume counts here.
+    _open_if_precheck(
+        background_tasks,
+        ent,
+        tenant_id=clinic.id,
+        patient_ref=patient.id,
+        product=payload.product,
+    )
 
     # The clinic and whether this was a resume — never the handle, never the address.
     logger.info("patient_pending_opened", tenant_id=str(clinic.id), resumed=resumed)

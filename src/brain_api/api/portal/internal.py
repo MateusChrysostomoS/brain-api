@@ -23,6 +23,8 @@ from brain_api.core.logging import get_logger
 from brain_api.core.ratelimit import SlidingWindowLimiter
 from brain_api.models.patient_access import MessagePatient
 from brain_api.schemas.portal.internal import (
+    PatientNameIn,
+    PatientNameOut,
     PendingEmailClaimIn,
     PendingEmailClaimOut,
     PendingIdentityIn,
@@ -224,12 +226,54 @@ async def verify_pending_otp_internal(
     if pending is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "pending_session_not_found")
     if pending.verified_at is not None:
-        return PendingOtpVerifyOut(status="verified")
+        return await _verified_out(session, pending.email)
     if pending.email is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "pending_email_missing")
     if not _pending_otp_verify_limiter.allow(str(pending.id)):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
+    address = pending.email
     verified = await patient_access.verify_pending_identity(session, pending, payload.code)
     if verified is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid_or_expired_code")
-    return PendingOtpVerifyOut(status="verified")
+    return await _verified_out(session, address)
+
+
+async def _verified_out(session: AsyncSession, address: str | None) -> PendingOtpVerifyOut:
+    """`verified`, plus the proven address's account name when it has one.
+
+    Only ever reached AFTER the code proved `address` (or on the idempotent retry of a visit
+    already proven) — the proof that joins the visit to that account at `/pending/complete`
+    is the same one that lets this clinic learn the name now. The name is PII: not logged.
+    """
+    name = await patient_access.account_name_for_proven_email(session, address) if address else None
+    return PendingOtpVerifyOut(status="verified", patient_name=name)
+
+
+@router.post(
+    "/brain-message/patient-name",
+    response_model=PatientNameOut,
+    summary="Record the name a Brain-Message conversation captured (internal)",
+    responses={
+        **_INTERNAL_RESPONSES,
+        404: {"description": "No identity with this handle at this clinic."},
+    },
+)
+async def record_patient_name(
+    payload: PatientNameIn,
+    session: AsyncSession = Depends(get_session),
+) -> PatientNameOut:
+    """secretarIA -> brain-api: the patient answered "qual é o seu nome?" at this clinic.
+
+    Kept on THIS clinic's identity; the account's next clinic receives it on its `open`
+    (`services/patient_access.py::add_clinic` -> `account_display_name`), so the patient is
+    not asked again (owner, 2026-09-24). `tenant_id` and `external_id` must both match the
+    identity. The name is PII: the log line carries the clinic only.
+    """
+    saved = await patient_access.set_identity_name(
+        session, payload.tenant_id, payload.external_id, payload.name.strip()
+    )
+    if not saved:
+        logger.info("patient_name_identity_not_found", tenant_id=str(payload.tenant_id))
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "patient_not_found")
+    logger.info("patient_name_recorded", tenant_id=str(payload.tenant_id))
+    return PatientNameOut(status="saved")

@@ -524,3 +524,6 @@ intactas.
 O E2E ficou bloqueado por um tempo num defeito da secretarIA (agendamento gravando o `patient_ref`
 em `appointments.phone`, `VARCHAR(32)`), não neste repo. Detalhe em
 `secretarIA/docs/CHECKPOINT_secretaria_email_otp_inline.md` e `tasks/TASK-002/TASK.md`.
+
+**Ponteiro (2026-09-21):** onda 4 (E2E cross-repo, sem PreCheck) rodou e achou divergências —
+`secretarIA/docs/CHECKPOINT_jornada_sem_gate_e2e.md`.

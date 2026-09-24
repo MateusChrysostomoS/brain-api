@@ -322,8 +322,19 @@ class PendingSessionOut(BaseModel):
     scoped JWT for page memory, plus the facts the chat screen needs to render itself.
     """
 
+    # WHICH session this answer carries (2026-09-24,
+    # docs/CHECKPOINT_portal_sessao_ativa_pula_pendente.md):
+    # - "pending": a visit, as before — `pending_token` is set, `access_token` is null;
+    # - "account": the browser carried a live ACCOUNT cookie (plus `X-Brain-Client`), so the
+    #   clinic was added to that account and no visit exists — `access_token` is an ordinary
+    #   CLINIC token (scope `patient_message`, renewable through `/refresh` like any clinic
+    #   of the account), `pending_token` is null, and there is no e-mail or code to ask for.
+    # Read this field; never infer the kind from which token happens to be present.
+    session_kind: Literal["pending", "account"] = "pending"
     # Scope `patient_pending`: the thread routes of exactly this clinic, and nothing else.
-    pending_token: str
+    pending_token: str | None = None
+    # Scope `patient_message`, bound to the account's login row (`sid` = `login_sid`).
+    access_token: str | None = None
     token_type: str = "bearer"
     expires_in: int
     tenant_id: UUID
@@ -335,6 +346,7 @@ class PendingSessionOut(BaseModel):
     # Whether secretarIA has already captured an address on this visit. The portal uses it to
     # decide whether "enviar código" is even offered yet. The address itself is never returned:
     # echoing it back would turn this route into a way to read what another visit captured.
+    # Always false for `session_kind="account"`: there is no visit and no code to offer.
     email_claimed: bool = False
 
 

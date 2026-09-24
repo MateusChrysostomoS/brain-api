@@ -171,6 +171,17 @@ class MessagePatient(Base):
     # treat NULLs as distinct, so a clinic may have many pending rows at once and at most one
     # identity per address.
     email: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    # The name the patient typed into THIS clinic's conversation (0024), reported by
+    # secretarIA over the service leg (`POST /internal/brain-message/patient-name`). PII:
+    # never logged, never returned to a browser. It exists so that the next clinic the same
+    # ACCOUNT is added to receives it on its `open` and does not ask again — the clinic needs
+    # it for the calendar event and the flow messages (owner, 2026-09-24). Read across
+    # clinics ONLY through `account_id` (`services/patient_access.py::account_display_name`),
+    # never by address or any other attribute.
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    name_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

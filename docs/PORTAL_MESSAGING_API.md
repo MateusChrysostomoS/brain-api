@@ -112,6 +112,21 @@ by e-mail match. Full state machine: `docs/CHECKPOINT_portal_clinicas_convite.md
 `docs/CHECKPOINT_portal_sessao_pendente.md`; the account-linking security argument is the
 skill `cross-tenant-account-linking`.
 
+**Opening a clinic's link with a live account (2026-09-24, built, not deployed).**
+`POST /patient-access/pending` is the door every clinic link goes through. When the browser
+carries a live `__Host-patient_session` AND sends `X-Brain-Client: web`, it mints **no visit**:
+the clinic is added to that account (`add_clinic`, the `POST /clinics` machinery) and the answer
+is `session_kind: "account"` with a clinic `access_token` (scope `patient_message`, renewable
+like any clinic of the account) and `pending_token: null` — no e-mail, no code, no confirmation
+screen (owner's decision). Anything short of that — no cookie, a revoked/expired/unknown one, a
+value `/refresh` already rotated away, a pre-account login row, or no header — is the unchanged
+visit, `session_kind: "pending"`. The header is both the CSRF guard for the cookie and what keeps
+the portal deployed before this change (which does not send it) on the old answer. The client
+must let any in-flight `/refresh` land before calling `/pending`, or it presents a rotated value
+and gets a visit. secretarIA needs no new field: the identity `add_clinic` produces makes
+`POST /internal/brain-message/pending-identity` answer `verified`. Contract with JSON examples,
+decisions, accepted risks and proofs: `docs/CHECKPOINT_portal_sessao_ativa_pula_pendente.md`.
+
 ### 1.2 Staff ↔ product (unaffected by this channel, listed for completeness)
 
 A clinic staff member never goes through brain-api's switchboard. secretarIA gates its hub
@@ -710,6 +725,7 @@ open_conversation`):
 | trigger | when | why |
 |---|---|---|
 | `POST /patient-access/pending` | only when the visit is **created**, never on a cookie resume | a reload must not greet twice |
+| `POST /patient-access/pending`, account branch (2026-09-24) | on every open with a live account cookie + `X-Brain-Client` — same rule as `/clinics` | the account's handle is greeted; secretarIA's probe answers `verified`, so no e-mail is asked, and its `exists` absorbs a reload |
 | `POST /patient-access/clinics` | on every successful add | the owner's "paciente novo **da clínica**" already has a Portal account and never passes through `/pending` |
 
 Both are gated on the **resolved product being secretarIA** — the link's `product`, or
@@ -756,6 +772,29 @@ secretarIA holds no copy of the address: the claim travels on the service leg
 (`tests/test_patient_pending_session.py` pins both). `409 pending_email_missing` is unchanged,
 and the field is absent from it: a visit with no captured address never reaches a `200`.
 Additive — a consumer that ignores the field is unaffected.
+
+### 8.8 The patient's name follows the account (2026-09-24)
+
+The clinic needs the name (calendar event, professional e-mail, PreCheck hand-off). It is kept on
+the clinic identity (`message_patients.name`, migration `0024`) and reaches the account's next
+clinic through `account_id` only (`services/patient_access.py::account_display_name`) — never by
+address or any other attribute. PII on every hop: never logged.
+
+- **secretarIA → brain-api** `POST /internal/brain-message/patient-name`
+  `{"tenant_id", "external_id", "name"}` (`extra="forbid"`, `name` 1–255) → `200 {"status":
+  "saved"}`; `404 patient_not_found` when both keys do not name one identity. The typed name always
+  replaces what was there. secretarIA calls it best effort after capturing a name on the Portal
+  (never on WhatsApp).
+- **brain-api → secretarIA** `POST /internal/brain-message/open`: `patient_name` (the field §8.6
+  always had) is now filled when the clinic is added to an account that already has a name
+  (`add_clinic` copies it onto the new identity). A fresh anonymous visit still sends `null`.
+- **`POST /internal/brain-message/pending-otp/verify`** → `{"status": "verified", "patient_name":
+  "Maria Silva" | null}` — the name of the account that owns the address the code just proved.
+  Additive; the status code alone still carries the outcome.
+
+secretarIA with a name → straight to the menu; without one → asks once, then the menu (never
+e-mail or code for a verified account). Details: `docs/CHECKPOINT_portal_sessao_ativa_pula_pendente.md`
+§8 and `secretarIA/docs/CHECKPOINT_portal_conta_ativa_abre_clinica.md`.
 
 ---
 
@@ -888,3 +927,11 @@ e-mail address, a cookie, or a JWT from this channel.
   takes an exam: `ATTACHMENT_PRODUCTS` gains `precheck`, relayed as raw bytes to
   `/internal/brain-message/inbound-media`; `MEDIA_PRODUCTS` (secretarIA only) now gates the stream
   back. PreCheck's side of both is in production.
+- **2026-09-24** — `PROMPT_BRAIN_MESSAGE_ENTRAR_TAMBEM_1_BRAIN_API.md` (part 1/3 of
+  `PLANO_BRAIN_MESSAGE_ENTRAR_TAMBEM_SESSAO_ATIVA.md`). **§1.1** — a clinic link opened with a
+  live account cookie + `X-Brain-Client` skips the visit: `PendingSessionOut` gains `session_kind`
+  (`"pending"` | `"account"`) and `access_token`, `pending_token` becomes nullable. **§8.6** — the
+  account branch greets through the existing trigger; no new field reaches secretarIA. Built,
+  uncommitted, not deployed, no migration; deploy brain-api before Brain-Message-Frontend part 3.
+  `docs/CHECKPOINT_portal_sessao_ativa_pula_pendente.md`.
+- **2026-09-24** — owner: the clinic needs the patient's name. **§8.8** — `message_patients.name` (migration `0024`), `POST /internal/brain-message/patient-name`, the name on the `open` of an account's next clinic and on `pending-otp/verify`. Built, uncommitted, not deployed; `alembic upgrade head` before this brain-api.

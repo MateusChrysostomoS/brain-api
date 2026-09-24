@@ -246,7 +246,8 @@ async def test_internal_inline_contract_promotes_only_on_the_browser_leg(
         code=code,
     )
     assert verified.status_code == 200, verified.text
-    assert verified.json() == {"status": "verified"}
+    # `patient_name` (2026-09-24): no account owns this address yet, so there is none.
+    assert verified.json() == {"status": "verified", "patient_name": None}
     assert (
         await client.get("/patient-access/pending/status", headers=_bearer(token))
     ).json() == {"state": "verified"}

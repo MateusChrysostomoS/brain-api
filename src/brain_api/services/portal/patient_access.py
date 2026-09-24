@@ -353,6 +353,10 @@ async def add_clinic(
         return None
     patient.account_id = account_id
     patient.last_seen_at = now
+    if patient.name is None:
+        # The name the account gave at ANOTHER of its clinics, so this clinic's `open` can
+        # carry it and the patient is not asked again. Through `account_id` only.
+        patient.name = await account_display_name(session, account_id)
     subject_ref = str(patient.id)
 
     columns = PatientConsentEvent.__table__.c
@@ -383,6 +387,64 @@ async def add_clinic(
         consent_events_recorded=1 if recorded.rowcount == 1 else 0,
     )
     return patient
+
+
+async def account_display_name(session: AsyncSession, account_id: UUID) -> str | None:
+    """The name this ACCOUNT most recently gave at any of its clinics, or None.
+
+    Grouped by `account_id` and nothing else: the account is the link the patient made
+    (a code, an invite), so reading a sibling identity's name through it is the same
+    reach `account_clinics` already has. Never by address — an unlinked row that happens
+    to share the e-mail is not this person's (`cross-tenant-account-linking`).
+
+    Most recent TYPED name first (`name_updated_at`); a name that was only copied from a
+    sibling has no timestamp of its own and never outranks the one it came from.
+    """
+    return await session.scalar(
+        select(MessagePatient.name)
+        .where(MessagePatient.account_id == account_id, MessagePatient.name.is_not(None))
+        .order_by(
+            MessagePatient.name_updated_at.is_(None),
+            MessagePatient.name_updated_at.desc(),
+            MessagePatient.created_at.desc(),
+        )
+        .limit(1)
+    )
+
+
+async def account_name_for_proven_email(session: AsyncSession, email: str) -> str | None:
+    """The display name of the account that owns `email` — ONLY once a code proved it.
+
+    Called by the pending-code verification, the moment the address is proven and the
+    visit is about to join that account (`/pending/complete`): the same proof that joins
+    them is what lets the clinic learn the name. Never call it with an unproven address.
+    """
+    account_id = await session.scalar(
+        select(MessagePatientAccount.id).where(
+            MessagePatientAccount.email == normalize_email(email)
+        )
+    )
+    if account_id is None:
+        return None
+    return await account_display_name(session, account_id)
+
+
+async def set_identity_name(
+    session: AsyncSession, tenant_id: UUID, patient_id: UUID, name: str
+) -> bool:
+    """Record the name typed into this clinic's conversation. Commits. False = no identity.
+
+    `tenant_id` must match the identity, so one clinic's key cannot name another clinic's
+    patient. The typed answer always wins over what was there (a copied or older name):
+    it is what the patient just said to call them.
+    """
+    patient = await session.get(MessagePatient, patient_id)
+    if patient is None or patient.tenant_id != tenant_id:
+        return False
+    patient.name = name
+    patient.name_updated_at = datetime.now(UTC)
+    await session.commit()
+    return True
 
 
 async def account_clinics(

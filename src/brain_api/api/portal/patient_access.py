@@ -60,6 +60,7 @@ from brain_api.core import attachments
 from brain_api.core.cookies import (
     clear_patient_pending_cookie,
     clear_patient_session_cookie,
+    has_client_header,
     read_patient_pending_cookie,
     read_patient_session_cookie,
     require_client_header,
@@ -762,7 +763,13 @@ async def add_clinic_by_invite(
     # After `add_clinic`, which commits. No `product` to honour: this route carries no link
     # parameter, so the portal lands on whatever tab `default_product` names.
     ent = await resolve_entitlement(session, clinic.id)
-    _greet_if_secretaria(background_tasks, ent, tenant_id=clinic.id, patient_ref=patient.id)
+    _greet_if_secretaria(
+        background_tasks,
+        ent,
+        tenant_id=clinic.id,
+        patient_ref=patient.id,
+        patient_name=patient.name,
+    )
     _open_if_precheck(background_tasks, ent, tenant_id=clinic.id, patient_ref=patient.id)
     return _clinic_session(patient, clinic, login_session_id)
 
@@ -1397,6 +1404,7 @@ def _greet_if_secretaria(
     tenant_id: UUID,
     patient_ref: UUID,
     product: str | None = None,
+    patient_name: str | None = None,
 ) -> None:
     """Schedule the clinic's automation to SPEAK FIRST, once this response has been written.
 
@@ -1418,6 +1426,10 @@ def _greet_if_secretaria(
 
     `product` is the one the LINK named; `None` means the portal will land on
     `default_product(ent)` — the same first-offered tab it renders.
+
+    `patient_name` is the name the ACCOUNT already gave at another of its clinics
+    (`add_clinic` copies it onto this identity), so secretarIA greets without asking it again.
+    A fresh anonymous visit has none. PII: forwarded, never logged.
     """
     resolved = product or message_switchboard.default_product(ent)
     if resolved != message_switchboard.PRODUCT_SECRETARIA:
@@ -1426,6 +1438,7 @@ def _greet_if_secretaria(
         message_switchboard.open_conversation,
         tenant_id=tenant_id,
         patient_ref=str(patient_ref),
+        patient_name=patient_name,
     )
 
 
@@ -1516,6 +1529,103 @@ async def lookup_clinic(
     return ClinicPublicOut(tenant_id=clinic.id, clinic_name=clinic.clinic_name, products=products)
 
 
+async def _open_with_account(
+    request: Request,
+    session: AsyncSession,
+    background_tasks: BackgroundTasks,
+    clinic: Tenant,
+    ent: EntitlementOut,
+    products: PublicProductsOut,
+    *,
+    product: str | None,
+) -> PendingSessionOut | None:
+    """The clinic's link opened by a browser that ALREADY carries a live account (2026-09-24).
+
+    The owner's decision, closed: "tendo o paciente logado no nosso portal, teria que nem
+    perguntar o e-mail, apenas começar a conversa e tal clínica ficará salva no portal desse
+    paciente". So no visit is minted, no e-mail is asked, no code is sent: the clinic enters
+    the account the way `POST /clinics` puts it there (`add_clinic` — idempotent, the
+    `brain_message_channel_access` consent recorded once) and the answer carries an ordinary
+    CLINIC token bound to the login row, as any clinic of the account gets from `/refresh`.
+
+    `None` means "no usable account here — carry on as before", for EVERY reason, so a missing,
+    expired, revoked or rotated-away cookie leaves the route byte-for-byte what it was:
+
+    * `X-Brain-Client` must be present. The cookie becomes a credential that WRITES (a clinic
+      into the account), and a cookie-authenticated write is CSRF-guarded in this repo
+      (auth-jwt-multitenant). Without it the cookie is ignored rather than refused — which is
+      also what keeps the portal deployed before this change working: it does not send the
+      header here and reads `pending_token` unconditionally (the CHECKPOINT has the order).
+    * the cookie must name a LIVE login row — `find_patient_session`, the one validator every
+      other cookie reader uses (`confirm_sibling`, `logout`): unknown, expired and revoked
+      alike. It does not rotate the value: that stays `/refresh`'s job, and a second rotating
+      reader would race the portal's single-flight renewal into the reuse detector.
+    * the row must belong to an ACCOUNT (`account_id`). A login from before the account model
+      joins one only when `/refresh` renews it (`_row_account(adopt=True)`); resolving it here
+      by address would be exactly the e-mail match that never grants
+      (cross-tenant-account-linking). The portal renews on mount, so in practice it has one.
+
+    What the account can reach is decided by the ROW, never by the request: the body is
+    `invite` + `product` (`extra="forbid"`), so there is no field through which one person's
+    cookie could name another person's account or identity.
+
+    The greeting is the SAME trigger `POST /clinics` fires, and needs no new contract:
+    secretarIA probes `POST /internal/brain-message/pending-identity` before its first turn,
+    and an identity `add_clinic` produced carries the proven address, so the probe answers
+    `verified` — the branch that goes straight to the main menu instead of asking for an
+    e-mail (`_handle_pre_consent_identity` there). A clinic already in the account is
+    re-greeted only if its conversation is empty; secretarIA's `exists` owns that answer.
+    """
+    raw = read_patient_session_cookie(request)
+    if raw is None or not has_client_header(request):
+        return None
+    login_row = await patient_access.find_patient_session(session, raw)
+    if login_row is None or login_row.account_id is None:
+        return None
+    account = await session.get(MessagePatientAccount, login_row.account_id)
+    if account is None:
+        return None
+    # Read before `add_clinic` commits; the instance is not re-read after.
+    login_session_id, login_unpinned = login_row.id, login_row.patient_id is None
+    # The same per-account budget as `POST /clinics`, for the same reason: this hands out a
+    # clinic session without a code. Spent only once the account is authenticated.
+    if not _link_limiter.allow(str(account.id)):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
+
+    patient = await patient_access.add_clinic(session, account, clinic)
+    if patient is None:
+        # An identity of this clinic bound to ANOTHER account — unreachable while the address
+        # is unique per account. Declined, not forced: the visit below grants nothing.
+        return None
+    if login_unpinned:
+        # A login opened by e-mail alone names its first clinic from now on (`login_clinic`).
+        await patient_access.pin_login_clinic(session, login_session_id, patient)
+    _greet_if_secretaria(
+        background_tasks,
+        ent,
+        tenant_id=clinic.id,
+        patient_ref=patient.id,
+        product=product,
+        patient_name=patient.name,
+    )
+    _open_if_precheck(
+        background_tasks, ent, tenant_id=clinic.id, patient_ref=patient.id, product=product
+    )
+
+    opened = _clinic_session(patient, clinic, login_session_id)
+    # The clinic only — never the handle, the account or the address.
+    logger.info("patient_pending_skipped_for_account", tenant_id=str(clinic.id))
+    return PendingSessionOut(
+        session_kind="account",
+        access_token=opened.access_token,
+        expires_in=opened.expires_in,
+        tenant_id=opened.tenant_id,
+        clinic_name=opened.clinic_name,
+        patient_ref=opened.patient_ref,
+        products=products,
+    )
+
+
 @router.post(
     "/pending",
     response_model=PendingSessionOut,
@@ -1524,12 +1634,14 @@ async def lookup_clinic(
         "Mints the handle secretarIA and PreCheck will know this visitor by, plus a token "
         "scoped to that one clinic and one HttpOnly cookie so a reload resumes the same "
         "conversation. Presenting a live pending cookie for the SAME clinic resumes it "
-        "instead of minting a second one."
+        "instead of minting a second one. A live ACCOUNT cookie sent with `X-Brain-Client` "
+        "mints no visit at all: the clinic is added to that account and the answer carries "
+        '`session_kind: "account"` with a clinic `access_token` instead of `pending_token`.'
     ),
     responses={
         403: {"description": "The clinic does not offer that product on this channel."},
         404: {"description": "No usable clinic — one answer for every reason."},
-        429: {"description": "Rate limited (per-IP budget)."},
+        429: {"description": "Rate limited (per-IP budget; per-account on the account branch)."},
     },
 )
 async def open_pending(
@@ -1557,6 +1669,12 @@ async def open_pending(
     visit — a reload that resumes this same visit through the cookie must not produce a second
     greeting — and only when the resolved product is secretarIA.
 
+    A BROWSER THAT IS ALREADY SOMEBODY'S ACCOUNT (2026-09-24) never reaches the visit below:
+    `_open_with_account` adds the clinic to that account and answers `session_kind="account"`.
+    It wins over a pending cookie, even one for this same clinic — the owner's "nem perguntar
+    o e-mail" — and anything short of a live account row plus `X-Brain-Client` falls through
+    to exactly the behaviour described here.
+
     RESUME, AND ITS ONE LIMIT: the cookie holds the most recent visit. Opening a DIFFERENT
     clinic's link replaces it, and the previous conversation stops being reachable from this
     browser (the row itself lives out its expiry). Accepted for this round — holding several
@@ -1576,6 +1694,14 @@ async def open_pending(
         secretaria=message_switchboard.PRODUCT_SECRETARIA in offered,
         precheck=message_switchboard.PRODUCT_PRECHECK in offered,
     )
+
+    # BEFORE the pending cookie is even read: a browser that already carries a live account
+    # never gets a visit minted for it (2026-09-24, `_open_with_account`).
+    with_account = await _open_with_account(
+        request, session, background_tasks, clinic, ent, products, product=payload.product
+    )
+    if with_account is not None:
+        return with_account
 
     raw_cookie = read_patient_pending_cookie(request)
     pending = (
@@ -1609,6 +1735,7 @@ async def open_pending(
     # The clinic and whether this was a resume — never the handle, never the address.
     logger.info("patient_pending_opened", tenant_id=str(clinic.id), resumed=resumed)
     return PendingSessionOut(
+        session_kind="pending",
         pending_token=create_patient_pending_token(
             tenant_id=str(clinic.id), patient_ref=str(patient.id), session_id=str(pending.id)
         ),

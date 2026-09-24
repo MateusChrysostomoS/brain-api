@@ -11,6 +11,44 @@ dia ao mudar este lado do contrato.
 
 ## Prompts pendentes
 
+- `z_prompts/PLANO_BRAIN_MESSAGE_ENTRAR_TAMBEM_SESSAO_ATIVA.md` (raiz de BRAIN, gerado 2026-09-24
+  via `/prompt-generator`, a partir dos Achados 9-11 de
+  `secretarIA/docs/CHECKPOINT_jornada_sem_gate_e2e.md` — linha 7 da onda 4, testada ao vivo em
+  2026-09-23) — decisão do dono: paciente com sessão de conta ativa (`__Host-patient_session`) que
+  abre o link de uma clínica nova não deve ver NEM pergunta de e-mail nem código — a conversa
+  começa direto e a clínica é adicionada à conta em silêncio (não é a tela "Entrar também em
+  `<clínica>`?" da matriz antiga, que fica definitivamente descartada). Parte 1/3 deste repo:
+  `z_prompts/PROMPT_BRAIN_MESSAGE_ENTRAR_TAMBEM_1_BRAIN_API.md` — `open_pending`
+  (`api/portal/patient_access.py`, ~linha 1535) nunca olha `__Host-patient_session`, só o cookie de
+  visita pendente; a maquinaria de conta (`add_clinic`, `issue_patient_session`) já existe e está
+  testada, só falta o atalho. Partes 2/3 (secretarIA) e 3/3 (Brain-Message-Frontend) dependem do
+  contrato desta. **Parte 1 EXECUTADA em 2026-09-24 — BUILT, não commitada, não deployada, sem
+  migração.** `api/portal/patient_access.py::_open_with_account`: cookie de conta vivo +
+  `X-Brain-Client: web` → `add_clinic` e resposta `session_kind: "account"` com `access_token` de
+  clínica (sem visita, sem e-mail, sem código); qualquer outra coisa → visita de hoje. Nenhum
+  campo novo para a secretarIA (o probe `pending-identity` já responde `verified`). Revisão de
+  segurança sem bloqueante. **Emenda 2026-09-24 (dono: a clínica precisa do nome):** migração
+  `0024_message_patient_name` + `POST /internal/brain-message/patient-name`; o nome da conta vai no
+  `open` da próxima clínica e no `pending-otp/verify` — só via `account_id` (§8 do CHECKPOINT,
+  `docs/PORTAL_MESSAGING_API.md` §8.8). Migração ANTES do código. Contrato com JSON, decisões, riscos aceitos e provas em
+  `docs/CHECKPOINT_portal_sessao_ativa_pula_pendente.md`; skill `cross-tenant-account-linking`
+  estendida. Deploy: este repo → frontend (parte 3). Prompt irmão, independente deste plano, mesmo repo:
+  `z_prompts/PROMPT_BRAIN_MESSAGE_LINHA7_ACHADO10_TESTE_CONTA_CLINICA_NOVA.md` — investiga por que
+  o menu pós-ativação de um teste ao vivo já mostrou "Remarcar/Cancelar" numa clínica nova, e
+  reforça teste de não-duplicação de `MessagePatient.id` no caminho JÁ EXISTENTE de e-mail
+  conhecido (`claim_pending_email` — decisão "sempre pede código" de
+  `docs/CHECKPOINT_portal_email_ja_cadastrado.md` NÃO é reaberta por nenhum dos dois prompts).
+  **NÃO EXECUTADO ainda.**
+- `z_prompts/PLANO_CONSOLIDACAO_PORTAL_BRAIN_MESSAGE.md` (raiz de BRAIN, gerado 2026-09-23) —
+  plano de consolidação: brain-frontend vira só gerenciador de tenants/pagamento/login,
+  secretarIA-frontend vira marketing-only, Brain-Message vira o portal operacional único
+  (PreCheck e admin ficam intocados). Este repo entra na Onda B, item B1:
+  `z_prompts/PROMPT_BRAIN_MESSAGE_LOGIN_HANDOFF_1_BRAIN_API.md` — emite `POST
+  /auth/handoff/brain-message` (código de uso único, curto, hasheado — mesmo molde do onboarding
+  token) e `POST /auth/handoff/exchange` (troca o código por uma sessão normal, refreshable), pra
+  brain-frontend e Brain-Message-Frontend deixarem de depender de qualquer sessão/cookie
+  pré-existente ao trocar de origem — a causa raiz exata do bug cross-tenant investigado na sessão
+  que gerou este plano. **NÃO EXECUTADO ainda.**
 - `z_prompts/PROMPT_SECRETARIA_CONFIG_PROFISSIONAIS_NAO_CARREGA.md` (raiz de BRAIN, gerado
   2026-09-12) — bug ao vivo: aba "Profissionais" de `/configuracao` no `secretarIA-frontend`
   não carrega dados de clínica real nenhum. Duas das pistas levantadas tocam este repo: CORS

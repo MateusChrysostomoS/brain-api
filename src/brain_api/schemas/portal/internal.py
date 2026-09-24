@@ -127,6 +127,32 @@ class PendingOtpVerifyIn(PendingIdentityIn):
 
 
 class PendingOtpVerifyOut(BaseModel):
-    """The identity is proven; the browser still has to call `/pending/complete`."""
+    """The identity is proven; the browser still has to call `/pending/complete`.
+
+    `patient_name` (2026-09-24, ADDITIVE): the name the proven address's ACCOUNT already gave
+    at another clinic, so secretarIA does not ask a known person again. `None` when the
+    address has no account yet or the account never gave one. A secretarIA older than this
+    reads the status code only and ignores it. PII — never logged on either side.
+    """
 
     status: Literal["verified"]
+    patient_name: str | None = None
+
+
+class PatientNameIn(BaseModel):
+    """secretarIA -> brain-api: the name typed into one clinic's conversation.
+
+    Same key as `PendingIdentityIn` — both must match one identity — plus the name as
+    secretarIA already normalized it (`secretarIA/services/patient_name.py`). No e-mail, no
+    account id: which account it reaches is decided here, by the identity's own link.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: UUID
+    external_id: UUID
+    name: str = Field(min_length=1, max_length=255)
+
+
+class PatientNameOut(BaseModel):
+    status: Literal["saved"]

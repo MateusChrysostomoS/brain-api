@@ -120,6 +120,16 @@ def read_refresh_cookie(request: Request) -> str | None:
     return value or None
 
 
+def has_client_header(request: Request) -> bool:
+    """Whether the caller proved it is our own same-origin JavaScript — without refusing.
+
+    For the one route where the cookie is an OPTIONAL credential
+    (`POST /patient-access/pending`, 2026-09-24): without the header the cookie is
+    simply not used, and the route answers exactly as it would without it.
+    """
+    return request.headers.get(CLIENT_HEADER_NAME) == CLIENT_HEADER_VALUE
+
+
 def require_client_header(request: Request) -> None:
     """403 unless the caller proved it is our own same-origin JavaScript.
 
@@ -128,7 +138,7 @@ def require_client_header(request: Request) -> None:
     CLOSED and says nothing useful: a forged request learns only that it was
     refused.
     """
-    if request.headers.get(CLIENT_HEADER_NAME) != CLIENT_HEADER_VALUE:
+    if not has_client_header(request):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="missing_client_header",
@@ -189,6 +199,8 @@ def read_patient_session_cookie(request: Request) -> str | None:
     """The patient session token the browser sent, or None. Never logged by callers."""
     value = request.cookies.get(PATIENT_SESSION_COOKIE_NAME)
     return value or None
+
+
 # --- The PENDING visit cookie (Brain-Message, 2026-09-16) ------------------------------
 #
 # A THIRD cookie, and the third name, for the same reason the patient's is not the doctor's:

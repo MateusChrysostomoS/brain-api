@@ -56,7 +56,7 @@ from starlette.requests import ClientDisconnect
 from starlette.types import Message, Receive
 
 from brain_api.config import get_settings
-from brain_api.core import attachments
+from brain_api.core import attachments, idempotency
 from brain_api.core.cookies import (
     clear_patient_pending_cookie,
     clear_patient_session_cookie,
@@ -1151,8 +1151,18 @@ async def _checked_relay(
 )
 async def send_thread_message(
     request: Request,
+    response: Response,
     product: str = Path(
         description="secretaria | precheck — chosen by the CLIENT, never inferred."
+    ),
+    idempotency_key: str | None = Header(
+        None,
+        alias=idempotency.HEADER,
+        description=(
+            "Optional. One id per MESSAGE (a UUID), kept across the client's retries: a repeat "
+            "within 10 minutes answers the first 200 again, with `Idempotent-Replayed: true`, "
+            "and is NOT relayed to the product. Failures are not remembered."
+        ),
     ),
     identity: tuple[MessagePatient, bool] = Depends(get_thread_identity),
     session: AsyncSession = Depends(get_session),
@@ -1181,6 +1191,29 @@ async def send_thread_message(
     # while, and ~15 of them starve every other route of this service. Nothing here commits:
     # closing ends a read-only transaction, and `patient`'s loaded fields stay readable.
     await session.close()
+
+    key = idempotency_key
+    if key is None:  # today's clients: every request is relayed, exactly as before
+        return await _relay_send(request, product, patient, verified)
+    if not idempotency.is_valid_key(key):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid_idempotency_key")
+    # Checked before the body is read: a replayed upload is answered without spooling the file
+    # again, and without spending the patient's upload budget a second time.
+    result, replayed = await idempotency.patient_sends.run(
+        f"{patient.id}:{product}",
+        key,
+        lambda: _relay_send(request, product, patient, verified),
+    )
+    if replayed:
+        response.headers[idempotency.REPLAYED_HEADER] = "true"
+        logger.info("patient_message_replayed", tenant_id=str(patient.tenant_id), product=product)
+    return result
+
+
+async def _relay_send(
+    request: Request, product: str, patient: MessagePatient, verified: bool
+) -> RelayOut:
+    """One real relay of the request's message — text or file — to the product."""
     if _media_type(request) == "multipart/form-data":
         return await _relay_attachment(request, product, patient, verified)
 

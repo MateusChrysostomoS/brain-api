@@ -194,6 +194,23 @@ Request body (`schemas/portal/patient_access.py::PatientMessageIn`, `extra="forb
 `text` is capped at 4000 chars (PreCheck's own ceiling, matched here so an over-long message
 is a clear 422 at the door instead of an opaque failure upstream).
 
+**Retries without duplicates — `Idempotency-Key` (2026-09-25, optional header, text AND file).**
+A client that retries a send on its own (mobile networks drop answers more often than requests)
+names each MESSAGE with one id — a UUID, generated once and kept across that message's retries —
+in the header `Idempotency-Key` (8–128 chars of `[A-Za-z0-9_-]`, else **400
+`invalid_idempotency_key`** before any relay). brain-api (`core/idempotency.py`) then:
+
+| the same key, same patient, same `{product}` thread… | answer |
+|---|---|
+| after a **200**, within 10 minutes | the first 200 again, body identical (`at` included), header `Idempotent-Replayed: true`; **not relayed** to the product, the body not even read |
+| while the first attempt is **still in flight** | waits for it and returns ITS outcome |
+| after a **failure** (4xx, 502, 503) | relayed for real — failures are never remembered |
+
+A key is scoped to (patient, product) and carries no authority. Without the header, every send
+is relayed exactly as before. Kept in the brain-api process's memory (one uvicorn process): a
+restart inside the window forgets the keys, and horizontal scaling would need the store moved to
+Postgres/Redis. Nothing reaches the products — their inbound contracts do not change.
+
 brain-api resolves the tenant's entitlement, refuses with **403 `product_unavailable`** if
 the clinic does not have that product AND the Brain-Message channel both on
 (`message_switchboard.py::require_product` — one answer for "no such product", "not bought"
@@ -935,3 +952,8 @@ e-mail address, a cookie, or a JWT from this channel.
   uncommitted, not deployed, no migration; deploy brain-api before Brain-Message-Frontend part 3.
   `docs/CHECKPOINT_portal_sessao_ativa_pula_pendente.md`.
 - **2026-09-24** — owner: the clinic needs the patient's name. **§8.8** — `message_patients.name` (migration `0024`), `POST /internal/brain-message/patient-name`, the name on the `open` of an account's next clinic and on `pending-otp/verify`. Built, uncommitted, not deployed; `alembic upgrade head` before this brain-api.
+- **2026-09-25** — **§2** gains the optional `Idempotency-Key` header on
+  `POST /patient-access/threads/{product}/messages` (text and file): a retried message is relayed
+  once and its first 200 replayed (`Idempotent-Replayed: true`) for 10 minutes; failures are not
+  remembered; no header = today's behaviour. For the portal's automatic resend on mobile networks.
+  In-process memory (`core/idempotency.py`), no migration, no change to any product's contract.

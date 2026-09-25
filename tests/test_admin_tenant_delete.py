@@ -25,18 +25,16 @@ from brain_api.models import (
 )
 from brain_api.models.user import ROLE_TENANT_OWNER
 from brain_api.services import admin as admin_service
-
 from tests.test_rbac import (
     ADMIN_EMAIL,
     ADMIN_PASSWORD,
     CLINIC_A,
+    MISSING_ID,
     OWNER_A_EMAIL,
     OWNER_A_PASSWORD,
-    MISSING_ID,
     _bearer,
     _token,
 )
-
 
 # --- Endpoint ---------------------------------------------------------------
 

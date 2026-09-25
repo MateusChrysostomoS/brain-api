@@ -51,6 +51,8 @@ class AdminTenantOut(BaseModel):
     precheck_enabled: bool
     secretaria_enabled: bool
     users_count: int
+    # Test clinic created by `POST /admin/tenants` (no Stripe, billing refused).
+    is_test: bool = False
 
 
 class EntitlementAdminOut(BaseModel):
@@ -85,6 +87,7 @@ class AdminTenantDetailOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     users_count: int
+    is_test: bool = False
     entitlements: EntitlementAdminOut
 
 
@@ -102,6 +105,51 @@ class AdminTenantDeleteOut(BaseModel):
     tenant_id: UUID
     deleted: dict[str, int]
     secretaria: dict[str, str]
+
+
+class AdminTenantCreateIn(BaseModel):
+    """Create a TEST clinic outside Stripe: tenant + active entitlement + owner, one call.
+
+    The admin picks which products to switch on (`precheck`/`secretaria`, both default
+    False — any subset, including none). The owner is a `manager` with `is_owner` and
+    `is_manager` set. Password policy is the same as `AdminUserCreateIn` (8–72 chars,
+    letter + digit, bcrypt), hashed by the service and never echoed or logged.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    clinic_name: str = Field(min_length=1, max_length=255)
+    email: EmailStr = Field(max_length=320)
+    name: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=8, max_length=72)
+    precheck: bool = False
+    secretaria: bool = False
+
+    @field_validator("clinic_name", "name")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("must not be blank")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def _password_policy(cls, v: str) -> str:
+        return _check_password_composition(v)
+
+
+class AdminTenantCreateOut(BaseModel):
+    """Result of `POST /admin/tenants`: the new tenant id, its entitlement as written and
+    the owner user. Carries no `password_hash`. The entitlement's Stripe ids are always
+    `null` here, and `is_test` is always true: billing is refused for this clinic and the
+    webhook ignores it, so it can never become Stripe-linked."""
+
+    tenant_id: UUID
+    clinic_name: str
+    is_test: bool
+    entitlements: "EntitlementAdminOut"
+    owner: "AdminUserOut"
 
 
 class EntitlementPatchIn(BaseModel):
@@ -164,6 +212,15 @@ class EntitlementPatchIn(BaseModel):
 # --- Users -----------------------------------------------------------------
 
 
+def _check_password_composition(v: str) -> str:
+    """Minimum composition: length is enforced by the Field; require letter + digit so a
+    purely-numeric or purely-alphabetic password is rejected (422). Shared by every admin
+    schema that takes a password, so the policy cannot drift between them."""
+    if not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
+        raise ValueError("password must contain at least one letter and one digit")
+    return v
+
+
 class AdminUserOut(BaseModel):
     """A user row for the admin users table. NEVER declares `password_hash`.
 
@@ -215,11 +272,7 @@ class AdminUserCreateIn(BaseModel):
     @field_validator("password")
     @classmethod
     def _password_policy(cls, v: str) -> str:
-        """Minimum composition: length is enforced by the Field; require letter + digit
-        so a purely-numeric or purely-alphabetic password is rejected (422)."""
-        if not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
-            raise ValueError("password must contain at least one letter and one digit")
-        return v
+        return _check_password_composition(v)
 
     @model_validator(mode="after")
     def _check_role_tenant_consistency(self) -> "AdminUserCreateIn":

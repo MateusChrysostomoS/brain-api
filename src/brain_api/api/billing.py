@@ -16,7 +16,7 @@ HMAC via the stripe SDK — no I/O) and dedupes on `event.id` before mutating.
 from datetime import UTC, datetime
 
 import stripe
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,7 +24,7 @@ from brain_api.api.deps import Principal, require_tenant
 from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
-from brain_api.models import Entitlement
+from brain_api.models import Entitlement, Tenant
 from brain_api.schemas.billing import (
     CheckoutRequest,
     CheckoutSessionOut,
@@ -40,6 +40,24 @@ logger = get_logger(__name__)
 
 # `main.py` imports `billing.router`; this module-level name MUST be `router`.
 router = APIRouter()
+
+
+async def require_billable_tenant(
+    principal: Principal = Depends(require_tenant),
+    session: AsyncSession = Depends(get_session),
+) -> Principal:
+    """`require_tenant`, plus: a test clinic (`Tenant.is_test`, created by `POST
+    /admin/tenants`) may not start ANY Stripe action — 403 `test_tenant_billing_disabled`.
+
+    Without this, the test clinic's owner could open a checkout and the webhook would link
+    the clinic to Stripe (it resolves `metadata.tenant_id` first). The webhook refuses test
+    tenants too; this is the door, that is the lock. Read-only routes don't need it.
+    """
+    tenant = await session.get(Tenant, principal.tenant_id)
+    if tenant is not None and tenant.is_test:
+        logger.warning("billing_refused_test_tenant", tenant_id=str(principal.tenant_id))
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "test_tenant_billing_disabled")
+    return principal
 
 
 def _precheck_usage_out(summary: precheck_billing.PrecheckUsageSummary) -> PrecheckUsageOut:
@@ -86,7 +104,7 @@ def _precheck_usage_out(summary: precheck_billing.PrecheckUsageSummary) -> Prech
 )
 async def checkout(
     payload: CheckoutRequest,
-    principal: Principal = Depends(require_tenant),
+    principal: Principal = Depends(require_billable_tenant),
     session: AsyncSession = Depends(get_session),
 ) -> CheckoutSessionOut:
     """Create a Stripe Checkout Session for the authenticated tenant's selection."""
@@ -107,7 +125,7 @@ async def checkout(
     },
 )
 async def portal(
-    principal: Principal = Depends(require_tenant),
+    principal: Principal = Depends(require_billable_tenant),
     session: AsyncSession = Depends(get_session),
 ) -> PortalSessionOut:
     """Let the tenant manage card/plan on Stripe's hosted portal."""
@@ -134,7 +152,7 @@ async def portal(
 )
 async def precheck_topup(
     payload: PrecheckTopupIn,
-    principal: Principal = Depends(require_tenant),
+    principal: Principal = Depends(require_billable_tenant),
     session: AsyncSession = Depends(get_session),
 ) -> CheckoutSessionOut:
     """One-off `mode=payment` Checkout Session for `payload.quantity` avulso PreCheck
@@ -170,7 +188,7 @@ async def precheck_topup(
 )
 async def precheck_upgrade(
     payload: PrecheckUpgradeIn,
-    principal: Principal = Depends(require_tenant),
+    principal: Principal = Depends(require_billable_tenant),
     session: AsyncSession = Depends(get_session),
 ) -> PrecheckUsageOut:
     """Live Stripe subscription-item price swap + an OPTIMISTIC local entitlement update

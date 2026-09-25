@@ -83,7 +83,8 @@ LIMIT_ACTIVE_PROFESSIONALS = "active_professionals"
 #: Unlike the secretarIA metering limits above (which stay 0 = unenforced-by-quota on
 #: every plan today), this one carries a REAL per-plan base_limit — see the three PreCheck
 #: PlanDefs and PRECHECK_START_CONSULTATIONS_PER_MONTH / PRECHECK_BASIC_CONSULTATIONS_PER_
-#: MONTH / PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH below. PreCheck billing is flat-price-plus-quota, not metered, so this LIMIT
+#: MONTH / PRECHECK_ADVANCED_CONSULTATIONS_PER_MONTH below. PreCheck billing is
+#: flat-price-plus-quota, not metered, so this LIMIT
 #: is the enforcement mechanism itself (services/precheck_billing.py), not just a display
 #: number. Recorded through the SAME POST /internal/usage-events -> services/usage.py::
 #: record_usage ledger every other feature uses; deliberately absent from that module's

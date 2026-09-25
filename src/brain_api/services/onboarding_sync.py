@@ -70,11 +70,12 @@ async def ensure_secretaria_provisioned(session: AsyncSession, tenant: Tenant) -
     """Best-effort `POST /internal/tenants` bridge; idempotent and GUARANTEED NEVER TO
     RAISE.
 
-    No-op once `tenant.secretaria_provisioned_at` is set. Called from two places: right
-    after a fresh tenant is provisioned (the Stripe webhook apply path,
-    `services.billing.apply_stripe_event`, post-commit) and as a lazy retry on every
-    `GET /doctor/onboarding` (so a secretaria outage at signup time self-heals the first
-    time the owner opens the portal). On success, stamps `secretaria_provisioned_at` and
+    No-op once `tenant.secretaria_provisioned_at` is set. Called right after a tenant's
+    entitlement activates (the Stripe signup-intent webhook, post-commit; every other
+    activation path goes through `ensure_products_provisioned` below) and as a lazy retry
+    on every `GET /doctor/onboarding` (so a secretaria outage at activation time
+    self-heals the first time the owner opens the portal). On success, stamps
+    `secretaria_provisioned_at` and
     commits; on any failure, logs a warning and leaves the tenant unprovisioned for the
     next retry. A secretaria outage must never break the webhook or the doctor portal.
     """
@@ -242,6 +243,45 @@ async def ensure_precheck_provisioned(session: AsyncSession, tenant: Tenant) -> 
         await session.rollback()
         logger.warning(
             "precheck_provisioning_bridge_failed", tenant_id=str(tenant.id), exc_info=True
+        )
+
+
+async def ensure_products_provisioned(session: AsyncSession, tenant_id: UUID) -> None:
+    """Chama TODA ponte de provisionamento que o entitlement ATUAL do tenant pede.
+
+    É o ponto único para qualquer caminho que ativa produto fora do checkout de signup
+    (cupom de cortesia, PATCH do admin, troca de plano via `customer.subscription.*`).
+    Uma ponte esquecida num caminho novo foi exatamente o bug que isto fecha: clínica
+    ativa aqui, sem linha `tenants` na secretarIA, e todo usuário dela tomando 404 no
+    Brain-Message até alguém abrir `/app/onboarding`. Cobertura por caminho em
+    `docs/CHECKPOINT_provisioning_bridge_coverage.md`.
+
+    Chame DEPOIS do commit que ativa o entitlement. Mesmas garantias das pontes: no-op
+    barato quando já carimbado ou quando o produto está desligado, e NUNCA levanta.
+    """
+    try:
+        ent = await session.get(Entitlement, tenant_id)
+        if ent is None:
+            return
+        bridges = [
+            bridge
+            for enabled, bridge in (
+                (ent.precheck_enabled, ensure_precheck_provisioned),
+                (ent.secretaria_enabled, ensure_secretaria_provisioned),
+            )
+            if enabled
+        ]
+        for bridge in bridges:
+            # Recarrega a cada ponte: a do PreCheck faz rollback quando falha, o que expira
+            # o `tenant` na sessão — ler um atributo expirado numa AsyncSession levanta
+            # MissingGreenlet, e a ponte seguinte (secretarIA) nunca rodaria.
+            tenant = await session.get(Tenant, tenant_id, populate_existing=True)
+            if tenant is None:
+                return
+            await bridge(session, tenant)
+    except Exception:  # noqa: BLE001 - fail-soft por contrato: nunca quebrar o chamador.
+        logger.warning(
+            "products_provisioning_failed", tenant_id=str(tenant_id), exc_info=True
         )
 
 

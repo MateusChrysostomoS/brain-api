@@ -52,9 +52,12 @@ from brain_api.schemas.signup import (
     SignupIntentCreate,
     SignupRegisterOut,
 )
-from brain_api.models import Entitlement, Tenant
-from brain_api.services import billing, catalog, courtesy as courtesy_service
-from brain_api.services import signup as signup_service
+from brain_api.services import (
+    billing,
+    catalog,
+    courtesy as courtesy_service,
+    signup as signup_service,
+)
 from brain_api.services.auth import issue_refresh_token
 
 logger = get_logger(__name__)
@@ -214,22 +217,20 @@ async def redeem_courtesy_coupon(
     payload: CourtesyRedeemCreate,
     session: AsyncSession = Depends(get_session),
 ) -> OnboardingStatusOut:
-    """Resgate do cupom + a ponte do PreCheck, na ordem em que o webhook as faz."""
+    """Resgate do cupom + as pontes de provisionamento, na ordem em que o webhook as faz."""
     _check_rate_limit(request)
     intent = await courtesy_service.redeem(session, payload.intent_id, payload.code)
 
-    # A ponte que provisiona a clínica no PreCheck, igual ao caminho pago
-    # (billing.apply_stripe_event): PÓS-commit, best-effort, gated no entitlement
-    # que acabou de ser ativado. Sem ela, `precheck_account_links` fica vazio e o
-    # handoff `POST /sso/precheck/token` responde 409 — o médico entra em nada.
+    # As pontes que provisionam a clínica no PreCheck e na secretarIA, igual ao caminho
+    # pago (billing.apply_stripe_event): PÓS-commit, best-effort, gated no entitlement
+    # que acabou de ser ativado. Sem a do PreCheck o handoff `POST /sso/precheck/token`
+    # responde 409; sem a da secretarIA todo usuário da clínica toma 404 no Brain-Message.
     if intent.tenant_id is not None:
-        ent = await session.get(Entitlement, intent.tenant_id)
-        if ent is not None and ent.precheck_enabled:
-            tenant = await session.get(Tenant, intent.tenant_id)
-            if tenant is not None:
-                from brain_api.services import onboarding_sync
+        from brain_api.services import onboarding_sync
 
-                await onboarding_sync.ensure_precheck_provisioned(session, tenant)
+        await onboarding_sync.ensure_products_provisioned(session, intent.tenant_id)
+        # Uma ponte que falha faz rollback e expira o `intent`; recarrega antes de lê-lo.
+        await session.refresh(intent)
 
     return await signup_service.ready_status(session, intent)
 

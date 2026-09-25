@@ -13,6 +13,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import delete as sa_delete, func, select, update as sa_update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
@@ -38,6 +39,8 @@ from brain_api.models.user import (
 )
 from brain_api.schemas.admin import (
     AdminDemoRequestOut,
+    AdminTenantCreateIn,
+    AdminTenantCreateOut,
     AdminTenantDetailOut,
     AdminTenantOut,
     AdminUserCreateIn,
@@ -122,6 +125,7 @@ async def list_tenants(
             precheck_enabled=ents[t.id].precheck_enabled if t.id in ents else False,
             secretaria_enabled=ents[t.id].secretaria_enabled if t.id in ents else False,
             users_count=counts.get(t.id, 0),
+            is_test=t.is_test,
         )
         for t in tenants
     ]
@@ -146,6 +150,7 @@ async def get_tenant_detail(session: AsyncSession, tenant_id: UUID) -> AdminTena
         created_at=tenant.created_at,
         updated_at=tenant.updated_at,
         users_count=users_count,
+        is_test=tenant.is_test,
         entitlements=_entitlement_out(tenant_id, ent),
     )
 
@@ -159,7 +164,8 @@ class TenantDeletionResult:
 
     tenant_id: UUID
     counts: dict[str, int]  # brain-owned rows deleted, per table
-    secretaria: dict[str, str]  # {"status": deleted|absent|kept_has_data|skipped_unconfigured|failed}
+    # {"status": deleted|absent|kept_has_data|skipped_unconfigured|failed}
+    secretaria: dict[str, str]
 
 
 async def _bulk_delete(session: AsyncSession, model: type, whereclause: object) -> int:
@@ -262,6 +268,99 @@ async def delete_tenant(session: AsyncSession, tenant_id: UUID) -> TenantDeletio
 # --- Entitlements ----------------------------------------------------------
 
 
+# Which real catalog plan an admin-created test clinic lands on, per chosen product set.
+# A catalog plan (not `free` with flags flipped) because `secretaria_tier` is derived from
+# the plan and travels to secretarIA over /internal; `free` would carry tier None.
+_TEST_TENANT_PLANS: dict[tuple[bool, bool], str] = {
+    (False, False): catalog.PLAN_FREE,
+    (True, False): catalog.PLAN_PRECHECK_ADVANCED,
+    (False, True): catalog.PLAN_SECRETARIA_BASICO,
+    (True, True): catalog.PLAN_COMPLETE_CLINIC_COMBO,
+}
+
+
+async def create_tenant(
+    session: AsyncSession, payload: AdminTenantCreateIn
+) -> AdminTenantCreateOut:
+    """Create a test clinic outside Stripe: tenant + active entitlement + owner, atomically.
+
+    No Stripe link, ever: this path never writes `stripe_customer_id`/
+    `stripe_subscription_id`, and the tenant is born `is_test=True`, which makes every
+    tenant-initiated Stripe action refuse it (`api/billing.py::require_billable_tenant`)
+    and the webhook ignore any event naming it (`billing._entitlement_for_event`).
+
+    The entitlement is materialized from a real catalog plan picked by the product set
+    (`_TEST_TENANT_PLANS`), so addons/limits/tier are coherent with a paying clinic on the
+    same products; `status="active"`. The owner is a `manager` with `is_owner` and
+    `is_manager` (same idiom as `create_user`). `brain_message_enabled` keeps its default.
+
+    After the commit, `ensure_products_provisioned` creates the downstream rows in
+    secretarIA/PreCheck for the products turned on (fail-soft; lazy retry heals an outage).
+    409 if the email is already registered, checked up front and on the unique constraint.
+    """
+    email = payload.email.lower()
+    if await session.scalar(select(User).where(User.email == email)) is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
+
+    tenant = Tenant(clinic_name=payload.clinic_name, is_test=True)
+    session.add(tenant)
+    await session.flush()  # assign tenant.id
+
+    user = User(
+        tenant_id=tenant.id,
+        email=email,
+        name=payload.name,
+        password_hash=hash_password(payload.password),
+        role=ROLE_MANAGER,
+        is_manager=True,
+        is_owner=True,
+    )
+    session.add(user)
+
+    plan = _TEST_TENANT_PLANS[(payload.precheck, payload.secretaria)]
+    ent = Entitlement(
+        tenant_id=tenant.id,
+        plan=plan,
+        status="active",
+        **catalog.compute_entitlement_state(plan),
+    )
+    session.add(ent)
+    try:
+        await session.commit()
+    except IntegrityError:
+        # A concurrent create raced the check above; users.email unique is the real guard.
+        await session.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered") from None
+
+    await session.refresh(tenant)
+    await session.refresh(user)
+    await session.refresh(ent)
+    # DTO before the bridges: they commit (and the PreCheck one rolls back on failure).
+    out = AdminTenantCreateOut(
+        tenant_id=tenant.id,
+        clinic_name=tenant.clinic_name,
+        is_test=tenant.is_test,
+        entitlements=EntitlementAdminOut.model_validate(ent),
+        owner=AdminUserOut(
+            id=user.id,
+            tenant_id=user.tenant_id,
+            clinic_name=tenant.clinic_name,
+            email=user.email,
+            name=user.name,
+            role=user.role,
+            is_manager=user.is_manager,
+            is_owner=user.is_owner,
+            created_at=user.created_at,
+        ),
+    )
+
+    # Import local: onboarding_sync -> billing formaria ciclo no import.
+    from brain_api.services import onboarding_sync
+
+    await onboarding_sync.ensure_products_provisioned(session, out.tenant_id)
+    return out
+
+
 async def get_entitlement(session: AsyncSession, tenant_id: UUID) -> EntitlementAdminOut:
     """Read a tenant's entitlement record (defaults when no row). 404 if no such tenant."""
     if await session.get(Tenant, tenant_id) is None:
@@ -326,7 +425,15 @@ async def update_entitlement(
 
     await session.commit()
     await session.refresh(ent)
-    return EntitlementAdminOut.model_validate(ent)
+    out = EntitlementAdminOut.model_validate(ent)
+
+    # Ligar um produto por aqui é um caminho de ativação como o checkout: sem as pontes,
+    # a clínica fica sem linha na secretarIA/PreCheck (404 no Brain-Message). Pós-commit,
+    # nunca levanta. Import local: onboarding_sync -> billing formaria ciclo no import.
+    from brain_api.services import onboarding_sync
+
+    await onboarding_sync.ensure_products_provisioned(session, tenant_id)
+    return out
 
 
 # --- Users -----------------------------------------------------------------

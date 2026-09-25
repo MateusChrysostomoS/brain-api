@@ -26,7 +26,7 @@ import brain_api.api.internal_precheck as internal_precheck_api
 from brain_api.config import get_settings
 from brain_api.models import Entitlement, PrecheckTopupCredit, Tenant, UsageEvent
 from brain_api.services import billing as billing_service, catalog, precheck_billing
-from tests.test_billing import _event, _install_fake_stripe_httpx, _post_webhook, _tenant_ids
+from tests.test_billing import _install_fake_stripe_httpx, _tenant_ids
 from tests.test_rbac import (
     ADMIN_EMAIL,
     ADMIN_PASSWORD,
@@ -39,7 +39,6 @@ from tests.test_rbac import (
     _bearer,
     _token,
 )
-
 
 # Avulso purchase bounds AS THE FAKE STRIPE SETTINGS SEE THEM: the top-up tests below run
 # against `_install_fake_stripe_httpx`'s settings double, whose defaults mirror
@@ -206,7 +205,8 @@ async def test_usage_summary_credits_expiring_are_excluded_from_balance(db_sessi
             currency="brl",
             stripe_checkout_session_id="cs_expired_credit",
             expires_at=now - timedelta(days=1),  # already expired -> excluded from balance
-            granted_at=window_start - timedelta(days=1),  # outside the window -> excluded from spend
+            # outside the window -> excluded from spend
+            granted_at=window_start - timedelta(days=1),
         )
     )
     await db_session.commit()

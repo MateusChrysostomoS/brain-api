@@ -58,7 +58,9 @@ async def test_signup_intent_rejects_unknown_catalog_id(client):
 async def test_signup_intent_rejects_two_plans(client):
     resp = await client.post(
         "/public/signup-intents",
-        json=_register_body(email="lead2@example.com", catalog_ids=["secretaria_basico", "precheck"]),
+        json=_register_body(
+            email="lead2@example.com", catalog_ids=["secretaria_basico", "precheck"]
+        ),
     )
     assert resp.status_code == 422
 

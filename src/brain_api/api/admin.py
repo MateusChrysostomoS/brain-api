@@ -21,6 +21,8 @@ from brain_api.core.logging import get_logger
 from brain_api.schemas.admin import (
     AdminDemoRequestOut,
     AdminDemoRequestPatchIn,
+    AdminTenantCreateIn,
+    AdminTenantCreateOut,
     AdminTenantDeleteOut,
     AdminTenantDetailOut,
     AdminTenantOut,
@@ -52,6 +54,36 @@ async def list_tenants(
     """All tenants, newest first, with plan/product flags + user count."""
     items, total = await admin_service.list_tenants(session, skip, limit)
     return Page(items=items, total=total, skip=skip, limit=limit)
+
+
+@router.post(
+    "/tenants",
+    response_model=AdminTenantCreateOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a test clinic (tenant + active entitlement + owner), no Stripe",
+    responses={
+        409: {"description": "Email already registered."},
+        422: {"description": "Invalid email, blank name or password outside policy."},
+    },
+)
+async def create_tenant(
+    payload: AdminTenantCreateIn,
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_session),
+) -> AdminTenantCreateOut:
+    """Create a clinic for testing, with only the products the admin picked turned on,
+    already `active` and provisioned downstream. Born `is_test=True`: every Stripe action
+    is refused for it and the webhook ignores it, so it can never be billed."""
+    result = await admin_service.create_tenant(session, payload)
+    logger.info(
+        "admin_tenant_created",
+        actor_user_id=principal.user_id,
+        tenant_id=str(result.tenant_id),
+        owner_user_id=str(result.owner.id),
+        precheck=payload.precheck,
+        secretaria=payload.secretaria,
+    )
+    return result
 
 
 @router.get(

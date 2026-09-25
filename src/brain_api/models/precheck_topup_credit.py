@@ -51,4 +51,6 @@ class PrecheckTopupCredit(Base):
     # Credits expire at the END of the quota window they were purchased in
     # (services/precheck_billing.py::quota_window) — never carried over past a billing
     # cycle / calendar month, so a tenant cannot stockpile credits indefinitely.
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )

@@ -691,6 +691,8 @@ async def _entitlement_for_event(session: AsyncSession, obj: dict[str, Any]) -> 
         except ValueError:
             logger.warning("stripe_event_bad_tenant_metadata")
             return None
+        if await _is_test_tenant(session, tenant_id):
+            return None
         ent = await session.get(Entitlement, tenant_id)
         if ent is None:
             ent = Entitlement(tenant_id=tenant_id)
@@ -699,10 +701,23 @@ async def _entitlement_for_event(session: AsyncSession, obj: dict[str, Any]) -> 
 
     customer = obj.get("customer")
     if customer:
-        return await session.scalar(
+        ent = await session.scalar(
             select(Entitlement).where(Entitlement.stripe_customer_id == str(customer))
         )
+        if ent is not None and await _is_test_tenant(session, ent.tenant_id):
+            return None
+        return ent
     return None
+
+
+async def _is_test_tenant(session: AsyncSession, tenant_id: UUID) -> bool:
+    """A test clinic (`POST /admin/tenants`) must never be linked or changed by Stripe, even
+    by an event that names it in its metadata — logged, then treated as unresolvable."""
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is not None and tenant.is_test:
+        logger.warning("stripe_event_test_tenant_ignored", tenant_id=str(tenant_id))
+        return True
+    return False
 
 
 def _period_dt(ts: Any) -> datetime | None:
@@ -1195,32 +1210,18 @@ async def apply_stripe_event(
         await session.commit()
         logger.info("stripe_event_applied", event_type=event_type, kind="signup_intent")
         if provisioned_tenant is not None:
-            # Gated on the JUST-ACTIVATED entitlement actually enabling secretaria — a
+            # Each bridge gated on the JUST-ACTIVATED entitlement enabling its product — a
             # PreCheck-only signup (precheck-billing round fix) must not ping secretaria
             # provisioning at all. Deliberately narrower than api/onboarding.py's OWN
-            # (still-ungated) lazy-retry call to the same bridge: THAT call site has
+            # (still-ungated) lazy-retry call to the secretaria bridge: THAT call site has
             # existing tests relying on the ungated behavior for a not-yet-purchased
             # tenant manually reaching the wizard (see docs/CHECKPOINT_register_at_first_
-            # card.md); this webhook call site has no such constraint.
-            ent_after_activation = await session.get(Entitlement, provisioned_tenant.id)
-            if ent_after_activation is not None and ent_after_activation.precheck_enabled:
-                # Irmão do bridge do secretaria abaixo, mesmas garantias (best-effort,
-                # pós-commit, nunca levanta). É o que faz "pagou -> clínica no ar" existir:
-                # provisiona a clínica no PreCheck e grava precheck_account_links, sem o
-                # qual POST /sso/precheck/token responde 409 e o comprador não entra em nada.
-                from brain_api.services import onboarding_sync
+            # card.md). Best-effort, post-commit, never raises — a secretaria/PreCheck
+            # outage must never break this webhook. Local import: services.onboarding_sync
+            # imports services.billing (harden_charge), so a module-level import would cycle.
+            from brain_api.services import onboarding_sync
 
-                await onboarding_sync.ensure_precheck_provisioned(session, provisioned_tenant)
-
-            if ent_after_activation is not None and ent_after_activation.secretaria_enabled:
-                # Best-effort, post-commit, fully self-contained try/except (never raises
-                # — see its own docstring): a secretaria outage must never break this
-                # webhook. Local import: services.onboarding_sync imports
-                # services.billing (harden_charge), so a module-level import here would
-                # cycle.
-                from brain_api.services import onboarding_sync
-
-                await onboarding_sync.ensure_secretaria_provisioned(session, provisioned_tenant)
+            await onboarding_sync.ensure_products_provisioned(session, provisioned_tenant.id)
         return True
 
     ent = await _entitlement_for_event(session, obj)
@@ -1366,6 +1367,14 @@ async def apply_stripe_event(
 
     await session.commit()
     logger.info("stripe_event_applied", event_type=event_type, tenant_id=str(ent.tenant_id))
+
+    if event_type in ("customer.subscription.created", "customer.subscription.updated"):
+        # Uma troca de plano pode LIGAR um produto que o signup não tinha (só-PreCheck ->
+        # plano com secretarIA). Mesmas pontes do checkout acima; no-op quando já
+        # carimbado ou desligado, nunca levanta — um webhook não pode cair por isso.
+        from brain_api.services import onboarding_sync
+
+        await onboarding_sync.ensure_products_provisioned(session, ent.tenant_id)
     return True
 
 

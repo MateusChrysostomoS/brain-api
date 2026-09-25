@@ -803,7 +803,9 @@ async def test_attempt_pass_missing_waba_id_skips_subscribe(client, monkeypatch)
     monkeypatch.setattr(secretaria_provisioning, "get_config_status", _noop_async(None))
     monkeypatch.setattr(secretaria_provisioning, "send_notification_email", _noop_async(True))
     monkeypatch.setattr(
-        secretaria_provisioning, "connect_whatsapp", _noop_async(secretaria_provisioning.CONNECTION_OK)
+        secretaria_provisioning,
+        "connect_whatsapp",
+        _noop_async(secretaria_provisioning.CONNECTION_OK),
     )
 
     token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)

@@ -34,7 +34,7 @@ from sqlalchemy import select
 from brain_api.core.database import async_session_factory
 from brain_api.core.logging import get_logger, setup_logging
 from brain_api.models import CourtesyCoupon
-from brain_api.services import courtesy, catalog
+from brain_api.services import catalog, courtesy
 
 logger = get_logger(__name__)
 

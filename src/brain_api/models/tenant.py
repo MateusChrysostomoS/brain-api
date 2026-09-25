@@ -120,6 +120,15 @@ class Tenant(Base):
         Boolean, server_default=text("true"), default=True
     )
 
+    # --- Test clinic (migration 0025_tenant_is_test) -----------------------------------
+    # True only for a clinic an admin created through `POST /admin/tenants` (no Stripe).
+    # Every tenant-initiated Stripe action refuses it (`api/billing.py::
+    # require_billable_tenant`) and the webhook ignores events naming it
+    # (`services/billing.py::_entitlement_for_event`), so a test clinic can never be turned
+    # into a real, billed one. TEMPORARY: remove the endpoint, this column and both guards
+    # before the real launch (see docs/CHECKPOINT_admin_test_tenant.md).
+    is_test: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), default=False)
+
     # --- Patient invite (migration 0020_patient_accounts) ------------------------------
     # The short, typeable code a clinic hands its patients so they can add it to their
     # Brain-Message account (`core/invite_codes.py`). It only NAMES the clinic; the channel

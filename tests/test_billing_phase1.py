@@ -327,7 +327,9 @@ def test_validate_selection_patients_only_no_anchor_raises(monkeypatch):
         billing_service,
         "get_settings",
         lambda: _extended_fake_settings(
-            STRIPE_PRICE_MAP=('{"secretaria_basico_metered_patients": "price_ferro_meter_patients"}')
+            STRIPE_PRICE_MAP=(
+                '{"secretaria_basico_metered_patients": "price_ferro_meter_patients"}'
+            )
         ),
     )
     with pytest.raises(HTTPException) as exc_info:

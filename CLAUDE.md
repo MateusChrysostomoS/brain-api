@@ -11,6 +11,41 @@ dia ao mudar este lado do contrato.
 
 ## Prompts pendentes
 
+- `z_prompts/PROMPT_BRAIN_ADMIN_TEST_TENANT_1_BRAIN_API.md` (raiz de BRAIN, gerado 2026-09-24
+  via `/prompt-generator`) — parte 1/2: endpoint novo `POST /admin/tenants` pra criar clínicas de
+  teste (tenant + entitlement + usuário dono/gestor na mesma chamada) sem depender do Stripe.
+  Hoje não existe NENHUM jeito de criar um tenant pelo admin — o único criador de `Tenant` no
+  repo é `services/signup.py::register_signup` (fluxo público pago). Decisões já fechadas com o
+  dono: tenant+usuário na mesma chamada; produtos (secretaria/precheck) são escolhidos pelo
+  admin, não sempre os dois; nasce `status="active"` pronto pra uso. Como a imunidade ao Stripe é
+  automática (entitlements nunca fazem leitura live do Stripe, só o webhook escreve, e só em
+  tenants com `stripe_customer_id`), não precisa de lógica de bypass — só nunca setar esse id.
+  Conectado com o item abaixo: o endpoint novo já nasce chamando as pontes de provisionamento.
+  Parte 2 é `..._2_BRAIN_FRONTEND.md`, no `brain-frontend`. **EXECUTADO 2026-09-24 — BUILT, não
+  commitado, não deployado, sem migração.** `services/admin.py::create_tenant`: plano real do
+  catálogo por conjunto de produtos (`_TEST_TENANT_PLANS`), dono `manager`, pontes pós-commit.
+  Depende do helper de pontes (item abaixo, também sem commit) — commitar/deployar juntos.
+  Contrato HTTP pra parte 2 e decisões em `docs/CHECKPOINT_admin_test_tenant.md`.
+  **Emenda 2026-09-25:** migração `0025_tenant_is_test` (não aplicada); clínica de teste recebe
+  403 `test_tenant_billing_disabled` nas 4 rotas Stripe de `/billing` e o webhook a ignora.
+  Deploy: `alembic upgrade head` → brain-api. **TEMPORÁRIO: remover endpoint + coluna ANTES do
+  lançamento real** (pedido do dono; checklist ordenado no fim do CHECKPOINT).
+- `z_prompts/PROMPT_BRAIN_API_SECRETARIA_PROVISIONING_GAP.md` (raiz de BRAIN, gerado 2026-09-24
+  via `/prompt-generator`, a partir do bug ao vivo que motivou o fix de `brain_message_enabled`
+  abaixo) — `services/onboarding_sync.py::ensure_secretaria_provisioned`/
+  `ensure_precheck_provisioned` (as pontes fail-soft/idempotentes que criam a linha do tenant na
+  secretarIA/PreCheck) só são chamadas em 2-3 lugares (webhook Stripe, `/doctor/onboarding`,
+  cupom de cortesia — e este último só chama a do PreCheck, não a da secretarIA, uma assimetria já
+  identificada em `api/public_signup.py:225-232`); qualquer clínica ativada por outro caminho
+  fica 404 no Brain-Message até alguém visitar `/app/onboarding` manualmente. Pedido do dono:
+  "let's make this other way work too" — fechar a lacuna em todos os caminhos de ativação, não só
+  nesse um caso. **EXECUTADO 2026-09-24 — BUILT, não commitado, não deployado, sem migração.**
+  Helper `onboarding_sync.ensure_products_provisioned` chamado pós-commit na cortesia, no `PATCH
+  /admin/tenants/{id}/entitlements` e no webhook `customer.subscription.created/updated` (os dois
+  últimos também estavam sem ponte). `register_signup` segue sem provisionar (entitlement
+  inerte). Tabela de cobertura, regra, grep de auditoria e decisões em
+  `docs/CHECKPOINT_provisioning_bridge_coverage.md` — **todo caminho novo de ativação (inclusive o
+  `POST /admin/tenants` do item acima) precisa chamar o helper.**
 - `z_prompts/PLANO_BRAIN_MESSAGE_ENTRAR_TAMBEM_SESSAO_ATIVA.md` (raiz de BRAIN, gerado 2026-09-24
   via `/prompt-generator`, a partir dos Achados 9-11 de
   `secretarIA/docs/CHECKPOINT_jornada_sem_gate_e2e.md` — linha 7 da onda 4, testada ao vivo em

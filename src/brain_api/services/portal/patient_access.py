@@ -960,6 +960,44 @@ async def issue_pending_otp(
     return code
 
 
+async def cancel_pending_otp(
+    session: AsyncSession, tenant_id: UUID, patient_ref: UUID
+) -> bool:
+    """Forget THIS visit's last requested challenge. Commits.
+
+    Called service-to-service by secretarIA (`POST
+    /internal/brain-message/pending-otp/cancel`) when the chat abandons the code wait to ask
+    for a different address instead (`identity_change_email`,
+    `secretarIA/services/pending_identity.py`) — never on a resend, which means to keep the
+    challenge alive.
+
+    Never touches `email`: the claimed address stays on the visit exactly as
+    `claim_pending_email` left it (a re-claim overwrites it once the patient types the new
+    one); only the WAIT is cleared, so `pending_otp_is_active` — and therefore
+    `/pending/status` — stops reporting a code the conversation no longer expects. The Portal
+    composer reads that status to choose between a six-digit-only field and a free-text one;
+    leaving `otp_requested_at` stamped would lock the field to digits while the chat is asking
+    for an address.
+
+    `False` for a visit that had no live wait to cancel, INCLUDING an unknown, dead, or
+    wrong-clinic one — the caller (secretarIA) treats every `False` the same, as "nothing to
+    do", and always sends its own message regardless.
+    """
+    row = await session.scalar(
+        select(MessagePendingSession).where(
+            MessagePendingSession.patient_id == patient_ref,
+            MessagePendingSession.tenant_id == tenant_id,
+        )
+    )
+    now = datetime.now(UTC)
+    if row is None or not _pending_is_live(row, now) or row.otp_requested_at is None:
+        return False
+    row.otp_requested_at = None
+    await session.commit()
+    logger.info("patient_pending_otp_cancelled", tenant_id=str(tenant_id))
+    return True
+
+
 def pending_otp_is_active(
     pending: MessagePendingSession, now: datetime | None = None
 ) -> bool:

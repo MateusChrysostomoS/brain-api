@@ -29,6 +29,7 @@ from brain_api.schemas.portal.internal import (
     PendingEmailClaimOut,
     PendingIdentityIn,
     PendingIdentityStatusOut,
+    PendingOtpCancelOut,
     PendingOtpRequestOut,
     PendingOtpVerifyIn,
     PendingOtpVerifyOut,
@@ -196,6 +197,38 @@ async def request_pending_otp_internal(
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "notification_unavailable")
     logger.info("patient_pending_otp_requested_internal", tenant_id=str(payload.tenant_id))
     return PendingOtpRequestOut(status="sent", email_masked=mask_email(pending.email))
+
+
+@router.post(
+    "/brain-message/pending-otp/cancel",
+    response_model=PendingOtpCancelOut,
+    summary="Forget this visit's active code wait (internal)",
+    responses={
+        **_INTERNAL_RESPONSES,
+        404: {"description": "No accessible visit for this clinic handle."},
+    },
+)
+async def cancel_pending_otp_internal(
+    payload: PendingIdentityIn,
+    session: AsyncSession = Depends(get_session),
+) -> PendingOtpCancelOut:
+    """Called when the chat abandons the code wait to ask for a different address instead.
+
+    Clears only the WAIT (`otp_requested_at`), never the claimed address — see
+    `services/portal/patient_access.py::cancel_pending_otp` for why. A visit that is unknown,
+    dead or wrong-clinic is the 404 every other route on this boundary uses; a live visit with
+    nothing to cancel is still a 200 (`nothing_to_cancel`), because the caller already knows
+    the visit exists.
+    """
+    pending = await patient_access.find_pending_identity(
+        session, payload.tenant_id, payload.external_id
+    )
+    if pending is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "pending_session_not_found")
+    cancelled = await patient_access.cancel_pending_otp(
+        session, payload.tenant_id, payload.external_id
+    )
+    return PendingOtpCancelOut(status="cancelled" if cancelled else "nothing_to_cancel")
 
 
 @router.post(

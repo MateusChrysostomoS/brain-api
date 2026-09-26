@@ -3,9 +3,9 @@
     "repository":  "brain-api",
     "repository_path":  "C:\\TECH\\BRAIN\\brain-api",
     "branch":  "main",
-    "commit":  "d82162c3063579eb90cadd8113bbe6dec7f51f87",
-    "generated_at":  "2026-09-16T17:53:02.6482671Z",
+    "commit":  "be661a63027516240a8280c8996b2b68a1b53fed",
+    "generated_at":  "2026-09-25T04:46:06.8701272Z",
     "graphify_version":  "0.9.5",
     "graph_schema":  "networkx-node-link (unversioned upstream)",
-    "graph_sha256":  "f9f6b2c5e5fee5024a1d902e5906432312ed1efa106f44d53ea32ffc77ace764"
+    "graph_sha256":  "c3c76217a980c2a2b81dc4424322e0ea3707a699e3a74b16d163059f1fde002f"
 }

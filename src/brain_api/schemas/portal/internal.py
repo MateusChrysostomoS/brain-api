@@ -120,6 +120,20 @@ class PendingOtpRequestOut(BaseModel):
     email_masked: str
 
 
+class PendingOtpCancelOut(BaseModel):
+    """`POST /internal/brain-message/pending-otp/cancel` response.
+
+    `cancelled` when a live wait existed and was cleared; `nothing_to_cancel` when the visit
+    exists but had no active challenge (a stale/duplicate tap, or `identity_change_email`
+    fired before any code was ever requested) — both are 200s, never a 404, because the CALLER
+    already knows the visit is live (it is mid-conversation with it) and only needs to know
+    whether `/pending/status` will still say `otp_sent` afterwards. Only a visit that is
+    unknown, dead or wrong-clinic is the 404 the route below documents.
+    """
+
+    status: Literal["cancelled", "nothing_to_cancel"]
+
+
 class PendingOtpVerifyIn(PendingIdentityIn):
     """Inline code from secretarIA. The code is consumed in-memory and never logged."""
 

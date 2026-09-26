@@ -813,6 +813,26 @@ secretarIA with a name → straight to the menu; without one → asks once, then
 e-mail or code for a verified account). Details: `docs/CHECKPOINT_portal_sessao_ativa_pula_pendente.md`
 §8 and `secretarIA/docs/CHECKPOINT_portal_conta_ativa_abre_clinica.md`.
 
+### 8.9 `POST /internal/brain-message/pending-otp/cancel` (2026-09-25)
+
+Bug reported live: the patient tapped "Mudar e-mail" on the identity card, the chat correctly
+re-asked for the address, but the Portal composer stayed locked to a six-digit-only field
+(`GET /patient-access/pending/status` kept answering `otp_sent` from the OLD address's
+challenge — `pending_otp_is_active` only looks at `otp_requested_at`, which `claim_pending_email`
+never resets on a re-claim).
+
+`{"tenant_id", "external_id"}` (same shape as `pending-identity`) → `200 {"status": "cancelled" |
+"nothing_to_cancel"}`; `404 pending_session_not_found` for an unknown/dead/wrong-clinic visit —
+same one-detail-for-every-reason as every other route on this boundary. Clears **only**
+`otp_requested_at`; never touches the claimed address (`services/portal/patient_access.py::
+cancel_pending_otp`). secretarIA calls it best-effort, before sending `EMAIL_REQUEST_MESSAGE`, from
+`workers/tasks.py::_handle_identity_card_action`'s `identity_change_email` branch
+(`services/pending_identity.py::cancel_pending_code`) — never blocks the chat message if it fails.
+No migration. Tests: `tests/test_patient_pending_session.py::
+test_pending_otp_cancel_drops_the_composer_out_of_code_mode` (this repo),
+`secretarIA/tests/test_brain_message_email_otp_inline.py::
+test_change_email_goes_back_to_the_address_question` (asserts the call fires).
+
 ---
 
 ## 9. How to adapt a new product to this channel

@@ -280,6 +280,67 @@ async def test_internal_inline_contract_promotes_only_on_the_browser_leg(
     assert probe.json() == {"status": "verified"}
 
 
+async def test_pending_otp_cancel_drops_the_composer_out_of_code_mode(pclient, monkeypatch):
+    """`identity_change_email`'s leg: the Portal input must not stay locked to 6 digits.
+
+    Regression for a bug reported live (2026-09-25): the patient tapped "Mudar e-mail" on the
+    Portal, the chat correctly asked for a new address, but the composer stayed in numeric
+    OTP-only mode because `/pending/status` still said `otp_sent` from the OLD address's
+    challenge. Cancelling clears exactly `otp_requested_at`, never the claimed address.
+    """
+    from brain_api.services import secretaria_provisioning
+
+    async def _queued(to, template, variables):
+        return True
+
+    monkeypatch.setattr(secretaria_provisioning, "send_notification_email", _queued)
+    client, sessionmaker, seed = pclient
+    opened = (await _open(client, sessionmaker, seed.both)).json()
+    token = opened["pending_token"]
+    handle = opened["patient_ref"]
+
+    assert (await _claim(client, monkeypatch, seed.both, handle)).status_code == 200
+    requested = await _identity_call(
+        client, monkeypatch, "pending-otp/request", seed.both, handle
+    )
+    assert requested.status_code == 200, requested.text
+    assert (
+        await client.get("/patient-access/pending/status", headers=_bearer(token))
+    ).json() == {"state": "otp_sent"}
+
+    cancelled = await _identity_call(
+        client, monkeypatch, "pending-otp/cancel", seed.both, handle
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json() == {"status": "cancelled"}
+    # The composer unlocks (no longer `otp_sent`)...
+    assert (
+        await client.get("/patient-access/pending/status", headers=_bearer(token))
+    ).json() == {"state": "pending_claimed"}
+    # ...but the address itself is untouched — a re-claim still overwrites it, not this call.
+    async with sessionmaker() as session:
+        row = await session.scalar(
+            select(MessagePendingSession).where(
+                MessagePendingSession.patient_id == uuid.UUID(handle)
+            )
+        )
+        assert row.email == PATIENT_EMAIL
+        assert row.otp_requested_at is None
+
+    # A second cancel, with nothing left to cancel, is a 200 and not an error.
+    again = await _identity_call(
+        client, monkeypatch, "pending-otp/cancel", seed.both, handle
+    )
+    assert again.status_code == 200
+    assert again.json() == {"status": "nothing_to_cancel"}
+
+    # An unknown handle is the same 404 every other route on this boundary uses.
+    unknown = await _identity_call(
+        client, monkeypatch, "pending-otp/cancel", seed.both, uuid.uuid4()
+    )
+    assert unknown.status_code == 404
+
+
 async def test_internal_inline_contract_refuses_missing_email_and_cross_tenant_handle(
     pclient, monkeypatch
 ):

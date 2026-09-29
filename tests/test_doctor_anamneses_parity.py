@@ -190,9 +190,7 @@ async def test_media_url_and_status_are_503_when_precheck_unconfigured(client, m
         {"status": "approved", "final_summary": "x"},
     ],
 )
-async def test_status_rejects_anything_but_approved_or_rejected_locally(
-    client, monkeypatch, body
-):
+async def test_status_rejects_anything_but_approved_or_rejected_locally(client, monkeypatch, body):
     calls = _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {}))
     token = await _owner(client)
     resp = await client.patch("/doctor/anamneses/7/status", json=body, headers=_bearer(token))

@@ -162,6 +162,4 @@ async def get_admin_metrics(authorization: str, days: int, all_time: bool) -> An
     """
     if not get_settings().PRECHECK_BASE_URL:
         return {"stub": True}
-    return await _proxy_get(
-        "/api/v1/admin/metrics", authorization, {"days": days, "all": all_time}
-    )
+    return await _proxy_get("/api/v1/admin/metrics", authorization, {"days": days, "all": all_time})

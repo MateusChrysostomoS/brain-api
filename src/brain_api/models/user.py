@@ -22,9 +22,10 @@ ROLE_DOCTOR = "doctor"
 ROLE_MANAGER = "manager"
 # The clinic's HUMAN receptionist/secretary (secretary round, 2026-08-14) — NOT the
 # secretarIA bot, and NOT a professional who sees patients. Product decision:
-#   * secretarIA-only. A secretary NEVER reaches PreCheck (clinical data): the three
-#     exclusion points are `POST /sso/precheck/token`, `GET /doctor/anamneses` and
-#     `GET /doctor/anamneses/{id}` (all via `api/deps.deny_secretary`).
+#   * secretarIA-only. A secretary NEVER reaches PreCheck (clinical data): the
+#     exclusion points are `POST /sso/precheck/token` plus the five anamnesis routes in
+#     `api/doctor.py` (list, detail, media list, media URL and status PATCH), all via
+#     `api/deps.deny_secretary` — `grep -rn deny_secretary` is the current boundary.
 #   * Full power INSIDE secretarIA: every professional's agenda, the whole configuracao
 #     surface, team management (invite doctors AND other secretaries), billing, and the
 #     owner-only onboarding pause — so `secretary` passes `require_doctor` AND

@@ -38,11 +38,19 @@ def _upstream_detail(resp: httpx.Response) -> str:
     return "precheck upstream error"
 
 
-async def _proxy_get(path: str, authorization: str, params: dict[str, Any] | None = None) -> Any:
-    """GET `path` on the PreCheck backend, forwarding the caller's bearer token.
+async def _proxy_request(
+    method: str,
+    path: str,
+    authorization: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+) -> Any:
+    """Send `method path` to the PreCheck backend, forwarding the caller's bearer token.
 
-    Surfaces an upstream 4xx (e.g. PreCheck's own 403 for a non-admin) to the caller
-    unchanged; collapses upstream 5xx / network errors to 502. Returns parsed JSON.
+    Surfaces an upstream 4xx (e.g. PreCheck's own 403/404/422) to the caller unchanged;
+    collapses upstream 5xx / network errors to 502. Returns parsed JSON. The response
+    body is never logged — for the media URL route it IS a short-lived credential.
     """
     settings = get_settings()
     base = settings.PRECHECK_BASE_URL
@@ -56,7 +64,13 @@ async def _proxy_get(path: str, authorization: str, params: dict[str, Any] | Non
             base_url=base, timeout=settings.PRECHECK_TIMEOUT_SECONDS
         ) as client:
             # Forward only the bearer credential; never copy the whole request env.
-            resp = await client.get(path, headers={"Authorization": authorization}, params=params)
+            resp = await client.request(
+                method,
+                path,
+                headers={"Authorization": authorization},
+                params=params,
+                json=json_body,
+            )
     except httpx.RequestError as exc:
         logger.warning("precheck_proxy_unreachable", path=path)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "precheck unavailable") from exc
@@ -67,6 +81,11 @@ async def _proxy_get(path: str, authorization: str, params: dict[str, Any] | Non
         raise HTTPException(raised, _upstream_detail(resp))
 
     return resp.json()
+
+
+async def _proxy_get(path: str, authorization: str, params: dict[str, Any] | None = None) -> Any:
+    """GET `path` on the PreCheck backend (see `_proxy_request`)."""
+    return await _proxy_request("GET", path, authorization, params=params)
 
 
 async def list_anamneses(authorization: str, skip: int, limit: int) -> Any:
@@ -81,6 +100,38 @@ async def list_anamneses(authorization: str, skip: int, limit: int) -> Any:
 async def get_anamnesis(authorization: str, anamnesis_id: int) -> Any:
     """Single anamnesis detail from PreCheck — `GET /api/v1/doctor/anamneses/{id}`."""
     return await _proxy_get(f"/api/v1/doctor/anamneses/{anamnesis_id}", authorization)
+
+
+async def list_anamnesis_media(authorization: str, anamnesis_id: int) -> Any:
+    """Media ids of one anamnesis — `GET /api/v1/doctor/anamneses/{id}/media`.
+
+    Unconfigured PreCheck degrades to an empty stub page, like the list.
+    """
+    if not get_settings().PRECHECK_BASE_URL:
+        return {"items": [], "stub": True}
+    return await _proxy_get(f"/api/v1/doctor/anamneses/{anamnesis_id}/media", authorization)
+
+
+async def get_anamnesis_media_url(authorization: str, media_id: int) -> Any:
+    """Signed URL for one media — `GET /api/v1/doctor/anamneses/media/{id}/url`.
+
+    Passthrough of PreCheck's `{url, expires_at}`: brain-api never downloads the file.
+    Unconfigured PreCheck is a 503 (`_proxy_request`), never an invented URL.
+    """
+    return await _proxy_get(f"/api/v1/doctor/anamneses/media/{media_id}/url", authorization)
+
+
+async def set_anamnesis_status(authorization: str, anamnesis_id: int, status_value: str) -> Any:
+    """Triage write — `PATCH /api/v1/doctor/anamneses/{id}/status` `{status}`.
+
+    Unconfigured PreCheck is a 503: a write is never faked as a success.
+    """
+    return await _proxy_request(
+        "PATCH",
+        f"/api/v1/doctor/anamneses/{anamnesis_id}/status",
+        authorization,
+        json_body={"status": status_value},
+    )
 
 
 async def list_admin_anamneses(authorization: str, skip: int, limit: int) -> Any:

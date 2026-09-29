@@ -163,9 +163,10 @@ def deny_secretary(p: Principal, error_code: str) -> None:
     FastAPI dependency: each call site names its own machine-readable `error_code`, and
     `grep -rn deny_secretary` enumerates the complete boundary in one shot.
 
-    The three call sites, all "clinical data or becoming a professional":
+    The call sites, all "clinical data or becoming a professional":
       * `api/sso.py`         — `secretary_precheck_not_allowed` (minting a PreCheck session)
-      * `api/doctor.py` (x2) — `secretary_precheck_not_allowed` (anamneses, proxied from
+      * `api/doctor.py` (x5) — `secretary_precheck_not_allowed` (anamneses list/detail and,
+        since TASK-011, media list, media URL and status — all proxied from
         PreCheck; PreCheck's own `BRAIN_DOCTOR_ROLES` would reject the forwarded token
         anyway, but that is a remote 403 surfacing as an opaque upstream error — this
         makes the boundary local, explicit and testable)

@@ -148,3 +148,124 @@ async def test_client_existing_list_still_sends_its_pagination(monkeypatch):
     assert calls[0]["method"] == "GET"
     assert calls[0]["path"] == "/api/v1/doctor/anamneses"
     assert calls[0]["params"] == {"skip": 5, "limit": 10}
+
+
+# --- Task 8: the routes ------------------------------------------------------------
+
+
+async def _owner(client) -> str:
+    return await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
+
+
+async def test_media_list_is_an_empty_stub_when_precheck_unconfigured(client, monkeypatch):
+    built = _forbid_httpx(monkeypatch)
+    token = await _owner(client)
+    resp = await client.get("/doctor/anamneses/7/media", headers=_bearer(token))
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"items": [], "stub": True}
+    assert built == []
+
+
+async def test_media_url_and_status_are_503_when_precheck_unconfigured(client, monkeypatch):
+    built = _forbid_httpx(monkeypatch)
+    token = await _owner(client)
+    url = await client.get("/doctor/anamneses/media/101/url", headers=_bearer(token))
+    assert url.status_code == 503
+    assert url.json()["detail"] == "precheck_not_configured"
+    patch = await client.patch(
+        "/doctor/anamneses/7/status", json={"status": "approved"}, headers=_bearer(token)
+    )
+    assert patch.status_code == 503
+    assert patch.json()["detail"] == "precheck_not_configured"
+    assert built == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"status": "draft"},
+        {"status": "foo"},
+        {"status": ""},
+        {},
+        {"status": "approved", "final_summary": "x"},
+    ],
+)
+async def test_status_rejects_anything_but_approved_or_rejected_locally(
+    client, monkeypatch, body
+):
+    calls = _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {}))
+    token = await _owner(client)
+    resp = await client.patch("/doctor/anamneses/7/status", json=body, headers=_bearer(token))
+    assert resp.status_code == 422
+    assert calls == []
+
+
+async def test_media_list_forwards_the_callers_bearer(client, monkeypatch):
+    payload = {
+        "items": [{"media_id": 101, "type": "image", "kind": "image", "media_role": "exame"}]
+    }
+    calls = _install_fake_httpx(monkeypatch, response=_FakeResponse(200, payload))
+    token = await _owner(client)
+    resp = await client.get("/doctor/anamneses/7/media", headers=_bearer(token))
+    assert resp.status_code == 200
+    assert resp.json() == payload
+    assert calls[0]["path"] == "/api/v1/doctor/anamneses/7/media"
+    assert calls[0]["headers"] == {"Authorization": f"Bearer {token}"}
+
+
+async def test_media_url_is_passed_through_not_downloaded(client, monkeypatch):
+    payload = {
+        "url": "https://r2.example/x.jpg?sig=abc",
+        "expires_at": "2026-09-29T12:15:00+00:00",
+    }
+    calls = _install_fake_httpx(monkeypatch, response=_FakeResponse(200, payload))
+    token = await _owner(client)
+    resp = await client.get("/doctor/anamneses/media/101/url", headers=_bearer(token))
+    assert resp.status_code == 200
+    assert resp.json() == payload
+    # exactly one upstream call (the URL), never a second one for the bytes
+    assert [(c["method"], c["path"]) for c in calls] == [
+        ("GET", "/api/v1/doctor/anamneses/media/101/url")
+    ]
+
+
+async def test_status_patch_forwards_method_and_body(client, monkeypatch):
+    payload = {"id": 7, "status": "rejected", "updated_at": "2026-09-29T12:00:00+00:00"}
+    calls = _install_fake_httpx(monkeypatch, response=_FakeResponse(200, payload))
+    token = await _owner(client)
+    resp = await client.patch(
+        "/doctor/anamneses/7/status", json={"status": "rejected"}, headers=_bearer(token)
+    )
+    assert resp.status_code == 200
+    assert resp.json() == payload
+    assert calls[0]["method"] == "PATCH"
+    assert calls[0]["path"] == "/api/v1/doctor/anamneses/7/status"
+    assert calls[0]["json"] == {"status": "rejected"}
+
+
+@pytest.mark.parametrize(
+    "method,path,body",
+    [
+        ("GET", "/doctor/anamneses/7/media", None),
+        ("GET", "/doctor/anamneses/media/101/url", None),
+        ("PATCH", "/doctor/anamneses/7/status", {"status": "approved"}),
+    ],
+)
+async def test_upstream_404_surfaces_as_404(client, monkeypatch, method, path, body):
+    _install_fake_httpx(
+        monkeypatch, response=_FakeResponse(404, {"detail": "Anamnese nao encontrada"})
+    )
+    token = await _owner(client)
+    resp = await client.request(method, path, json=body, headers=_bearer(token))
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Anamnese nao encontrada"
+
+
+async def test_upstream_network_error_is_502(client, monkeypatch):
+    _install_fake_httpx(monkeypatch, exc=httpx.ConnectError("boom"))
+    token = await _owner(client)
+    resp = await client.patch(
+        "/doctor/anamneses/7/status", json={"status": "approved"}, headers=_bearer(token)
+    )
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "precheck unavailable"

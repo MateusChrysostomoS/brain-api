@@ -353,6 +353,27 @@ async def test_secretary_cannot_read_anamneses(client):
     assert resp.status_code == 200
 
 
+async def test_secretary_cannot_reach_the_anamnesis_media_or_status_routes(client, monkeypatch):
+    """TASK-011: the three new PreCheck proxies refuse a secretary LOCALLY. Building an
+    httpx client fails the test, and without the guard the unconfigured media list would
+    answer 200 (stub) — so a missing deny_secretary cannot pass silently."""
+    from brain_api.services import precheck_client
+
+    def _no_upstream(**kwargs):
+        raise AssertionError("PreCheck must not be called for a secretary")
+
+    monkeypatch.setattr(precheck_client.httpx, "AsyncClient", _no_upstream)
+    secretary = await _token(client, SECRETARY_EMAIL, SECRETARY_PASSWORD)
+    for method, path, body in [
+        ("GET", "/doctor/anamneses/1/media", None),
+        ("GET", "/doctor/anamneses/media/1/url", None),
+        ("PATCH", "/doctor/anamneses/1/status", {"status": "approved"}),
+    ]:
+        resp = await client.request(method, path, json=body, headers=_bearer(secretary))
+        assert resp.status_code == 403, (path, resp.text)
+        assert resp.json()["detail"] == "secretary_precheck_not_allowed"
+
+
 async def test_secretary_cannot_become_a_professional(client, monkeypatch):
     """The self-bind is the only route that writes `professional_id` — closed, so a
     receptionist can never appear in the bookable agenda."""

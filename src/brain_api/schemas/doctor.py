@@ -6,6 +6,8 @@ entitlements (which products they may use). It reuses the whitelisted identity s
 `password_hash` can be serialized here either.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from brain_api.schemas.auth import TenantOut, UserOut
@@ -58,3 +60,14 @@ class HubTokenOut(BaseModel):
     hub_token: str
     token_type: str = "bearer"
     expires_in: int
+
+
+class AnamnesisStatusIn(BaseModel):
+    """`PATCH /doctor/anamneses/{id}/status` — the only two triage values PreCheck accepts.
+
+    Validated HERE too, so an invalid value is a local 422 and never reaches PreCheck.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["approved", "rejected"]

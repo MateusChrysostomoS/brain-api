@@ -15,7 +15,8 @@ tenant; they degrade to an empty page when the secretaria mesh is unconfigured l
 EXCEPTION to the router-level gate: the two `/doctor/anamneses*` routes are the only
 CLINICAL surface in this module (PreCheck records), so they call `deny_secretary` — the
 `secretary` role is secretarIA-only and must never read patient anamneses, even though
-`require_doctor` lets it into every other route here.
+`require_doctor` lets it into every other route here. TASK-011 adds three more clinical routes
+(media list, media URL, status) under the same guard.
 """
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -26,7 +27,7 @@ from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.core.security import create_hub_token
-from brain_api.schemas.doctor import DoctorMeOut, DoctorMeUpdateIn, HubTokenOut
+from brain_api.schemas.doctor import AnamnesisStatusIn, DoctorMeOut, DoctorMeUpdateIn, HubTokenOut
 from brain_api.services import precheck_client, secretaria_internal
 from brain_api.services.doctor import get_doctor_me, update_doctor_me
 from brain_api.services.entitlements import ACTIVE_STATUSES, resolve_entitlement
@@ -171,3 +172,69 @@ async def anamnesis_detail(
         anamnesis_id=anamnesis_id,
     )
     return await precheck_client.get_anamnesis(authorization or "", anamnesis_id)
+
+
+@router.get("/anamneses/{anamnesis_id}/media", summary="Anamnesis media list (proxied)")
+async def anamnesis_media(
+    anamnesis_id: int,
+    authorization: str | None = Header(default=None),
+    principal: Principal = Depends(require_doctor),
+) -> object:
+    """Media ids of one anamnesis (brain-api -> precheck `.../anamneses/{id}/media`).
+
+    PreCheck scopes by the forwarded token's clinic (404 outside it). No URL here.
+    Clinical data: refused for a `secretary` (403 `secretary_precheck_not_allowed`).
+    """
+    deny_secretary(principal, "secretary_precheck_not_allowed")
+    logger.info(
+        "doctor_anamnesis_media_proxy",
+        tenant_id=str(principal.tenant_id),
+        anamnesis_id=anamnesis_id,
+    )
+    return await precheck_client.list_anamnesis_media(authorization or "", anamnesis_id)
+
+
+@router.get("/anamneses/media/{media_id}/url", summary="Signed URL of one anamnesis media")
+async def anamnesis_media_url(
+    media_id: int,
+    authorization: str | None = Header(default=None),
+    principal: Principal = Depends(require_doctor),
+) -> object:
+    """Short-lived signed URL (brain-api -> precheck `.../anamneses/media/{id}/url`).
+
+    Passthrough only: the file is never downloaded here, and the URL (a bearer
+    credential for ~15 min) is never logged — only the media id is.
+    Clinical data: refused for a `secretary` (403 `secretary_precheck_not_allowed`).
+    """
+    deny_secretary(principal, "secretary_precheck_not_allowed")
+    logger.info(
+        "doctor_anamnesis_media_url_proxy",
+        tenant_id=str(principal.tenant_id),
+        media_id=media_id,
+    )
+    return await precheck_client.get_anamnesis_media_url(authorization or "", media_id)
+
+
+@router.patch("/anamneses/{anamnesis_id}/status", summary="Triage an anamnesis (proxied)")
+async def anamnesis_status(
+    anamnesis_id: int,
+    payload: AnamnesisStatusIn,
+    authorization: str | None = Header(default=None),
+    principal: Principal = Depends(require_doctor),
+) -> object:
+    """Mark one anamnesis `approved` | `rejected` (brain-api -> precheck `.../status`).
+
+    PreCheck writes only `summaries.status` and 404s a record outside the token's clinic.
+    Unconfigured PreCheck is a 503 — a write is never faked.
+    Clinical data: refused for a `secretary` (403 `secretary_precheck_not_allowed`).
+    """
+    deny_secretary(principal, "secretary_precheck_not_allowed")
+    logger.info(
+        "doctor_anamnesis_status_proxy",
+        tenant_id=str(principal.tenant_id),
+        anamnesis_id=anamnesis_id,
+        status=payload.status,
+    )
+    return await precheck_client.set_anamnesis_status(
+        authorization or "", anamnesis_id, payload.status
+    )

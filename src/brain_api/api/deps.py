@@ -175,3 +175,19 @@ def deny_secretary(p: Principal, error_code: str) -> None:
     """
     if p.role == ROLE_SECRETARY:
         raise HTTPException(status.HTTP_403_FORBIDDEN, error_code)
+
+
+def is_billing_manager(p: Principal) -> bool:
+    """Whether this principal may change the clinic's SUBSCRIPTION (checkout, portal, PreCheck
+    top-up/upgrade, add a product) — decision D4 (TASK C).
+
+    The people who run the clinic: `manager`, or a `doctor` carrying `is_owner`/`is_manager`
+    (a "gestor" is either — the solo doctor-owner is the common buyer), plus the LEGACY
+    `tenant_owner` during its token-transition window. A `secretary` NEVER passes, whatever
+    claims the token carries (billing is not part of the secretarIA-only receptionist role);
+    neither does a `doctor` without the claims, `tenant_staff`, or the tenant-less `admin`.
+    Pure — the DB-backed test-clinic refusal lives in `api/billing.require_billable_tenant`.
+    """
+    if p.role == ROLE_SECRETARY:
+        return False
+    return p.is_owner or p.is_manager or p.role in (ROLE_MANAGER, ROLE_TENANT_OWNER)

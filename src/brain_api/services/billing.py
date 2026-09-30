@@ -53,15 +53,19 @@ buyer's first card — it no longer creates the tenant/user. Every other event �
 an "existing_tenant" checkout — is completely unaffected.
 """
 
+import hashlib
+import hmac
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
-from typing import Any
+from typing import Any, NoReturn
 from uuid import UUID
 
 import httpx
 from fastapi import HTTPException, status
+from jose import JWTError, jwt
+from jose.exceptions import ExpiredSignatureError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -274,6 +278,99 @@ async def _stripe_get(path: str) -> dict[str, Any]:
     return resp.json()
 
 
+class StripeApiError(Exception):
+    """A Stripe API refusal that KEEPS Stripe's own error fields (HTTP status, `error.code`,
+    `error.type`, `error.message`) so the caller can tell a declined card from a config bug.
+
+    `_stripe_post` flattens every failure into `502 stripe_error`; the `add-product` flow needs
+    more (402 card declined, 3DS, no payment method, idempotency key in use). Neither the
+    request payload nor the secret key ever travels in this exception.
+    """
+
+    def __init__(
+        self, status_code: int, code: str | None, error_type: str | None, message: str | None
+    ) -> None:
+        super().__init__(f"stripe_api_error:{status_code}:{code}")
+        self.status_code = status_code
+        self.code = code
+        self.error_type = error_type
+        self.message = message
+
+
+def _stripe_error_type(resp: httpx.Response) -> str | None:
+    try:
+        body = resp.json()
+    except Exception:  # noqa: BLE001 - logging/classification must never be what raises
+        return None
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict) and error.get("type") is not None:
+        return str(error["type"])
+    return None
+
+
+async def _stripe_post_or_raise(
+    path: str, data: dict[str, str], *, idempotency_key: str | None = None
+) -> dict[str, Any]:
+    """`_stripe_post` that raises `StripeApiError` (with Stripe's error fields) on a >= 400
+    answer instead of a bare 502. Same 503 (unconfigured) / 502 (unreachable) mapping otherwise;
+    the secret key is only ever in the auth tuple."""
+    settings = get_settings()
+    if not settings.STRIPE_SECRET_KEY:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "billing_not_configured")
+    headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.STRIPE_API_BASE, timeout=settings.STRIPE_TIMEOUT_SECONDS
+        ) as client:
+            resp = await client.post(
+                path, data=data, auth=(settings.STRIPE_SECRET_KEY, ""), headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning("stripe_unreachable", path=path)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "stripe_unavailable") from exc
+    if resp.status_code >= 400:
+        fields = _stripe_error_fields(resp)
+        logger.warning("stripe_api_error", path=path, upstream_status=resp.status_code, **fields)
+        raise StripeApiError(
+            resp.status_code,
+            fields["error_code"],
+            _stripe_error_type(resp),
+            fields["error_message"],
+        )
+    return resp.json()
+
+
+#: Stripe error codes meaning "the bank wants the customer to authenticate" (3DS/SCA): the
+#: update cannot complete server-side, the customer finishes it in the Billing Portal.
+_ACTION_REQUIRED_CODES = frozenset(
+    {
+        "subscription_payment_intent_requires_action",
+        "authentication_required",
+        "payment_intent_authentication_failure",
+    }
+)
+
+
+def classify_add_product_error(err: StripeApiError) -> tuple[int, str]:
+    """Map a Stripe refusal of the subscription update to `(http_status, detail)`.
+
+    The codes/messages below are what the Stripe docs describe and are pinned by tests with
+    representative payloads; the REAL error code of each case is still to be observed in test
+    mode (docs/CHECKPOINT_billing_add_product.md, proof steps 3-4) — anything unrecognized
+    falls to `502 stripe_error`, never to a success.
+    """
+    if err.code in _ACTION_REQUIRED_CODES:
+        return status.HTTP_409_CONFLICT, "payment_action_required"
+    if err.status_code == status.HTTP_409_CONFLICT and err.code == "idempotency_key_in_use":
+        return status.HTTP_409_CONFLICT, "add_product_in_progress"
+    if err.error_type == "card_error" or err.status_code == status.HTTP_402_PAYMENT_REQUIRED:
+        return status.HTTP_402_PAYMENT_REQUIRED, "payment_failed"
+    message = (err.message or "").lower()
+    if "no attached payment source" in message or "default payment method" in message:
+        return status.HTTP_409_CONFLICT, "payment_method_required"
+    return status.HTTP_502_BAD_GATEWAY, "stripe_error"
+
+
 @dataclass(frozen=True)
 class CheckoutSelection:
     """A validated purchase: one assignable plan + optional extra add-ons."""
@@ -345,30 +442,22 @@ LIVE_SUBSCRIPTION_STATUSES: frozenset[str] = frozenset({"active", "trialing", "p
 HAS_ACTIVE_SUBSCRIPTION = "has_active_subscription"
 
 
-def checkout_block_reason(ent: Entitlement | None, selection: CheckoutSelection) -> str | None:
+def checkout_block_reason(ent: Entitlement | None) -> str | None:
     """Why a NEW subscription checkout must not be opened for this tenant, or None.
 
-    An entitlement is ONE subscription -> ONE plan (+ add-ons): the webhook recomputes
-    every product flag from the subscription it is handed (`_state_from_subscription`)
-    and overwrites `stripe_subscription_id`. A second subscription therefore replaces
-    the first one's state instead of adding to it — a secretarIA clinic buying PreCheck
-    would lose `secretaria_enabled`, keep paying the first subscription and get its test
-    window restarted. Until in-place upgrade exists (TASK C), refuse:
+    One rule, permanent (spec C §5.14): a live subscription (`LIVE_SUBSCRIPTION_STATUSES`) is
+    already linked. A second simultaneous subscription is never right — the clinic ADDS a
+    product to the one it has (`add_product_to_subscription`) — and refusing it here, before
+    any Stripe call, keeps an orphan second subscription from ever existing. A clinic whose
+    only products are manual (courtesy/admin, no subscription) may check out: the webhook
+    merges the new subscription's families with `manual_products`
+    (`apply_subscription_state`). `canceled`/`inactive` is the resubscribe path.
 
-    1. a live subscription (`LIVE_SUBSCRIPTION_STATUSES`) is already linked; or
-    2. secretarIA is already on (courtesy/admin-provisioned clinics have no
-       subscription at all, so rule 1 cannot see them) and the requested plan carries a
-       product — i.e. it would open a subscription of its own.
-
-    Pure: no I/O, so it is called BEFORE any Stripe request and unit-tested directly.
+    Pure: no I/O, so it runs BEFORE any Stripe request and is unit-tested directly.
     """
     if ent is None:
         return None
     if ent.stripe_subscription_id and ent.status in LIVE_SUBSCRIPTION_STATUSES:
-        return HAS_ACTIVE_SUBSCRIPTION
-    plan = catalog.get_plan(selection.plan_id)
-    opens_own_subscription = plan is not None and (plan.precheck or plan.secretaria)
-    if ent.secretaria_enabled and opens_own_subscription:
         return HAS_ACTIVE_SUBSCRIPTION
     return None
 
@@ -414,19 +503,609 @@ def _append_checkout_line_items(data: dict[str, str], selection: CheckoutSelecti
             data[f"line_items[{index}][quantity]"] = quantity
 
 
-def _append_subscription_items(data: dict[str, str], selection: CheckoutSelection) -> None:
-    """Populate `items[i][price]`/`[quantity]` for a validated selection — the subscription-
-    create counterpart of `_append_checkout_line_items` (Stripe's `POST /v1/subscriptions`
-    uses `items[i]`, not `line_items[i]`). Used by Task 2's
-    `POST /doctor/onboarding/test-window/restart` when the tenant's old subscription is
-    already canceled and a brand-new one has to be created directly (no Checkout Session,
-    since the tenant already has a saved card). Same price/quantity shape as
-    `_selection_price_items` — see its docstring.
+def _append_subscription_selections(
+    data: dict[str, str], selections: list[CheckoutSelection]
+) -> None:
+    """Populate `items[i][price]`/`[quantity]` for one or MORE validated selections (a dual
+    clinic re-creates both products in one subscription) — the subscription-create counterpart
+    of `_append_checkout_line_items` (Stripe's `POST /v1/subscriptions` uses `items[i]`, not
+    `line_items[i]`). Same price/quantity shape as `_selection_price_items`, selections in the
+    order given.
     """
-    for index, (price_id, quantity) in enumerate(_selection_price_items(selection)):
+    items = [item for selection in selections for item in _selection_price_items(selection)]
+    for index, (price_id, quantity) in enumerate(items):
         data[f"items[{index}][price]"] = price_id
         if quantity is not None:
             data[f"items[{index}][quantity]"] = quantity
+
+
+def _append_subscription_items(data: dict[str, str], selection: CheckoutSelection) -> None:
+    """Single-selection form of `_append_subscription_selections` (the cold-signup webhook)."""
+    _append_subscription_selections(data, [selection])
+
+
+def paid_selections_for_entitlement(ent: Entitlement) -> list[CheckoutSelection]:
+    """One `CheckoutSelection` per product family the clinic PAYS for, to re-create its
+    subscription (`POST /doctor/onboarding/test-window/restart` after the old one was cancelled).
+
+    Read from `plan` / `precheck_plan` (NOT the on/off flags: a cancelled subscription switches
+    them off but keeps the plan bought) and skipping families in `manual_products` — a courtesy
+    product must never start being billed by a re-creation. The combo is one selection (it
+    carries both products). Active add-ons ride on the FIRST selection; `validate_selection`
+    drops the ones the plan already implies. Empty list = nothing paid to re-create.
+    """
+    manual = set(ent.manual_products or [])
+    addon_ids = [addon_id for addon_id, active in (ent.addons or {}).items() if active]
+    selections: list[CheckoutSelection] = []
+    secretaria = catalog.secretaria_plan_of(ent)
+    if secretaria is not None and catalog.FAMILY_SECRETARIA not in manual:
+        selections.append(validate_selection(secretaria.id, addon_ids))
+        if secretaria.precheck:  # the combo already carries PreCheck
+            return selections
+    precheck = catalog.precheck_plan_of(ent)
+    if (
+        precheck is not None
+        and precheck.id in catalog.PRECHECK_TIER_PLAN_IDS
+        and catalog.FAMILY_PRECHECK not in manual
+    ):
+        selections.append(validate_selection(precheck.id, [] if selections else addon_ids))
+    return selections
+
+
+# --- add-product: proration choice + invoice preview (TASK C) ---------------------------
+
+
+@dataclass(frozen=True)
+class AddProductCharge:
+    """What adding a product costs, as `POST /billing/add-product` reports it.
+
+    `amount_due_now_cents`: charged immediately (proration lines of the preview / the paid
+    `latest_invoice` of the update). `next_invoice_cents` / `next_invoice_date`: the invoice at
+    the next renewal (metered secretarIA usage is NOT in it — it accrues per use)."""
+
+    currency: str
+    amount_due_now_cents: int | None
+    next_invoice_cents: int | None
+    next_invoice_date: str | None
+
+
+def proration_for_items(items: list[tuple[str, str | None]]) -> str:
+    """`proration_behavior` for a subscription update that ADDS these items (decision D1).
+
+    A FLAT item (a PreCheck tier, a flat add-on: `quantity` set) is prorated and invoiced NOW
+    (`always_invoice`; with `payment_behavior=error_if_incomplete` a declined card fails the
+    whole update, nothing is added). A METERED item has no fixed value to prorate, so an
+    update made only of metered items uses `none` (the secretarIA add-on: usage is billed at
+    the next renewal)."""
+    return "always_invoice" if any(quantity is not None for _, quantity in items) else "none"
+
+
+def _is_timestamp(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def period_end_of(sub: dict[str, Any]) -> int | None:
+    """End of the subscription's current billing period as a unix timestamp, or None.
+
+    Older API versions carry it on the subscription; newer ones only on each item — the
+    earliest item end is the next renewal."""
+    end = sub.get("current_period_end")
+    if _is_timestamp(end):
+        return int(end)
+    ends = [
+        item["current_period_end"]
+        for item in (sub.get("items") or {}).get("data") or []
+        if _is_timestamp(item.get("current_period_end"))
+    ]
+    return min(ends) if ends else None
+
+
+def _iso_date(timestamp: int | None) -> str | None:
+    if timestamp is None:
+        return None
+    return datetime.fromtimestamp(timestamp, tz=UTC).date().isoformat()
+
+
+def _line_is_proration(line: dict[str, Any]) -> bool:
+    if line.get("proration") is True:  # API versions before 2025-03-31.basil
+        return True
+    details = (line.get("parent") or {}).get("subscription_item_details") or {}
+    return details.get("proration") is True
+
+
+def parse_preview_charge(
+    preview: dict[str, Any], live: dict[str, Any], *, proration: str | None = None
+) -> AddProductCharge:
+    """Price only supported complete invoices; unsupported adjustments fail closed.
+
+    An immediate invoice does not establish the next renewal. Only an explicit recurring
+    cycle invoice without proration does; otherwise next-invoice fields remain unknown.
+    """
+
+    def unavailable() -> NoReturn:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "preview_unavailable")
+
+    currency = preview.get("currency")
+    lines_obj = preview.get("lines")
+    if not isinstance(currency, str) or not currency or not isinstance(lines_obj, dict):
+        unavailable()
+    lines = lines_obj.get("data")
+    if lines_obj.get("has_more") is not False or not isinstance(lines, list) or not lines:
+        unavailable()
+    totals = [preview.get(key) for key in ("amount_due", "subtotal", "total")]
+    if any(not isinstance(value, int) or isinstance(value, bool) for value in totals):
+        unavailable()
+    if any(
+        preview.get(key) not in (None, [], 0)
+        for key in (
+            "total_tax_amounts",
+            "total_taxes",
+            "total_discount_amounts",
+            "discounts",
+            "pre_payment_credit_notes_amount",
+            "post_payment_credit_notes_amount",
+            "amount_overpaid",
+            "amount_paid",
+            "shipping_cost",
+        )
+    ) or (preview.get("automatic_tax") or {}).get("enabled"):
+        unavailable()
+    if preview.get("starting_balance") != 0 or preview.get("ending_balance") != 0:
+        unavailable()
+    amounts = []
+    prorations = []
+    for line in lines:
+        if not isinstance(line, dict):
+            unavailable()
+        amount = line.get("amount")
+        if not isinstance(amount, int) or isinstance(amount, bool):
+            unavailable()
+        flag = line.get("proration")
+        if not isinstance(flag, bool):
+            parent = line.get("parent") or {}
+            flag = (parent.get("subscription_item_details") or {}).get("proration")
+        if not isinstance(flag, bool):
+            unavailable()
+        if any(line.get(key) for key in ("discount_amounts", "tax_amounts", "taxes")):
+            unavailable()
+        amounts.append(amount)
+        prorations.append(flag)
+    due, subtotal, total = totals
+    if due < 0 or not (due == subtotal == total == sum(amounts)):
+        unavailable()
+    behavior = proration or ("always_invoice" if any(prorations) else "none")
+    if behavior == "always_invoice" and not all(prorations):
+        unavailable()
+    recurring = preview.get("billing_reason") == "subscription_cycle" and not any(prorations)
+    return AddProductCharge(
+        currency=currency,
+        amount_due_now_cents=due if behavior == "always_invoice" else 0,
+        next_invoice_cents=total if recurring else None,
+        next_invoice_date=_iso_date(period_end_of(live)) if recurring else None,
+    )
+
+
+# --- add-product: request + preflight (TASK C, spec §5.5 steps 1-5) -------------------------
+
+PRODUCT_PRECHECK = catalog.FAMILY_PRECHECK
+PRODUCT_SECRETARIA = catalog.FAMILY_SECRETARIA
+
+
+@dataclass(frozen=True)
+class AddProductRequest:
+    """`POST /billing/add-product`, after schema validation. `idempotency_key` is the raw
+    client header (validated only when `confirm` is true)."""
+
+    product: str
+    plan: str | None
+    addons: tuple[str, ...]
+    confirm: bool
+    idempotency_key: str | None
+    expected_charge: AddProductCharge | None = None
+    quote_token: str | None = None
+
+
+@dataclass(frozen=True)
+class AddProductPreflight:
+    """Everything the preview/execute steps need, decided WITHOUT writing anything.
+    `items` is empty when `already_present` (the live subscription already carries the family)."""
+
+    ent: Entitlement
+    selection: CheckoutSelection
+    items: list[tuple[str, str | None]]
+    live: dict[str, Any]
+    already_present: bool
+
+
+def _refuse(status_code: int, detail: str, *, tenant_id: UUID, product: str) -> NoReturn:
+    logger.warning(
+        "billing_add_product_refused", tenant_id=str(tenant_id), product=product, reason=detail
+    )
+    raise HTTPException(status_code, detail)
+
+
+def _id_of(value: Any) -> str | None:
+    """A Stripe reference as an id: the string itself, or `id` of an expanded object."""
+    if isinstance(value, dict):
+        value = value.get("id")
+    return str(value) if value else None
+
+
+def _selection_for_product(req: AddProductRequest, tenant_id: UUID) -> CheckoutSelection:
+    """The plan to buy for `req.product`, validated against the catalog and the price map.
+
+    secretarIA has exactly one plan (no `plan` allowed); PreCheck needs one of the tiers. The
+    combo is never sold through this route (spec §5.7: adding the other product never routes
+    to the combo)."""
+    if req.product == PRODUCT_SECRETARIA:
+        if req.plan is not None:
+            _refuse(422, "invalid_plan_for_product", tenant_id=tenant_id, product=req.product)
+        plan_id = catalog.PLAN_SECRETARIA_BASICO
+    else:
+        if req.plan not in catalog.PRECHECK_TIER_PLAN_IDS:
+            _refuse(422, "invalid_plan_for_product", tenant_id=tenant_id, product=req.product)
+        plan_id = str(req.plan)
+    return validate_selection(plan_id, list(req.addons))
+
+
+async def _add_product_preflight(
+    session: AsyncSession, tenant_id: UUID, req: AddProductRequest
+) -> AddProductPreflight:
+    """Steps 0-5 of the add-product algorithm: refuse everything that can be refused, read the
+    live subscription, and decide whether there is anything to do. Writes NOTHING.
+
+    The launch gate (D6) comes FIRST — before any state read or Stripe call — so a product that
+    is not on sale reveals nothing and costs nothing."""
+    if req.product == PRODUCT_SECRETARIA and not getattr(
+        get_settings(), "BILLING_ADD_SECRETARIA_ENABLED", False
+    ):
+        _refuse(403, "product_not_launched", tenant_id=tenant_id, product=req.product)
+
+    ent = await session.get(Entitlement, tenant_id)
+    if ent is None or not ent.stripe_subscription_id:
+        _refuse(409, "no_active_subscription", tenant_id=tenant_id, product=req.product)
+    if ent.status == "past_due":
+        _refuse(409, "subscription_past_due", tenant_id=tenant_id, product=req.product)
+    if ent.status == "trialing":  # D2: v1 blocks adding to a trial
+        _refuse(409, "subscription_trialing", tenant_id=tenant_id, product=req.product)
+    if ent.status != "active":
+        _refuse(409, "no_active_subscription", tenant_id=tenant_id, product=req.product)
+
+    family_on = ent.precheck_enabled if req.product == PRODUCT_PRECHECK else ent.secretaria_enabled
+    locally_paid = family_on and req.product not in set(ent.manual_products or [])
+    if locally_paid and not req.confirm:
+        _refuse(409, "product_already_active", tenant_id=tenant_id, product=req.product)
+
+    selection = _selection_for_product(req, tenant_id)
+
+    live = await _stripe_get(f"/v1/subscriptions/{ent.stripe_subscription_id}")
+    if (
+        not ent.stripe_customer_id
+        or _id_of(live.get("customer")) != ent.stripe_customer_id
+        or live.get("schedule")
+    ):
+        _refuse(409, "subscription_shape_unsupported", tenant_id=tenant_id, product=req.product)
+    live_status = live.get("status")
+    if live_status == "trialing":
+        _refuse(409, "subscription_trialing", tenant_id=tenant_id, product=req.product)
+    if live_status == "past_due":
+        _refuse(409, "subscription_past_due", tenant_id=tenant_id, product=req.product)
+    if live_status != "active":
+        _refuse(409, "no_active_subscription", tenant_id=tenant_id, product=req.product)
+
+    families = _families_from_subscription(live)
+    if families is not None and req.product in families.carried:
+        # Idempotent by nature: the subscription already has it (double click, or the webhook
+        # got there first). The caller recomposes the local row from the live object.
+        return AddProductPreflight(ent, selection, [], live, True)
+
+    if locally_paid:
+        _refuse(409, "product_already_active", tenant_id=tenant_id, product=req.product)
+
+    live_prices = {
+        (item.get("price") or {}).get("id") for item in (live.get("items") or {}).get("data") or []
+    }
+    for addon_id in selection.addon_ids:
+        if price_id_for(addon_id) in live_prices:
+            _refuse(
+                409,
+                f"addon_already_on_subscription:{addon_id}",
+                tenant_id=tenant_id,
+                product=req.product,
+            )
+    return AddProductPreflight(ent, selection, _selection_price_items(selection), live, False)
+
+
+# --- add-product: preview / execute (TASK C, spec §5.5 steps 6-8) -----------------------------
+
+
+@dataclass(frozen=True)
+class AddProductResult:
+    """Outcome of `add_product_to_subscription`; `status` is `preview | added | already_present`.
+    `charge` is None for `already_present`."""
+
+    status: str
+    product: str
+    charge: AddProductCharge | None
+    quote_token: str | None = None
+
+
+def _quote_signing_key() -> str:
+    # Domain separation: even an auth decoder ignoring scope cannot accept this signature.
+    from brain_api.core.security import get_settings as auth_settings
+
+    secret = auth_settings().SECRET_KEY
+    return hmac.new(
+        secret.encode(), b"brain.billing_add_product_quote.v1", hashlib.sha256
+    ).hexdigest()
+
+
+def _quote_binding(tenant_id: UUID, pre: AddProductPreflight, req: AddProductRequest) -> dict:
+    return {
+        "tenant": str(tenant_id),
+        "subscription": pre.ent.stripe_subscription_id,
+        "customer": pre.ent.stripe_customer_id,
+        "product": req.product,
+        "plan": pre.selection.plan_id,
+        "addons": sorted(pre.selection.addon_ids),
+    }
+
+
+def _issue_quote(
+    tenant_id: UUID,
+    pre: AddProductPreflight,
+    req: AddProductRequest,
+    date: int,
+    charge: AddProductCharge,
+) -> str:
+    claims = {
+        **_quote_binding(tenant_id, pre, req),
+        "scope": "billing_add_product_quote",
+        "proration_date": date,
+        "charge": asdict(charge),
+        "iat": date,
+        "exp": date + 600,
+    }
+    return jwt.encode(claims, _quote_signing_key(), algorithm="HS256")
+
+
+def _read_quote(tenant_id: UUID, pre: AddProductPreflight, req: AddProductRequest) -> dict:
+    try:
+        claims = jwt.decode(req.quote_token, _quote_signing_key(), algorithms=["HS256"])
+    except ExpiredSignatureError as exc:
+        raise HTTPException(422, "preview_quote_expired") from exc
+    except JWTError as exc:
+        raise HTTPException(422, "preview_quote_invalid") from exc
+    date = claims.get("proration_date")
+    if (
+        claims.get("scope") != "billing_add_product_quote"
+        or not _is_timestamp(date)
+        or date > int(datetime.now(UTC).timestamp())
+        or any(
+            claims.get(key) != value for key, value in _quote_binding(tenant_id, pre, req).items()
+        )
+    ):
+        raise HTTPException(409, "preview_changed")
+    return claims
+
+
+def _normalize_idempotency_key(raw: str | None, *, tenant_id: UUID, product: str) -> str:
+    """The client's `Idempotency-Key` as a canonical UUID string, or a 422. A UUID (not free
+    text) so it cannot smuggle anything into the Stripe header; the server namespaces it with
+    the tenant id, so one tenant can never collide with another."""
+    if not raw or not raw.strip():
+        _refuse(422, "idempotency_key_required", tenant_id=tenant_id, product=product)
+    try:
+        return str(UUID(raw.strip()))
+    except ValueError:
+        _refuse(422, "invalid_idempotency_key", tenant_id=tenant_id, product=product)
+
+
+def _preview_form(
+    ent: Entitlement,
+    items: list[tuple[str, str | None]],
+    proration: str,
+    proration_date: int | None,
+) -> dict[str, str]:
+    data = {
+        "customer": str(ent.stripe_customer_id),
+        "subscription": str(ent.stripe_subscription_id),
+        "subscription_details[proration_behavior]": proration,
+    }
+    if proration_date is not None:
+        data["subscription_details[proration_date]"] = str(proration_date)
+    for index, (price_id, quantity) in enumerate(items):
+        data[f"subscription_details[items][{index}][price]"] = price_id
+        if quantity is not None:
+            data[f"subscription_details[items][{index}][quantity]"] = quantity
+    return data
+
+
+def _update_form(
+    items: list[tuple[str, str | None]], proration: str, proration_date: int | None
+) -> dict[str, str]:
+    """Form for `POST /v1/subscriptions/{id}` that ADDS items (no `items[i][id]`). Deliberately
+    NO `trial_end` / `trial_period_days` / `billing_cycle_anchor`: an `active` subscription must
+    stay active and keep its cycle (spec §5.8)."""
+    data = {
+        "proration_behavior": proration,
+        "payment_behavior": "error_if_incomplete",
+        "expand[]": "latest_invoice",
+    }
+    if proration_date is not None:
+        data["proration_date"] = str(proration_date)
+    for index, (price_id, quantity) in enumerate(items):
+        data[f"items[{index}][price]"] = price_id
+        if quantity is not None:
+            data[f"items[{index}][quantity]"] = quantity
+    return data
+
+
+def _charge_from_update(updated: dict[str, Any]) -> AddProductCharge:
+    invoice = updated.get("latest_invoice")
+    paid = invoice.get("amount_paid") if isinstance(invoice, dict) else None
+    currency = (invoice.get("currency") if isinstance(invoice, dict) else None) or updated.get(
+        "currency"
+    )
+    return AddProductCharge(
+        currency=str(currency or "brl"),
+        amount_due_now_cents=paid if isinstance(paid, int) and not isinstance(paid, bool) else None,
+        next_invoice_cents=None,
+        next_invoice_date=_iso_date(period_end_of(updated)),
+    )
+
+
+async def _finish_add_product(
+    session: AsyncSession,
+    tenant_id: UUID,
+    req: AddProductRequest,
+    sub: dict[str, Any],
+    *,
+    status_label: str,
+    charge: AddProductCharge | None,
+    expected_subscription_id: str,
+    expected_status: str,
+) -> AddProductResult:
+    """Step 8: write the local row from the (live / just-updated) subscription object, through
+    the SAME `apply_subscription_state` the webhook uses. The row is re-read `FOR UPDATE`
+    (short lock, NEVER held across a network call) so a webhook that landed meanwhile is
+    merged, not overwritten."""
+    ent = await session.get(Entitlement, tenant_id, with_for_update=True, populate_existing=True)
+    if ent is None:  # pragma: no cover - the preflight just read it
+        raise HTTPException(status.HTTP_409_CONFLICT, "no_active_subscription")
+    if ent.stripe_subscription_id != expected_subscription_id or ent.status != expected_status:
+        raise HTTPException(status.HTTP_409_CONFLICT, "subscription_changed")
+    applied = apply_subscription_state(ent, sub)
+    if req.product == PRODUCT_SECRETARIA and status_label == "added":
+        # Nothing to harden: there is no trial on this subscription. The stamp keeps
+        # `harden_charge`/`trial_will_end` (both no-ops outside `trialing`) permanently inert.
+        ent.charge_hardened_at = ent.charge_hardened_at or datetime.now(UTC)
+        ent.cancel_scheduled_at = None
+    if applied.secretaria_newly_paid:
+        await _restart_test_window(session, tenant_id)
+    await session.commit()
+    # Post-commit, fail-soft: every activation path must call the provisioning bridges
+    # (docs/CHECKPOINT_provisioning_bridge_coverage.md). Local import: onboarding_sync imports
+    # this module.
+    from brain_api.services import onboarding_sync
+
+    await onboarding_sync.ensure_products_provisioned(session, tenant_id)
+    return AddProductResult(status_label, req.product, charge)
+
+
+async def add_product_to_subscription(
+    session: AsyncSession, tenant_id: UUID, req: AddProductRequest
+) -> AddProductResult:
+    """Add the OTHER product to the tenant's existing Stripe subscription (TASK C).
+
+    `confirm=false` -> a preview (read-only: the live subscription + `create_preview`), nothing
+    written anywhere. `confirm=true` -> `POST /v1/subscriptions/{id}` with NEW items; the local
+    row is written ONLY from Stripe's successful answer, so a declined card leaves no trace
+    (`payment_behavior=error_if_incomplete`: the update fails as a whole). One subscription, one
+    invoice, one card — never a second subscription. Errors and their `detail` codes are the
+    ones listed in docs/CHECKPOINT_billing_add_product.md.
+    """
+    client_key = (
+        _normalize_idempotency_key(req.idempotency_key, tenant_id=tenant_id, product=req.product)
+        if req.confirm
+        else None
+    )
+    pre = await _add_product_preflight(session, tenant_id, req)
+    if pre.already_present:
+        return await _finish_add_product(
+            session,
+            tenant_id,
+            req,
+            pre.live,
+            status_label="already_present",
+            charge=None,
+            expected_subscription_id=str(pre.ent.stripe_subscription_id),
+            expected_status=pre.ent.status,
+        )
+
+    proration = proration_for_items(pre.items)
+    subscription_id = str(pre.ent.stripe_subscription_id)
+    subscription_status = pre.ent.status
+    claims = _read_quote(tenant_id, pre, req) if req.confirm and req.quote_token else None
+    if req.confirm and req.expected_charge is not None and claims is None:
+        _refuse(422, "preview_quote_required", tenant_id=tenant_id, product=req.product)
+    proration_date = (
+        claims["proration_date"]
+        if claims
+        else (int(datetime.now(UTC).timestamp()) if not req.confirm else None)
+    )
+    preview = await _stripe_post(
+        "/v1/invoices/create_preview",
+        _preview_form(pre.ent, pre.items, proration, proration_date),
+    )
+    charge = parse_preview_charge(preview, pre.live, proration=proration)
+    if not req.confirm:
+        logger.info("billing_add_product_previewed", tenant_id=str(tenant_id), product=req.product)
+        return AddProductResult(
+            "preview",
+            req.product,
+            charge,
+            _issue_quote(tenant_id, pre, req, proration_date, charge),
+        )
+    if (claims is not None and claims.get("charge") != asdict(charge)) or (
+        req.expected_charge is not None and req.expected_charge != charge
+    ):
+        _refuse(409, "preview_changed", tenant_id=tenant_id, product=req.product)
+
+    logger.info(
+        "billing_add_product_requested",
+        tenant_id=str(tenant_id),
+        product=req.product,
+        plan=pre.selection.plan_id,
+        proration_behavior=proration,
+    )
+    try:
+        updated = await _stripe_post_or_raise(
+            f"/v1/subscriptions/{subscription_id}",
+            _update_form(pre.items, proration, proration_date),
+            idempotency_key=f"add-product:{tenant_id}:{client_key}",
+        )
+    except StripeApiError as exc:
+        status_code, detail = classify_add_product_error(exc)
+        logger.warning(
+            "billing_add_product_stripe_failed",
+            tenant_id=str(tenant_id),
+            product=req.product,
+            error_code=exc.code,
+            reason=detail,
+        )
+        raise HTTPException(status_code, detail) from exc
+
+    families = _families_from_subscription(updated)
+    if families is None or req.product not in families.carried:
+        # Stripe accepted the update but the answer does not carry the product (price map
+        # drift?). Money may have moved: LOUD, and the local row is left for the webhook.
+        logger.error(
+            "billing_add_product_unconfirmed", tenant_id=str(tenant_id), product=req.product
+        )
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "add_product_unconfirmed")
+
+    charge = _charge_from_update(updated)
+    result = await _finish_add_product(
+        session,
+        tenant_id,
+        req,
+        updated,
+        status_label="added",
+        charge=charge,
+        expected_subscription_id=subscription_id,
+        expected_status=subscription_status,
+    )
+    logger.info(
+        "billing_add_product_succeeded",
+        tenant_id=str(tenant_id),
+        product=req.product,
+        plan=pre.selection.plan_id,
+        subscription_id=str(pre.ent.stripe_subscription_id),
+        proration_behavior=proration,
+        amount_due_now_cents=charge.amount_due_now_cents,
+    )
+    return result
 
 
 def _apply_trial(data: dict[str, str]) -> None:
@@ -520,19 +1199,28 @@ def validate_return_to(return_to: str | None) -> str | None:
     return return_to
 
 
-def success_url_for(base_url: str, return_to: str | None, *, carries_precheck: bool) -> str:
-    """The Checkout `success_url`: the CONFIGURED base + `origem=<return_to>`.
+def return_query_for(return_to: str | None, *, carries_precheck: bool) -> str | None:
+    """The `origem=…[&produto=precheck]` query the brain-frontend reads at `/checkout/sucesso`.
 
-    Built only from server-side values (the configured base, an allowlisted keyword and a
-    catalog-derived flag) — never from a client-supplied URL, so there is no open redirect.
-    `produto=precheck` tells the brain-frontend the purchase carried PreCheck (the console
-    then lands on /anamneses/). String surgery on purpose: a URL library would percent-
-    encode the `{CHECKOUT_SESSION_ID}` template Stripe substitutes.
+    `None` without `return_to`. Built only from an allowlisted keyword and a catalog/route-derived
+    flag — never from client-supplied text — and shared by the Checkout `success_url` and the
+    `add-product` response, so both paths return the buyer to the same place.
     """
     origin = validate_return_to(return_to)
     if origin is None:
+        return None
+    return f"origem={origin}" + ("&produto=precheck" if carries_precheck else "")
+
+
+def success_url_for(base_url: str, return_to: str | None, *, carries_precheck: bool) -> str:
+    """The Checkout `success_url`: the CONFIGURED base + `return_query_for(...)`.
+
+    String surgery on purpose: a URL library would percent-encode the `{CHECKOUT_SESSION_ID}`
+    template Stripe substitutes.
+    """
+    query = return_query_for(return_to, carries_precheck=carries_precheck)
+    if query is None:
         return base_url
-    query = f"origem={origin}" + ("&produto=precheck" if carries_precheck else "")
     head, sep, fragment = base_url.partition("#")
     joiner = "&" if "?" in head else "?"
     return f"{head}{joiner}{query}{sep}{fragment}"
@@ -558,7 +1246,7 @@ async def create_checkout_session(
 
     # TASK B guard (TASK C removes it): refuse BEFORE any Stripe request — see
     # `checkout_block_reason`. Nothing is written on this path.
-    block = checkout_block_reason(ent, selection)
+    block = checkout_block_reason(ent)
     if block is not None:
         logger.warning(
             "billing_checkout_refused",
@@ -585,7 +1273,11 @@ async def create_checkout_session(
         "subscription_data[metadata][tenant_id]": str(tenant_id),
     }
     _append_checkout_line_items(data, selection)
-    _apply_trial(data)
+    # Trial only where the policy of `_trial_days_for` says so (plans with secretarIA — the
+    # Meta/WABA connection window). A PreCheck checkout charges at once: a `trialing`
+    # PreCheck subscription would also block adding the other product (`add-product` v1).
+    if _trial_days_for(selection) > 0:
+        _apply_trial(data)
     if ent is not None and ent.stripe_customer_id:
         data["customer"] = ent.stripe_customer_id
 
@@ -653,8 +1345,8 @@ async def create_precheck_topup_checkout_session(
     """
     settings = get_settings()
     ent = await session.get(Entitlement, tenant_id)
-    plan = catalog.get_plan(ent.plan) if ent is not None else None
-    if plan is None or not plan.precheck:
+    plan = catalog.precheck_plan_of(ent)
+    if plan is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "not_precheck_plan")
 
     if quantity < settings.PRECHECK_TOPUP_MIN_QUANTITY:
@@ -720,9 +1412,15 @@ async def upgrade_precheck_plan(
         )
 
     ent = await session.get(Entitlement, tenant_id)
-    current_plan = catalog.get_plan(ent.plan) if ent is not None else None
-    if current_plan is None or not current_plan.precheck:
+    # The tier the clinic HAS, wherever it lives (`precheck_plan` on a dual row, else `plan`).
+    current_plan = catalog.precheck_plan_of(ent)
+    if current_plan is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "not_precheck_plan")
+    if current_plan.id == catalog.PLAN_COMPLETE_CLINIC_COMBO:
+        # The combo is PreCheck-enabled but not a PreCheck tier: "swapping" its item for a tier
+        # would drop the secretarIA (catalog.PRECHECK_TIER_PLAN_IDS excludes it as a target, and
+        # the same reasoning applies to the CURRENT plan). Moving off the combo is out of scope.
+        raise HTTPException(status.HTTP_409_CONFLICT, "combo_plan_not_swappable")
     if target_plan.id == current_plan.id:
         raise HTTPException(status.HTTP_409_CONFLICT, "already_on_plan")
     if not ent.stripe_subscription_id:
@@ -760,12 +1458,23 @@ async def upgrade_precheck_plan(
     # Optimistic local update — mirrors services.admin.update_entitlement's plan-change
     # semantics exactly (a plan swap recomputes addons/limits fresh from the NEW plan's
     # catalog defaults; no addon_overrides carried over, same as that PATCH branch).
-    ent.plan = target_plan.id
-    state = catalog.compute_entitlement_state(target_plan.id)
-    ent.precheck_enabled = state["precheck_enabled"]
-    ent.secretaria_enabled = state["secretaria_enabled"]
-    ent.addons = state["addons"]
-    ent.limits = state["limits"]
+    if ent.precheck_plan:
+        # A clinic with BOTH products: only the PreCheck side moves. `plan` (the secretarIA
+        # anchor), the flags, the add-ons and the secretarIA limits stay exactly as they are.
+        ent.precheck_plan = target_plan.id
+        ent.limits = {
+            **(ent.limits or {}),
+            catalog.LIMIT_PRECHECK_CONSULTATIONS: target_plan.base_limits.get(
+                catalog.LIMIT_PRECHECK_CONSULTATIONS, 0
+            ),
+        }
+    else:
+        ent.plan = target_plan.id
+        state = catalog.compute_entitlement_state(target_plan.id)
+        ent.precheck_enabled = state["precheck_enabled"]
+        ent.secretaria_enabled = state["secretaria_enabled"]
+        ent.addons = state["addons"]
+        ent.limits = state["limits"]
     await session.commit()
     await session.refresh(ent)
 
@@ -844,22 +1553,63 @@ def _plan_id_from_metered_companion(cid: str) -> str | None:
     return None
 
 
-def _state_from_subscription(sub: dict[str, Any]) -> dict[str, Any] | None:
-    """Derive the full entitlement state a Stripe subscription implies.
+@dataclass(frozen=True)
+class SubscriptionFamilies:
+    """The product families ONE Stripe subscription carries, derived from its items.
 
-    Maps each item's price id back to a catalog id: exactly one plan + N add-ons
-    (quantities scale an add-on's additive limit grants — `multi_professional` ×3 buys
-    3 extra professionals). A FULLY METERED plan (CONTRACT_onboarding_v1.md §9 — no flat/
-    anchor price, e.g. secretaria_basico) carries NO plan-price item at all: its
-    `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` /
-    `{plan_id}_metered_reminders` companion items are the ONLY evidence of the plan
-    (`_plan_id_from_metered_companion`); any one resolves it, and a companion item NEVER
-    enters `addon_qty` (it is not an add-on). Returns None when no plan is recognized by
-    either route (the caller then updates status/period only and logs — never guesses a
-    plan).
+    `secretaria_plan`: the secretarIA plan evidenced by the items (`secretaria_basico` via ANY of
+    its metered companions or a direct price, or the combo). `precheck_plan`: a PreCheck TIER
+    carried as its OWN item — None when PreCheck arrives through the combo or is absent.
+    `addon_qty`: add-on id -> item quantity (a companion price is never an add-on).
     """
-    plan_id: str | None = None
+
+    secretaria_plan: str | None
+    precheck_plan: str | None
+    addon_qty: dict[str, int]
+
+    @property
+    def carried(self) -> frozenset[str]:
+        """Families this subscription pays for (the combo pays for both)."""
+        families: set[str] = set()
+        if self.secretaria_plan is not None:
+            families.add(catalog.FAMILY_SECRETARIA)
+            secretaria = catalog.get_plan(self.secretaria_plan)
+            if secretaria is not None and secretaria.precheck:
+                families.add(catalog.FAMILY_PRECHECK)
+        if self.precheck_plan is not None:
+            families.add(catalog.FAMILY_PRECHECK)
+        return frozenset(families)
+
+
+def _families_from_subscription(sub: dict[str, Any]) -> SubscriptionFamilies | None:
+    """Map a subscription's items to the families they carry; None when NO plan is recognized
+    (only add-ons / unknown prices) — the caller then updates status/period only and never
+    guesses a plan.
+
+    Items are classified independently, so their ORDER never decides the product (the old loop
+    overwrote a single `plan_id` per item and the last one won). Conflicts are logged
+    (`stripe_subscription_conflicting_plans`), never raised: a combo item beats a PreCheck tier
+    item (`precheck_plan=None`, PreCheck comes with the combo); two PreCheck tiers (a swap in
+    flight) resolve to the higher quota; an unknown price is ignored with a log, as before.
+    """
+    combo = False
+    secretaria_plans: set[str] = set()
+    precheck_tiers: list[str] = []
     addon_qty: dict[str, int] = {}
+
+    def classify(plan_id: str) -> None:
+        nonlocal combo
+        plan = catalog.get_plan(plan_id)
+        if plan is None:
+            return
+        if plan.id == catalog.PLAN_COMPLETE_CLINIC_COMBO:
+            combo = True
+        elif plan.secretaria:
+            secretaria_plans.add(plan.id)
+        elif plan.id in catalog.PRECHECK_TIER_PLAN_IDS:
+            precheck_tiers.append(plan.id)
+        # any other plan (free) carries no product
+
     for item in (sub.get("items") or {}).get("data") or []:
         price_id = (item.get("price") or {}).get("id")
         cid = catalog_id_for_price(price_id) if price_id else None
@@ -868,31 +1618,225 @@ def _state_from_subscription(sub: dict[str, Any]) -> dict[str, Any] | None:
             continue
         metered_plan_id = _plan_id_from_metered_companion(cid)
         if metered_plan_id is not None:
-            plan_id = metered_plan_id
+            classify(metered_plan_id)
             continue
         if cid in catalog.PLAN_IDS:
-            plan_id = cid
+            classify(cid)
         else:
             addon_qty[cid] = int(item.get("quantity") or 1)
 
-    if plan_id is None:
-        return None
+    if combo:
+        if precheck_tiers or (secretaria_plans - {catalog.PLAN_COMPLETE_CLINIC_COMBO}):
+            logger.warning(
+                "stripe_subscription_conflicting_plans",
+                kind="combo_with_other_plans",
+                precheck_tiers=sorted(set(precheck_tiers)),
+                secretaria_plans=sorted(secretaria_plans),
+            )
+        secretaria_plan: str | None = catalog.PLAN_COMPLETE_CLINIC_COMBO
+        precheck_plan: str | None = None
+    else:
+        secretaria_plan = sorted(secretaria_plans)[-1] if secretaria_plans else None
+        precheck_plan = None
+        if precheck_tiers:
+            distinct = set(precheck_tiers)
+            if len(distinct) > 1:
+                logger.warning(
+                    "stripe_subscription_conflicting_plans",
+                    kind="several_precheck_tiers",
+                    precheck_tiers=sorted(distinct),
+                )
+            precheck_plan = max(distinct, key=catalog.PRECHECK_TIER_PLAN_IDS.index)
 
-    state = catalog.compute_entitlement_state(
-        plan_id, {addon_id: qty > 0 for addon_id, qty in addon_qty.items()}
-    )
-    # Quantity scaling: compute_entitlement_state grants each active add-on once;
-    # add the remaining (qty - 1) units of its additive limit grants.
-    limits = dict(state["limits"])
+    if secretaria_plan is None and precheck_plan is None:
+        return None
+    return SubscriptionFamilies(secretaria_plan, precheck_plan, addon_qty)
+
+
+def _scale_limits(limits: dict[str, int], addon_qty: dict[str, int]) -> dict[str, int]:
+    """Quantity scaling: `compose_entitlement_state` grants each active add-on once; add the
+    remaining (qty - 1) units of its additive limit grants (`multi_professional` x3 buys 3 extra
+    professionals)."""
+    scaled = dict(limits)
     for addon_id, qty in addon_qty.items():
         addon = catalog.get_addon(addon_id)
         if addon is None or qty <= 1:
             continue
         for key, grant in addon.limit_grants.items():
-            limits[key] = limits.get(key, 0) + (qty - 1) * grant
-    state["limits"] = limits
-    state["plan"] = plan_id
+            scaled[key] = scaled.get(key, 0) + (qty - 1) * grant
+    return scaled
+
+
+def _compose_with_addons(
+    secretaria_plan: str | None, precheck_plan: str | None, addon_qty: dict[str, int]
+) -> dict:
+    """`catalog.compose_entitlement_state` with the subscription's add-ons applied and scaled."""
+    state = catalog.compose_entitlement_state(
+        secretaria_plan, precheck_plan, {addon_id: qty > 0 for addon_id, qty in addon_qty.items()}
+    )
+    state["limits"] = _scale_limits(state["limits"], addon_qty)
     return state
+
+
+def _state_from_subscription(sub: dict[str, Any]) -> dict[str, Any] | None:
+    """Derive the full entitlement state a Stripe subscription implies, PER PRODUCT FAMILY.
+
+    A subscription may carry secretarIA, PreCheck or both (TASK C — one subscription, one
+    invoice, both products): `plan` is the ANCHOR (the secretarIA plan when present) and
+    `precheck_plan` the PreCheck tier of a dual subscription. Returns None when no plan is
+    recognized (`_families_from_subscription`). The webhook goes through
+    `apply_subscription_state`, which layers the manual-product merge on top of this.
+    """
+    families = _families_from_subscription(sub)
+    if families is None:
+        return None
+    return _compose_with_addons(
+        families.secretaria_plan, families.precheck_plan, families.addon_qty
+    )
+
+
+@dataclass(frozen=True)
+class AppliedSubscription:
+    """What `apply_subscription_state` decided, for the caller's follow-up (no I/O in there).
+
+    `secretaria_newly_paid`: the secretarIA family just became covered by a LIVE subscription on
+    a clinic that already had some product — a secretarIA add-on to a PreCheck subscription, or
+    a courtesy clinic starting to pay. The caller restarts the Meta/WABA test window once.
+    """
+
+    recognized: bool
+    live: bool
+    secretaria_newly_paid: bool
+
+
+def _resolve_status(*, live: bool, deleted: bool, sub_status: str, has_manual: bool) -> str:
+    if live:
+        return sub_status
+    if has_manual:
+        return "active"  # a manual product is still switched on: the row stays usable
+    if deleted or sub_status == "canceled":
+        return "canceled"
+    return sub_status  # "inactive" (incomplete/unpaid/paused...): fail closed, as before
+
+
+def _manual_secretaria_plan(ent: Entitlement) -> str:
+    plan = catalog.secretaria_plan_of(ent)
+    if plan is not None and (
+        not plan.precheck or catalog.FAMILY_PRECHECK in set(ent.manual_products or [])
+    ):
+        return plan.id
+    return catalog.PLAN_SECRETARIA_BASICO
+
+
+def _manual_precheck_plan(ent: Entitlement) -> str:
+    plan = catalog.precheck_plan_of(ent)
+    if plan is not None and plan.id in catalog.PRECHECK_TIER_PLAN_IDS:
+        return plan.id
+    if plan is not None:  # the combo carried PreCheck at the Advanced quota
+        return catalog.PLAN_PRECHECK_ADVANCED
+    return catalog.PLAN_PRECHECK_BASIC
+
+
+def apply_subscription_state(
+    ent: Entitlement, sub: dict[str, Any], *, deleted: bool = False
+) -> AppliedSubscription:
+    """Apply ONE subscription object (webhook event, or the update response of
+    `add_product_to_subscription`) to the entitlement row — the single writer of the
+    subscription-derived columns, so the endpoint and the webhook always agree.
+
+    Rules (spec 2026-09-29 §5.3):
+    - `live` = status in `LIVE_SUBSCRIPTION_STATUSES` and not `deleted`; only a live subscription
+      carries families (`sub_fams`). A family the row had switched on outside Stripe
+      (`manual_products`) survives every event — except that a LIVE subscription carrying it
+      converts it to "paid" (`manual = manual - sub_fams`; deliberately not `- carried`: an
+      `incomplete` subscription must not eat a courtesy product).
+    - enabled = `sub_fams | manual`, composed per family (`_compose_with_addons`); add-ons come
+      from the live subscription only.
+    - nothing enabled: both flags go off and the status changes; `plan`/`precheck_plan`/`addons`/
+      `limits` STAY (`restart_test_window` re-creates the subscription from them).
+    - `deleted` with manual left: the row goes back to "no subscription" (`stripe_subscription_id`
+      NULL), status `active`, so the clinic can subscribe again through checkout.
+    - a subscription with no recognized plan only updates status/period (never guesses a plan).
+    Does NOT write `stripe_subscription_id` otherwise nor touch `stripe_customer_id` — the caller
+    owns the id bookkeeping (stale-id guard, marker reset).
+    """
+    sub_status = _STATUS_MAP.get(str(sub.get("status", "")), "inactive")
+    live = (not deleted) and sub_status in LIVE_SUBSCRIPTION_STATUSES
+    families = None if deleted else _families_from_subscription(sub)
+    manual_prev = set(ent.manual_products or [])
+
+    if families is None and not deleted:
+        ent.status = _resolve_status(
+            live=live, deleted=False, sub_status=sub_status, has_manual=bool(manual_prev)
+        )
+        ent.period_start = _period_dt(sub.get("current_period_start"))
+        ent.period_end = _period_dt(sub.get("current_period_end"))
+        logger.warning("stripe_subscription_no_known_plan", subscription_status=sub_status)
+        return AppliedSubscription(recognized=False, live=live, secretaria_newly_paid=False)
+
+    carried = families.carried if families is not None else frozenset()
+    sub_fams = carried if live else frozenset()
+    manual = manual_prev - sub_fams
+
+    prior_access = bool(ent.precheck_enabled or ent.secretaria_enabled)
+    was_paid_secretaria = (
+        bool(ent.secretaria_enabled)
+        and catalog.FAMILY_SECRETARIA not in manual_prev
+        and bool(ent.stripe_subscription_id)
+        and ent.stripe_subscription_id == str(sub.get("id") or "")
+    )
+    secretaria_newly_paid = (
+        catalog.FAMILY_SECRETARIA in sub_fams and not was_paid_secretaria and prior_access
+    )
+
+    if sub_fams or manual:
+        secretaria_plan: str | None = None
+        if catalog.FAMILY_SECRETARIA in sub_fams and families is not None:
+            secretaria_plan = families.secretaria_plan
+        elif catalog.FAMILY_SECRETARIA in manual:
+            secretaria_plan = _manual_secretaria_plan(ent)
+            if (
+                catalog.FAMILY_PRECHECK not in manual
+                and secretaria_plan == catalog.PLAN_COMPLETE_CLINIC_COMBO
+            ):
+                secretaria_plan = catalog.PLAN_SECRETARIA_BASICO
+        precheck_plan: str | None = None
+        if catalog.FAMILY_PRECHECK in sub_fams and families is not None:
+            precheck_plan = families.precheck_plan  # None when PreCheck rides on the combo
+        elif catalog.FAMILY_PRECHECK in manual:
+            precheck_plan = _manual_precheck_plan(ent)
+        addon_qty = families.addon_qty if (families is not None and live) else {}
+        state = _compose_with_addons(secretaria_plan, precheck_plan, addon_qty)
+        ent.plan = state["plan"]
+        ent.precheck_plan = state["precheck_plan"]
+        ent.precheck_enabled = state["precheck_enabled"]
+        ent.secretaria_enabled = state["secretaria_enabled"]
+        # Whole-dict reassignment triggers JSON change tracking (no flag_modified needed).
+        ent.addons = state["addons"]
+        ent.limits = state["limits"]
+    else:
+        ent.precheck_enabled = False
+        ent.secretaria_enabled = False
+
+    ent.manual_products = sorted(manual)
+    ent.status = _resolve_status(
+        live=live, deleted=deleted, sub_status=sub_status, has_manual=bool(manual)
+    )
+    if not deleted:
+        ent.period_start = _period_dt(sub.get("current_period_start"))
+        ent.period_end = _period_dt(sub.get("current_period_end"))
+    if deleted and manual:
+        ent.stripe_subscription_id = None
+    logger.info(
+        "stripe_subscription_families_derived",
+        tenant_id=str(ent.tenant_id),
+        carried=sorted(carried),
+        live=live,
+        manual=sorted(manual),
+    )
+    return AppliedSubscription(
+        recognized=True, live=live, secretaria_newly_paid=secretaria_newly_paid
+    )
 
 
 async def _create_subscription_for_signup(
@@ -1273,6 +2217,23 @@ async def _restart_test_window(session: AsyncSession, tenant_id: UUID) -> None:
     tenant.test_window_notified_at = None
 
 
+def _is_stale_subscription_event(ent: Entitlement, sub_id: str | None, *, deleted: bool) -> bool:
+    """True when a subscription event names a subscription that is NOT the tenant's current one.
+
+    Applying it would let an OLD subscription rewrite (or, for `deleted`, cancel) the state of
+    the current one — e.g. `restart_test_window` re-creates the subscription, and Stripe later
+    delivers the old one's `deleted`. A `deleted` for another id is stale whenever the tenant
+    has a current subscription; a `created/updated` for another id is stale only while the
+    current one is still LIVE (after it died, a different id is a legitimate re-subscription).
+    An event with no `id` is never stale (the minimal legacy shape).
+    """
+    if not sub_id or not ent.stripe_subscription_id or sub_id == ent.stripe_subscription_id:
+        return False
+    if deleted:
+        return True
+    return ent.status in LIVE_SUBSCRIPTION_STATUSES
+
+
 async def apply_stripe_event(
     session: AsyncSession, event_id: str, event_type: str, obj: dict[str, Any]
 ) -> bool:
@@ -1284,9 +2245,10 @@ async def apply_stripe_event(
       (or, for a cold-signup checkout — `metadata.kind == "signup_intent"` — CREATE the
       subscription the `mode=setup` session's saved card implies and then ACTIVATE the
       already-registered tenant's inert entitlement, via `_apply_signup_intent_checkout`)
-    - customer.subscription.created/updated -> full recompute (plan/addons/limits/
-      products/status/period) from the subscription items via the catalog
-    - customer.subscription.deleted     -> status=canceled, products OFF
+    - customer.subscription.created/updated -> per-family recompute through
+      apply_subscription_state,
+      merged with manual products; events for another live subscription are ignored
+    - customer.subscription.deleted     -> paid products OFF, manual products kept (stale-id guard)
     - customer.subscription.trial_will_end -> after a row-locked re-read + a LIVE Stripe
       GET verify the subscription is still genuinely trialing, schedule a Stripe
       `cancel_at` for a secretarIA-bearing plan that never activated (§13.6); no-op once
@@ -1328,6 +2290,15 @@ async def apply_stripe_event(
         await session.commit()
         return True
 
+    if event_type in (
+        "customer.subscription.created",
+        "customer.subscription.updated",
+        "customer.subscription.deleted",
+    ):
+        ent = await session.get(
+            Entitlement, ent.tenant_id, with_for_update=True, populate_existing=True
+        )
+
     if event_type == "checkout.session.completed":
         metadata = obj.get("metadata") or {}
         if metadata.get("kind") == "precheck_topup":
@@ -1348,34 +2319,44 @@ async def apply_stripe_event(
             # Plan/status recompute rides the subscription.* events Stripe sends alongside.
 
     elif event_type in ("customer.subscription.created", "customer.subscription.updated"):
-        if obj.get("customer"):
-            ent.stripe_customer_id = str(obj["customer"])
-        if obj.get("id"):
-            new_subscription_id = str(obj["id"])
-            if _reset_markers_if_subscription_changed(ent, new_subscription_id):
-                # Task 2: a genuine subscription-id change restarts the test window too.
-                await _restart_test_window(session, ent.tenant_id)
-            ent.stripe_subscription_id = new_subscription_id
-        ent.status = _STATUS_MAP.get(obj.get("status", ""), "inactive")
-        ent.period_start = _period_dt(obj.get("current_period_start"))
-        ent.period_end = _period_dt(obj.get("current_period_end"))
-        state = _state_from_subscription(obj)
-        if state is not None:
-            ent.plan = state["plan"]
-            ent.precheck_enabled = state["precheck_enabled"]
-            ent.secretaria_enabled = state["secretaria_enabled"]
-            # Whole-dict reassignment triggers JSON change tracking (no flag_modified).
-            ent.addons = state["addons"]
-            ent.limits = state["limits"]
+        sub_id = str(obj["id"]) if obj.get("id") else None
+        if _is_stale_subscription_event(ent, sub_id, deleted=False):
+            logger.warning(
+                "stripe_event_stale_subscription",
+                event_type=event_type,
+                tenant_id=str(ent.tenant_id),
+                subscription_id=sub_id,
+            )
         else:
-            logger.warning("stripe_subscription_no_known_plan", event_type=event_type)
+            if obj.get("customer"):
+                ent.stripe_customer_id = str(obj["customer"])
+            # Task 2: a genuine subscription-id change restarts the test window too.
+            restart_window = bool(sub_id) and _reset_markers_if_subscription_changed(ent, sub_id)
+            # Reads the OLD `stripe_subscription_id` (was this subscription already paying
+            # for secretarIA?), so it runs BEFORE the id below is overwritten.
+            applied = apply_subscription_state(ent, obj)
+            if sub_id:
+                ent.stripe_subscription_id = sub_id
+            # secretarIA newly covered by a subscription on a clinic that already had a
+            # product (added to a PreCheck subscription, or a courtesy clinic starting to
+            # pay) = a fresh Meta/WABA test window. PreCheck added to secretarIA never is.
+            if restart_window or applied.secretaria_newly_paid:
+                await _restart_test_window(session, ent.tenant_id)
 
     elif event_type == "customer.subscription.deleted":
         # Billing-managed access ends with the subscription; an admin can still
-        # manually re-enable via PATCH (§11) if commercially warranted.
-        ent.status = "canceled"
-        ent.precheck_enabled = False
-        ent.secretaria_enabled = False
+        # manually re-enable via PATCH (§11) if commercially warranted. Products the clinic
+        # holds outside Stripe (`manual_products`) survive; the paid ones switch off.
+        sub_id = str(obj["id"]) if obj.get("id") else None
+        if _is_stale_subscription_event(ent, sub_id, deleted=True):
+            logger.warning(
+                "stripe_event_stale_subscription",
+                event_type=event_type,
+                tenant_id=str(ent.tenant_id),
+                subscription_id=sub_id,
+            )
+        else:
+            apply_subscription_state(ent, obj, deleted=True)
 
     elif event_type == "customer.subscription.trial_will_end":
         # Stripe fires this BOTH ~3 days before a subscription's scheduled trial end AND

@@ -1,25 +1,30 @@
-"""TASK B guard on POST /billing/checkout (removed by TASK C, spec 2026-09-29 §5.3).
+"""Guard on POST /billing/checkout (TASK B introduced it; TASK C narrowed it — spec C §5.14).
 
-One Stripe subscription -> one `plan` (+ add-ons) in the entitlement
-(`services.billing._state_from_subscription`). A second checkout for a tenant that
-already has a live subscription, or that already runs secretarIA, would make the
-webhook recompute the entitlement from the NEW subscription alone: secretaria_enabled
-switched off, stripe_subscription_id replaced, test window restarted. The guard
-refuses such a checkout with 409 `has_active_subscription` BEFORE any Stripe call.
+One rule, permanent: a LIVE subscription already linked -> 409 `has_active_subscription`,
+BEFORE any Stripe call (a second simultaneous subscription is never right; the clinic adds a
+product to the one it has: POST /billing/add-product). TASK B's second rule (secretarIA on
+without a subscription) is gone: a courtesy/admin clinic may check out, and the webhook merges
+the new subscription's families with its manual products (`apply_subscription_state`).
 """
 
-from uuid import UUID
+from datetime import UTC, datetime
 
 import pytest
 
 from brain_api.models import Entitlement, Tenant
-from brain_api.services import billing as billing_service
 from brain_api.services.billing import (
     HAS_ACTIVE_SUBSCRIPTION,
-    CheckoutSelection,
+    LIVE_SUBSCRIPTION_STATUSES,
     checkout_block_reason,
 )
-from tests.test_billing import _install_fake_stripe_httpx, _tenant_ids
+from tests.billing_fakes import set_entitlement, snapshot
+from tests.test_billing import (
+    _admin_entitlements,
+    _event,
+    _install_fake_stripe_httpx,
+    _post_webhook,
+    _tenant_ids,
+)
 from tests.test_courtesy_coupon import _sessao
 from tests.test_rbac import (
     CLINIC_A,
@@ -32,11 +37,14 @@ from tests.test_rbac import (
     _token,
 )
 
-PRECHECK_BASIC = CheckoutSelection(plan_id="precheck_basic", addon_ids=())
-PRECHECK_ADVANCED = CheckoutSelection(plan_id="precheck_advanced", addon_ids=())
-SECRETARIA = CheckoutSelection(plan_id="secretaria_basico", addon_ids=())
-COMBO = CheckoutSelection(plan_id="complete_clinic_combo", addon_ids=())
-EVERY_PLAN = (PRECHECK_BASIC, PRECHECK_ADVANCED, SECRETARIA, COMBO)
+FAKE_URL = "https://checkout.stripe.test/session"
+EVERY_PLAN = (
+    "precheck_start",
+    "precheck_basic",
+    "precheck_advanced",
+    "complete_clinic_combo",
+    "secretaria_basico",
+)
 
 
 def _ent(**fields: object) -> Entitlement:
@@ -53,22 +61,19 @@ def _ent(**fields: object) -> Entitlement:
     return Entitlement(**base)
 
 
-def test_live_statuses_are_values_stripe_webhook_can_write():
-    assert billing_service.LIVE_SUBSCRIPTION_STATUSES == {"active", "trialing", "past_due"}
-    assert billing_service.LIVE_SUBSCRIPTION_STATUSES <= set(billing_service._STATUS_MAP.values())
+# --- Pure decision ---------------------------------------------------------------------
 
 
 def test_tenant_without_entitlement_row_is_allowed():
-    assert checkout_block_reason(None, PRECHECK_BASIC) is None
+    assert checkout_block_reason(None) is None
 
 
-def test_fresh_tenant_is_allowed_for_every_plan():
-    for selection in EVERY_PLAN:
-        assert checkout_block_reason(_ent(), selection) is None
+def test_fresh_tenant_is_allowed():
+    assert checkout_block_reason(_ent()) is None
 
 
-@pytest.mark.parametrize("live_status", ["active", "trialing", "past_due"])
-def test_live_subscription_blocks_every_plan(live_status):
+@pytest.mark.parametrize("live_status", sorted(LIVE_SUBSCRIPTION_STATUSES))
+def test_live_subscription_blocks(live_status):
     ent = _ent(
         plan="precheck_basic",
         status=live_status,
@@ -76,79 +81,30 @@ def test_live_subscription_blocks_every_plan(live_status):
         stripe_customer_id="cus_1",
         stripe_subscription_id="sub_1",
     )
-    for selection in EVERY_PLAN:
-        assert checkout_block_reason(ent, selection) == HAS_ACTIVE_SUBSCRIPTION
+    assert checkout_block_reason(ent) == HAS_ACTIVE_SUBSCRIPTION
 
 
 @pytest.mark.parametrize("dead_status", ["canceled", "inactive"])
 def test_dead_subscription_does_not_block_a_resubscribe(dead_status):
     ent = _ent(status=dead_status, stripe_customer_id="cus_1", stripe_subscription_id="sub_old")
-    assert checkout_block_reason(ent, PRECHECK_BASIC) is None
+    assert checkout_block_reason(ent) is None
 
 
-def test_live_status_without_subscription_id_is_not_the_first_rule():
+def test_live_status_without_subscription_id_is_not_blocked():
     # Admin-provisioned PreCheck clinic: status active, no Stripe linkage at all.
-    ent = _ent(plan="precheck_basic", status="active", precheck_enabled=True)
-    assert checkout_block_reason(ent, SECRETARIA) is None
+    assert (
+        checkout_block_reason(_ent(plan="precheck_basic", status="active", precheck_enabled=True))
+        is None
+    )
 
 
-def test_secretaria_without_subscription_blocks_every_plan():
-    # Courtesy coupon / admin PATCH / POST /admin/tenants: secretarIA on, no subscription.
+def test_secretaria_without_a_subscription_is_no_longer_blocked():
+    """TASK B's rule 2 is gone: a courtesy/admin secretarIA clinic may open a checkout."""
     ent = _ent(plan="secretaria_basico", status="active", secretaria_enabled=True)
-    for selection in EVERY_PLAN:
-        assert checkout_block_reason(ent, selection) == HAS_ACTIVE_SUBSCRIPTION
+    assert checkout_block_reason(ent) is None
 
 
-def test_secretaria_flag_only_matters_for_a_plan_with_a_product():
-    ent = _ent(plan="secretaria_basico", status="active", secretaria_enabled=True)
-    assert checkout_block_reason(ent, CheckoutSelection(plan_id="free", addon_ids=())) is None
-
-
-# --- Endpoint: POST /billing/checkout --------------------------------------------------
-
-_SNAPSHOT_FIELDS = (
-    "plan",
-    "status",
-    "precheck_enabled",
-    "secretaria_enabled",
-    "addons",
-    "limits",
-    "stripe_customer_id",
-    "stripe_subscription_id",
-    "period_start",
-    "period_end",
-    "charge_hardened_at",
-    "cancel_scheduled_at",
-)
-
-FAKE_URL = "https://checkout.stripe.test/session"
-
-
-async def _set_entitlement(tenant_id: str, **fields: object) -> None:
-    """Write entitlement columns straight to the DB the `client` app uses (no bridges,
-    no webhook) — the state a courtesy/admin/paid clinic is in before it clicks buy."""
-    async with _sessao() as session:
-        tid = UUID(tenant_id)
-        ent = await session.get(Entitlement, tid)
-        if ent is None:
-            ent = Entitlement(tenant_id=tid)
-            session.add(ent)
-        for name, value in fields.items():
-            setattr(ent, name, value)
-        await session.commit()
-
-
-async def _snapshot(tenant_id: str) -> dict:
-    """Every billing-relevant column + the tenant's test window (the three things a
-    second subscription would silently rewrite)."""
-    async with _sessao() as session:
-        tid = UUID(tenant_id)
-        ent = await session.get(Entitlement, tid)
-        tenant = await session.get(Tenant, tid)
-        assert ent is not None and tenant is not None
-        snap = {name: getattr(ent, name) for name in _SNAPSHOT_FIELDS}
-        snap["test_window_started_at"] = tenant.test_window_started_at
-        return snap
+# --- Endpoint: POST /billing/checkout ----------------------------------------------------
 
 
 async def _checkout(client, email: str, password: str, plan: str):
@@ -156,38 +112,21 @@ async def _checkout(client, email: str, password: str, plan: str):
     return await client.post("/billing/checkout", headers=_bearer(token), json={"plan": plan})
 
 
-_SECRETARIA_ONLY = {
-    "paid": {"stripe_customer_id": "cus_sec", "stripe_subscription_id": "sub_sec"},
-    "courtesy": {"stripe_customer_id": None, "stripe_subscription_id": None},
-}
-
-
-@pytest.mark.parametrize("setup", sorted(_SECRETARIA_ONLY))
-@pytest.mark.parametrize(
-    "plan",
-    [
-        "precheck_start",
-        "precheck_basic",
-        "precheck_advanced",
-        "complete_clinic_combo",
-        "secretaria_basico",
-    ],
-)
-async def test_secretaria_only_clinic_never_loses_secretaria_through_checkout(
-    client, monkeypatch, setup, plan
-):
-    """MANDATORY regression (spec §5.3): a secretarIA-only clinic — paid or courtesy —
-    is refused before Stripe and its entitlement/test window stay byte-identical."""
+@pytest.mark.parametrize("plan", EVERY_PLAN)
+async def test_paid_secretaria_clinic_is_refused_before_stripe(client, monkeypatch, plan):
+    """Variant `paid` (unchanged from TASK B): a live subscription blocks every plan, nothing is
+    written, Stripe is never reached."""
     tenant_b = (await _tenant_ids(client))[CLINIC_B]
-    await _set_entitlement(
+    await set_entitlement(
         tenant_b,
         plan="secretaria_basico",
         status="active",
         secretaria_enabled=True,
         precheck_enabled=False,
-        **_SECRETARIA_ONLY[setup],
+        stripe_customer_id="cus_sec",
+        stripe_subscription_id="sub_sec",
     )
-    before = await _snapshot(tenant_b)
+    before = await snapshot(tenant_b)
     captured: dict = {}
     _install_fake_stripe_httpx(monkeypatch, captured, {"url": FAKE_URL})
 
@@ -196,21 +135,100 @@ async def test_secretaria_only_clinic_never_loses_secretaria_through_checkout(
     assert resp.status_code == 409, resp.text
     assert resp.json() == {"detail": HAS_ACTIVE_SUBSCRIPTION}
     assert captured == {}, "Stripe must never be reached"
-    after = await _snapshot(tenant_b)
-    assert after == before
-    assert after["secretaria_enabled"] is True
+    assert await snapshot(tenant_b) == before
+
+
+@pytest.mark.parametrize("plan", EVERY_PLAN)
+async def test_courtesy_secretaria_clinic_may_open_a_checkout(client, monkeypatch, plan):
+    """Variant `courtesy` (was 409 in TASK B): no subscription behind the row -> a checkout URL."""
+    tenant_b = (await _tenant_ids(client))[CLINIC_B]
+    await set_entitlement(
+        tenant_b,
+        plan="secretaria_basico",
+        status="active",
+        secretaria_enabled=True,
+        precheck_enabled=False,
+        manual_products=["secretaria"],
+    )
+    before = await snapshot(tenant_b)
+    captured: dict = {}
+    _install_fake_stripe_httpx(monkeypatch, captured, {"url": FAKE_URL})
+
+    resp = await _checkout(client, OWNER_B_EMAIL, OWNER_B_PASSWORD, plan)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"url": FAKE_URL}
+    assert captured["path"] == "/v1/checkout/sessions"
+    assert await snapshot(tenant_b) == before  # opening a checkout writes nothing
+
+
+async def test_courtesy_secretaria_survives_buying_precheck_through_every_webhook(
+    client, monkeypatch
+):
+    """MANDATORY regression (spec C §5.14): checkout -> completed -> created -> updated (renewal)
+    -> invoice.paid never switch the courtesy secretarIA off; deleting the paid PreCheck
+    subscription leaves it on and puts the clinic back in the "no subscription" state."""
+    tenant_b = (await _tenant_ids(client))[CLINIC_B]
+    await set_entitlement(
+        tenant_b,
+        plan="secretaria_basico",
+        status="active",
+        secretaria_enabled=True,
+        precheck_enabled=False,
+        manual_products=["secretaria"],
+    )
+    _install_fake_stripe_httpx(monkeypatch, {}, {"url": FAKE_URL})
+    assert (
+        await _checkout(client, OWNER_B_EMAIL, OWNER_B_PASSWORD, "precheck_basic")
+    ).status_code == 200
+
+    now = int(datetime.now(UTC).timestamp())
+    sub = {
+        "id": "sub_c",
+        "customer": "cus_c",
+        "status": "active",
+        "current_period_start": now,
+        "current_period_end": now + 30 * 86400,
+        "items": {"data": [{"price": {"id": "price_precheck"}, "quantity": 1}]},
+        "metadata": {"tenant_id": tenant_b},
+    }
+    deliveries = [
+        (
+            "evt_cg1",
+            "checkout.session.completed",
+            {"customer": "cus_c", "subscription": "sub_c", "metadata": {"tenant_id": tenant_b}},
+        ),
+        ("evt_cg2", "customer.subscription.created", sub),
+        ("evt_cg3", "customer.subscription.updated", sub),
+        ("evt_cg4", "invoice.paid", {"customer": "cus_c"}),
+    ]
+    for event_id, event_type, obj in deliveries:
+        resp = await _post_webhook(client, _event(event_id, event_type, obj))
+        assert resp.status_code == 200, resp.text
+        ent = await _admin_entitlements(client, tenant_b)
+        assert ent["secretaria_enabled"] is True, event_type
+        assert ent["status"] == "active", event_type
+    assert ent["precheck_enabled"] is True
+    assert ent["plan"] == "secretaria_basico"
+    assert ent["precheck_plan"] == "precheck_basic"
+    assert ent["manual_products"] == ["secretaria"]
+
+    resp = await _post_webhook(
+        client, _event("evt_cg5", "customer.subscription.deleted", {**sub, "status": "canceled"})
+    )
+    assert resp.status_code == 200
+    ent = await _admin_entitlements(client, tenant_b)
+    assert ent["secretaria_enabled"] is True and ent["precheck_enabled"] is False
+    assert ent["stripe_subscription_id"] is None and ent["status"] == "active"
 
 
 @pytest.mark.parametrize("live_status", ["active", "trialing", "past_due"])
 async def test_live_subscription_refuses_a_second_checkout(client, monkeypatch, live_status):
     tenant_a = (await _tenant_ids(client))[CLINIC_A]
-    await _set_entitlement(
-        tenant_a,
-        status=live_status,
-        stripe_customer_id="cus_a",
-        stripe_subscription_id="sub_a",
+    await set_entitlement(
+        tenant_a, status=live_status, stripe_customer_id="cus_a", stripe_subscription_id="sub_a"
     )
-    before = await _snapshot(tenant_a)
+    before = await snapshot(tenant_a)
     captured: dict = {}
     _install_fake_stripe_httpx(monkeypatch, captured, {"url": FAKE_URL})
 
@@ -219,25 +237,20 @@ async def test_live_subscription_refuses_a_second_checkout(client, monkeypatch, 
     assert resp.status_code == 409, resp.text
     assert resp.json() == {"detail": HAS_ACTIVE_SUBSCRIPTION}
     assert captured == {}
-    assert await _snapshot(tenant_a) == before
+    assert await snapshot(tenant_a) == before
 
 
 async def test_clinic_without_any_subscription_still_gets_a_checkout_url(client, monkeypatch):
-    # CLINIC_B is seeded with NO entitlement row (tests/test_rbac.py).
     captured: dict = {}
     _install_fake_stripe_httpx(monkeypatch, captured, {"url": FAKE_URL})
-
     resp = await _checkout(client, OWNER_B_EMAIL, OWNER_B_PASSWORD, "precheck_basic")
-
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"url": FAKE_URL}
-    assert captured["path"] == "/v1/checkout/sessions"
     assert captured["data"]["line_items[0][price]"] == "price_precheck"
 
 
 async def test_canceled_subscription_may_check_out_again(client, monkeypatch):
     tenant_a = (await _tenant_ids(client))[CLINIC_A]
-    await _set_entitlement(
+    await set_entitlement(
         tenant_a,
         status="canceled",
         precheck_enabled=False,
@@ -247,21 +260,25 @@ async def test_canceled_subscription_may_check_out_again(client, monkeypatch):
     )
     captured: dict = {}
     _install_fake_stripe_httpx(monkeypatch, captured, {"url": FAKE_URL})
-
     resp = await _checkout(client, OWNER_A_EMAIL, OWNER_A_PASSWORD, "precheck_basic")
-
     assert resp.status_code == 200, resp.text
     assert captured["data"]["customer"] == "cus_a"
 
 
 async def test_test_clinic_is_still_refused_by_the_403_door_not_the_guard(client, monkeypatch):
+    from uuid import UUID
+
     tenant_b = (await _tenant_ids(client))[CLINIC_B]
-    await _set_entitlement(
-        tenant_b, plan="secretaria_basico", status="active", secretaria_enabled=True
+    await set_entitlement(
+        tenant_b,
+        plan="secretaria_basico",
+        status="active",
+        secretaria_enabled=True,
+        stripe_customer_id="cus_t",
+        stripe_subscription_id="sub_t",
     )
     async with _sessao() as session:
         tenant = await session.get(Tenant, UUID(tenant_b))
-        assert tenant is not None
         tenant.is_test = True
         await session.commit()
     captured: dict = {}

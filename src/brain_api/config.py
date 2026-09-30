@@ -204,6 +204,13 @@ class Settings(BaseSettings):
     # otherwise charge a still-unconnected tenant (services.billing.harden_charge ends
     # the trial early once the tenant reaches 'ativo', regardless of this value).
     STRIPE_TRIAL_PERIOD_DAYS: int = 0
+
+    # Server-side LAUNCH GATE for `POST /billing/add-product` with product=secretaria
+    # (TASK C, decision D6). brain-frontend's PRODUCT_LAUNCHED (app/(site)/_lib/launch.ts) is a
+    # UI-only constant; without this flag a PreCheck clinic could add secretarIA by calling the
+    # API directly while the product is not on sale. Default OFF = blocked (403
+    # product_not_launched). Turn it on together with PRODUCT_LAUNCHED, never before.
+    BILLING_ADD_SECRETARIA_ENABLED: bool = False
     # Stripe Meter event_name for the billable_patients metered add-on price
     # (services/usage.py forwards a meter event after a successful billable_patients
     # usage record when this AND the tenant's stripe_customer_id are both set). Unset

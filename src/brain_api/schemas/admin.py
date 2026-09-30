@@ -68,6 +68,10 @@ class EntitlementAdminOut(BaseModel):
     precheck_enabled: bool
     secretaria_enabled: bool
     plan: str
+    precheck_plan: str | None = None
+    # Families switched on outside Stripe (courtesy / admin / test clinic), see
+    # `Entitlement.manual_products`.
+    manual_products: list[str] = Field(default_factory=list)
     status: str
     addons: dict = Field(default_factory=dict)
     limits: dict = Field(default_factory=dict)

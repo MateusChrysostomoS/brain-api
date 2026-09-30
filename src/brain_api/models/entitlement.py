@@ -40,7 +40,21 @@ class Entitlement(Base):
     )
 
     # --- Plan / subscription status ---
+    # `plan` is the ANCHOR plan (TASK C, docs/CHECKPOINT_billing_add_product.md): the
+    # secretarIA plan (`secretaria_basico` / `complete_clinic_combo`) whenever the clinic
+    # has secretarIA, else the PreCheck tier, else `free`. Readers that need the PreCheck
+    # tier of a clinic that has BOTH products use `catalog.precheck_plan_of(ent)`.
     plan: Mapped[str] = mapped_column(String(32), server_default="free", default="free")
+    # The PreCheck tier (`precheck_start|basic|advanced`) WHEN the anchor `plan` is a
+    # secretarIA plan without PreCheck. NULL when PreCheck comes from `plan` itself
+    # (PreCheck-only, or the combo) or there is no PreCheck.
+    precheck_plan: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Product families ("precheck" / "secretaria") switched on OUTSIDE Stripe — courtesy
+    # coupon, admin PATCH, test clinic. Only a LIVE subscription that carries the family
+    # converts it to "paid" (services.billing.apply_subscription_state); without this list
+    # every later subscription event would recompute the row from that one subscription
+    # alone and switch the courtesy product off. Reassign the whole list (JSON column).
+    manual_products: Mapped[list] = mapped_column(JSON, server_default=text("'[]'"), default=list)
     status: Mapped[str] = mapped_column(
         String(32), server_default="inactive", default="inactive"
     )  # active | trialing | past_due | canceled | inactive

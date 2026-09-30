@@ -116,6 +116,10 @@ async def secretaria_hub_token(
     re-checked LIVE on every hub request anyway (secretarIA introspects the token via
     /internal/secretaria/hub-token/verify), so a cancellation mid-session locks the hub
     within one request. The minted token is never logged.
+
+    The token carries the caller's `role`/`is_owner`/`is_manager` (TASK-020) so secretarIA
+    can refuse manager-only actions server-side. A platform `admin` never gets here
+    (`require_doctor` -> 403), so no hub token ever carries `role=admin` from this route.
     """
     ent = await resolve_entitlement(session, principal.tenant_id)
     if ent.status not in ACTIVE_STATUSES or not ent.products.secretaria:
@@ -124,8 +128,13 @@ async def secretaria_hub_token(
         tenant_id=str(principal.tenant_id),
         actor_user_id=principal.user_id,
         professional_id=str(principal.professional_id) if principal.professional_id else None,
+        # TASK-020: the hub gates clinic-manager-only actions on these three claims. They
+        # come from the validated user JWT (`Principal`), never from the request.
+        role=principal.role,
+        is_owner=principal.is_owner,
+        is_manager=principal.is_manager,
     )
-    logger.info("hub_token_minted", tenant_id=str(principal.tenant_id))
+    logger.info("hub_token_minted", tenant_id=str(principal.tenant_id), role=principal.role)
     return HubTokenOut(
         hub_token=token,
         expires_in=get_settings().HUB_TOKEN_EXPIRE_MINUTES * 60,

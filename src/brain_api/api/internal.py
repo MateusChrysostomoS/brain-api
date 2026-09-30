@@ -17,7 +17,7 @@ row (stripe-billing-entitlements: never from a token, never from Stripe).
 """
 
 import secrets
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Security, status
@@ -95,6 +95,31 @@ _INTERNAL_RESPONSES = {
 }
 
 
+_MAX_ROLE_CLAIM_LENGTH = 32
+
+
+def _role_claims(claims: dict[str, Any]) -> tuple[str | None, bool | None, bool | None]:
+    """Parse-safe `(role, is_owner, is_manager)` from a validated hub-token payload.
+
+    A malformed claim reads as absent (`None`), never a 500 — same convention as the
+    `professional_id` parse. `role` must be a non-empty string of at most 32 characters;
+    the flags must be real booleans (`"true"`, `1` and lists are NOT coerced).
+    """
+    raw_role = claims.get("role")
+    role = (
+        raw_role
+        if isinstance(raw_role, str) and 0 < len(raw_role) <= _MAX_ROLE_CLAIM_LENGTH
+        else None
+    )
+    is_owner = claims.get("is_owner")
+    is_manager = claims.get("is_manager")
+    return (
+        role,
+        is_owner if isinstance(is_owner, bool) else None,
+        is_manager if isinstance(is_manager, bool) else None,
+    )
+
+
 @router.post(
     "/secretaria/hub-token/verify",
     response_model=HubTokenVerifyOut,
@@ -135,7 +160,15 @@ async def verify_hub_token(
     active = ent.status in ACTIVE_STATUSES and ent.products.secretaria
     if not active:
         logger.info("hub_token_refused", tenant_id=str(tenant_id), status=ent.status)
-    return HubTokenVerifyOut(active=active, tenant_id=tenant_id, professional_id=professional_id)
+    role, is_owner, is_manager = _role_claims(claims)
+    return HubTokenVerifyOut(
+        active=active,
+        tenant_id=tenant_id,
+        professional_id=professional_id,
+        role=role,
+        is_owner=is_owner,
+        is_manager=is_manager,
+    )
 
 
 @router.get(

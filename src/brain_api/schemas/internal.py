@@ -41,11 +41,19 @@ class HubTokenVerifyOut(BaseModel):
     so a refused-but-valid session can be logged tenant-scoped on the caller side.
     `professional_id` rides the same way (present when the token carried one, parsed
     safely — a malformed claim reads as absent, never a 500).
+
+    `role` / `is_owner` / `is_manager` (TASK-020) are the acting user's role claims,
+    passed through so secretarIA can gate clinic-manager-only actions. All optional:
+    `null` means the token did not carry a well-formed value (a pre-TASK-020 token, or a
+    malformed claim). brain-api does not interpret them here; secretarIA fails closed.
     """
 
     active: bool
     tenant_id: UUID | None = None
     professional_id: UUID | None = None
+    role: str | None = None
+    is_owner: bool | None = None
+    is_manager: bool | None = None
 
 
 class InternalEntitlementOut(BaseModel):

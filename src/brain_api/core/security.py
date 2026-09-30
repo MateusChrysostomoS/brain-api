@@ -131,20 +131,32 @@ def decode_token(token: str) -> dict[str, Any] | None:
 
 
 def create_hub_token(
-    *, tenant_id: str, actor_user_id: str, professional_id: str | None = None
+    *,
+    tenant_id: str,
+    actor_user_id: str,
+    professional_id: str | None = None,
+    role: str | None = None,
+    is_owner: bool = False,
+    is_manager: bool = False,
 ) -> str:
     """Mint the tenant-scoped token the doctor portal presents to secretarIA's hub.
 
     Claims carry the TENANT (`sub`) plus `scope=secretaria_hub` and the acting user for
-    audit (`act`) — deliberately no `role`/`tenant_id` claims, so it can never pass as a
-    brain user JWT (and `get_current_principal` rejects any `scope`-bearing token
-    outright). secretarIA never validates it locally: it introspects via brain-api's
+    audit (`act`) — deliberately no `tenant_id` claim, so it can never pass as a brain
+    user JWT (and `get_current_principal` rejects any `scope`-bearing token outright, role
+    claim or not). secretarIA never validates it locally: it introspects via brain-api's
     /internal surface, which re-reads the LIVE entitlement (auth-jwt-multitenant: the
     mutable "is this paid?" state is never trusted from a token).
 
     `professional_id`, when the acting user has one, rides along so secretarIA's hub can
     scope a professional-specific view (config/calendar) without a second lookup — same
     "included only when set" convention as `create_access_token`.
+
+    `role` / `is_owner` / `is_manager` (TASK-020) tell the hub WHO is acting so it can gate
+    clinic-manager-only actions (the Pix key) on the server. They are all-or-nothing:
+    given a `role`, all three claims are written (`is_*` always booleans); with no `role`
+    the pre-TASK-020 token shape is produced unchanged. secretarIA reads them as optional
+    and fails closed when they are absent.
     """
     settings = get_settings()
     now = datetime.now(UTC)
@@ -157,6 +169,10 @@ def create_hub_token(
     }
     if professional_id:
         claims["professional_id"] = professional_id
+    if role is not None:
+        claims["role"] = role
+        claims["is_owner"] = bool(is_owner)
+        claims["is_manager"] = bool(is_manager)
     return jwt.encode(claims, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -301,6 +317,8 @@ def decode_patient_account_token(token: str) -> dict[str, Any] | None:
     if not all(claims.get(key) for key in ("sub", "sid")):
         return None
     return claims
+
+
 # --- Patient PENDING token (a visitor who has proven nothing yet) -----------------------
 
 # The owner's 2026-09-16 flow: a new patient reaches the chat with no login at all, gives an

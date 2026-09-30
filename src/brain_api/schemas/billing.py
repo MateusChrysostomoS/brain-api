@@ -19,6 +19,12 @@ class CheckoutRequest(BaseModel):
     plan: str = Field(min_length=1, max_length=32)
     addons: list[str] = Field(default_factory=list, max_length=16)
 
+    # Where the buyer lands after paying. NEVER a URL: a small allowlisted keyword
+    # (`services.billing.RETURN_TO_ALLOWLIST`, currently "console" = the Brain-Message
+    # portal). The success URL itself is built server-side, so nothing the client sends can
+    # become a redirect target. `max_length` only bounds the payload; the allowlist decides.
+    return_to: str | None = Field(default=None, max_length=32)
+
 
 class CheckoutSessionOut(BaseModel):
     """The Stripe-hosted Checkout page to redirect the browser to."""

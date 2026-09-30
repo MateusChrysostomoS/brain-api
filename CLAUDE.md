@@ -9,6 +9,10 @@ O contrato de integração do canal Brain-Message (envio/recebimento entre produ
 `/internal/brain-message/*`, anexos, erros) está em `docs/PORTAL_MESSAGING_API.md` — mantenha em
 dia ao mudar este lado do contrato.
 
+Guarda 409 `has_active_subscription` em `POST /billing/checkout` (TASK B, 2026-09-29,
+`services/billing.py::checkout_block_reason`; temporário até a TASK C): decisões, provas e pendências em
+`Brain-Message-Frontend/docs/CHECKPOINT_brain_message_link_compra.md`.
+
 ## Prompts pendentes
 
 - `z_prompts/PROMPT_BRAIN_ADMIN_TEST_TENANT_1_BRAIN_API.md` (raiz de BRAIN, gerado 2026-09-24

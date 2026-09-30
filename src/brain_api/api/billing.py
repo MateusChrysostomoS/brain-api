@@ -96,8 +96,16 @@ def _precheck_usage_out(summary: precheck_billing.PrecheckUsageSummary) -> Prech
     summary="Start a subscription checkout",
     responses={
         401: {"description": "Missing/invalid token."},
-        409: {"description": "Token has no tenant."},
-        422: {"description": "Unknown/unassignable plan or unknown add-on."},
+        409: {
+            "description": (
+                "Token has no tenant; or `has_active_subscription` — the tenant already "
+                "has a live Stripe subscription (active/trialing/past_due) or already "
+                "runs secretarIA, and a second subscription would replace its "
+                "entitlement (refused before any Stripe call; removed by TASK C)."
+            )
+        },
+        403: {"description": "`test_tenant_billing_disabled` — test clinic."},
+        422: {"description": "Unknown/unassignable plan, unknown add-on, or `unknown_return_to`."},
         502: {"description": "Stripe unreachable / API error."},
         503: {"description": "Billing not configured (no Stripe key / price)."},
     },
@@ -109,7 +117,9 @@ async def checkout(
 ) -> CheckoutSessionOut:
     """Create a Stripe Checkout Session for the authenticated tenant's selection."""
     selection = billing.validate_selection(payload.plan, payload.addons)
-    url = await billing.create_checkout_session(session, principal.tenant_id, selection)
+    url = await billing.create_checkout_session(
+        session, principal.tenant_id, selection, return_to=payload.return_to
+    )
     return CheckoutSessionOut(url=url)
 
 

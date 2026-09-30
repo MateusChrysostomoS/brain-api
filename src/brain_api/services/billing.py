@@ -331,6 +331,48 @@ def validate_selection(plan_id: str, addon_ids: list[str] | None) -> CheckoutSel
     return CheckoutSelection(plan_id=plan.id, addon_ids=tuple(addons))
 
 
+# --- Checkout guard: one subscription per tenant (TASK B; TASK C removes it) --------
+
+#: Entitlement statuses (the VALUES of `_STATUS_MAP`) under which the subscription in
+#: `Entitlement.stripe_subscription_id` is still alive in Stripe. `past_due` is included
+#: on purpose although the TASK B spec names only active/trialing: Stripe keeps a
+#: past_due subscription open and keeps retrying its invoice, so a second checkout there
+#: is the same double subscription this guard exists to stop. `canceled`/`inactive` are
+#: the resubscribe path and stay open.
+LIVE_SUBSCRIPTION_STATUSES: frozenset[str] = frozenset({"active", "trialing", "past_due"})
+
+#: The 409 `detail` the guard emits. brain-frontend's PlanCheckoutCta matches on it.
+HAS_ACTIVE_SUBSCRIPTION = "has_active_subscription"
+
+
+def checkout_block_reason(ent: Entitlement | None, selection: CheckoutSelection) -> str | None:
+    """Why a NEW subscription checkout must not be opened for this tenant, or None.
+
+    An entitlement is ONE subscription -> ONE plan (+ add-ons): the webhook recomputes
+    every product flag from the subscription it is handed (`_state_from_subscription`)
+    and overwrites `stripe_subscription_id`. A second subscription therefore replaces
+    the first one's state instead of adding to it — a secretarIA clinic buying PreCheck
+    would lose `secretaria_enabled`, keep paying the first subscription and get its test
+    window restarted. Until in-place upgrade exists (TASK C), refuse:
+
+    1. a live subscription (`LIVE_SUBSCRIPTION_STATUSES`) is already linked; or
+    2. secretarIA is already on (courtesy/admin-provisioned clinics have no
+       subscription at all, so rule 1 cannot see them) and the requested plan carries a
+       product — i.e. it would open a subscription of its own.
+
+    Pure: no I/O, so it is called BEFORE any Stripe request and unit-tested directly.
+    """
+    if ent is None:
+        return None
+    if ent.stripe_subscription_id and ent.status in LIVE_SUBSCRIPTION_STATUSES:
+        return HAS_ACTIVE_SUBSCRIPTION
+    plan = catalog.get_plan(selection.plan_id)
+    opens_own_subscription = plan is not None and (plan.precheck or plan.secretaria)
+    if ent.secretaria_enabled and opens_own_subscription:
+        return HAS_ACTIVE_SUBSCRIPTION
+    return None
+
+
 def _selection_price_items(selection: CheckoutSelection) -> list[tuple[str, str | None]]:
     """The ordered `(price_id, quantity)` list a validated selection implies — the ONE
     price-list builder shared by Checkout Session line items (`_append_checkout_line_items`)
@@ -464,21 +506,78 @@ def _apply_setup_custom_text(data: dict[str, str], selection: CheckoutSelection)
     )
 
 
+#: Where a buyer may be sent back to after Checkout. A keyword, never a URL: the actual
+#: destination lives in the brain-frontend (`/checkout/sucesso`, which reads `origem=`).
+RETURN_TO_ALLOWLIST: frozenset[str] = frozenset({"console"})
+
+
+def validate_return_to(return_to: str | None) -> str | None:
+    """`None` or an allowlisted keyword; anything else is 422 `unknown_return_to`."""
+    if return_to is None:
+        return None
+    if return_to not in RETURN_TO_ALLOWLIST:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "unknown_return_to")
+    return return_to
+
+
+def success_url_for(base_url: str, return_to: str | None, *, carries_precheck: bool) -> str:
+    """The Checkout `success_url`: the CONFIGURED base + `origem=<return_to>`.
+
+    Built only from server-side values (the configured base, an allowlisted keyword and a
+    catalog-derived flag) — never from a client-supplied URL, so there is no open redirect.
+    `produto=precheck` tells the brain-frontend the purchase carried PreCheck (the console
+    then lands on /anamneses/). String surgery on purpose: a URL library would percent-
+    encode the `{CHECKOUT_SESSION_ID}` template Stripe substitutes.
+    """
+    origin = validate_return_to(return_to)
+    if origin is None:
+        return base_url
+    query = f"origem={origin}" + ("&produto=precheck" if carries_precheck else "")
+    head, sep, fragment = base_url.partition("#")
+    joiner = "&" if "?" in head else "?"
+    return f"{head}{joiner}{query}{sep}{fragment}"
+
+
 async def create_checkout_session(
-    session: AsyncSession, tenant_id: UUID, selection: CheckoutSelection
+    session: AsyncSession,
+    tenant_id: UUID,
+    selection: CheckoutSelection,
+    return_to: str | None = None,
 ) -> str:
     """Create a subscription-mode Checkout Session for the tenant; return its URL.
 
     `tenant_id` rides in `metadata` AND `subscription_data.metadata` so every later
     subscription webhook can resolve the tenant without trusting anything client-side.
     An existing `stripe_customer_id` is reused so upgrades attach to the same customer.
+
+    409 `has_active_subscription` (before any Stripe call) when the tenant already has a
+    live subscription or already runs secretarIA — `checkout_block_reason`.
     """
     settings = get_settings()
     ent = await session.get(Entitlement, tenant_id)
 
+    # TASK B guard (TASK C removes it): refuse BEFORE any Stripe request — see
+    # `checkout_block_reason`. Nothing is written on this path.
+    block = checkout_block_reason(ent, selection)
+    if block is not None:
+        logger.warning(
+            "billing_checkout_refused",
+            tenant_id=str(tenant_id),
+            plan=selection.plan_id,
+            reason=block,
+        )
+        raise HTTPException(status.HTTP_409_CONFLICT, block)
+
+    plan = catalog.get_plan(selection.plan_id)
+    success_url = success_url_for(
+        settings.STRIPE_CHECKOUT_SUCCESS_URL,
+        return_to,
+        carries_precheck=bool(plan is not None and plan.precheck),
+    )
+
     data: dict[str, str] = {
         "mode": "subscription",
-        "success_url": settings.STRIPE_CHECKOUT_SUCCESS_URL,
+        "success_url": success_url,
         "cancel_url": settings.STRIPE_CHECKOUT_CANCEL_URL,
         "client_reference_id": str(tenant_id),
         "metadata[kind]": "existing_tenant",
@@ -844,9 +943,7 @@ async def _create_subscription_for_signup(
             intent_id=str(intent_id),
             setup_intent_id=setup_intent_id,
         )
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, "setup_intent_without_payment_method"
-        )
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "setup_intent_without_payment_method")
 
     data: dict[str, str] = {
         "customer": stripe_customer_id,

@@ -623,6 +623,15 @@ async def test_subscription_id_change_resets_test_window(db_session):
 
     before_reset = datetime.now(UTC)
     now_ts = int(time.time())
+    # A different subscription's created event cannot replace a live subscription
+    # on its own. The completed checkout first establishes the new subscription ID.
+    linked = await billing_service.apply_stripe_event(
+        db_session,
+        "evt_tw_reset_checkout",
+        "checkout.session.completed",
+        {"customer": "cus_tw_reset", "subscription": "sub_tw_new"},
+    )
+    assert linked is True
     created = await billing_service.apply_stripe_event(
         db_session,
         "evt_tw_reset_created",

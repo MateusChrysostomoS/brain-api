@@ -7,8 +7,11 @@ recompute is the sole entitlement writer on the billing path).
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from brain_api.schemas.entitlement import EntitlementOut
 
 
 class CheckoutRequest(BaseModel):
@@ -102,3 +105,56 @@ class PrecheckUsageOut(BaseModel):
     window_start: datetime
     window_end: datetime
     spend: PrecheckSpendOut
+
+
+# --- Add the OTHER product to the existing subscription (TASK C) -------------------------
+
+
+class AddProductChargeOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    """What the addition costs. Preview: `amount_due_now_cents` = charged immediately
+    (proration), `next_invoice_*` = the next renewal (metered secretarIA usage not included).
+    Executed: `amount_due_now_cents` = what the update's invoice actually collected."""
+
+    currency: str
+    amount_due_now_cents: int | None = None
+    next_invoice_cents: int | None = None
+    next_invoice_date: str | None = None
+
+
+class AddProductIn(BaseModel):
+    """`POST /billing/add-product` body. The client names CATALOG ids only — never a
+    subscription, customer or tenant (`extra="forbid"`; the tenant comes from the JWT).
+
+    `plan` is required for `product=precheck` (one of the three tiers) and forbidden for
+    `secretaria` (one plan) — enforced in the service, where the catalog lives. `confirm=false`
+    is a read-only preview; `confirm=true` executes and needs the `Idempotency-Key` header.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    product: Literal["precheck", "secretaria"]
+    plan: str | None = Field(default=None, min_length=1, max_length=32)
+    addons: list[str] = Field(default_factory=list, max_length=16)
+    confirm: bool = False
+    expected_charge: AddProductChargeOut | None = None
+    quote_token: str | None = Field(default=None, max_length=4096)
+
+    # Where the buyer lands after the addition: an allowlisted keyword (`"console"` = the
+    # Brain-Message portal), never a URL — `services.billing.RETURN_TO_ALLOWLIST` decides.
+    return_to: str | None = Field(default=None, max_length=32)
+
+
+class AddProductOut(BaseModel):
+    """`POST /billing/add-product` response. `entitlement` only on `added`/`already_present`."""
+
+    status: Literal["preview", "added", "already_present"]
+    product: str
+    charge: AddProductChargeOut | None = None
+    entitlement: EntitlementOut | None = None
+
+    # `origem=console[&produto=precheck]` for the brain-frontend's /checkout/sucesso; built
+    # server-side, only on `added`/`already_present` and only when `return_to` was sent.
+    return_query: str | None = None
+    quote_token: str | None = None

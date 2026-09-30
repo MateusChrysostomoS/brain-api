@@ -10,6 +10,7 @@ from fastapi import HTTPException
 
 from brain_api.services.billing import (
     RETURN_TO_ALLOWLIST,
+    return_query_for,
     success_url_for,
     validate_return_to,
 )
@@ -160,3 +161,21 @@ async def test_the_client_can_never_supply_a_success_url(client, monkeypatch):
 
     assert resp.status_code == 422, resp.text
     assert captured == {}
+
+
+def test_return_query_is_none_without_return_to():
+    assert return_query_for(None, carries_precheck=True) is None
+
+
+def test_return_query_carries_produto_only_for_precheck():
+    assert return_query_for("console", carries_precheck=False) == "origem=console"
+    assert return_query_for("console", carries_precheck=True) == "origem=console&produto=precheck"
+
+
+@pytest.mark.parametrize(
+    "hostile", ["https://evil.com", "//evil.com", "Console", "console&x=1", ""]
+)
+def test_return_query_refuses_anything_outside_the_allowlist(hostile):
+    with pytest.raises(HTTPException) as exc:
+        return_query_for(hostile, carries_precheck=False)
+    assert (exc.value.status_code, exc.value.detail) == (422, "unknown_return_to")

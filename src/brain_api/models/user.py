@@ -27,8 +27,10 @@ ROLE_MANAGER = "manager"
 #     `api/doctor.py` (list, detail, media list, media URL and status PATCH), all via
 #     `api/deps.deny_secretary` — `grep -rn deny_secretary` is the current boundary.
 #   * Full power INSIDE secretarIA: every professional's agenda, the whole configuracao
-#     surface, team management (invite doctors AND other secretaries), billing, and the
+#     surface, team management (invite doctors AND other secretaries), and the
 #     owner-only onboarding pause — so `secretary` passes `require_doctor` AND
+#     NOT billing: since TASK C (decision D4) changing the subscription needs manager/owner
+#     (`api/deps.is_billing_manager`); reading PreCheck usage stays open.
 #     `require_owner` (api/deps.py).
 #   * Never a professional: `professional_id` stays NULL forever, so a secretary never
 #     appears in the agenda as someone patients can book. `POST /doctor/professionals/self`
@@ -65,9 +67,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(32), default=ROLE_DOCTOR)
     # "Also a manager": a doctor with manager powers. Stored + exposed today; no backend
     # gate of its own yet (product: a manager gate will layer on top later).
-    is_manager: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("false"), default=False
-    )
+    is_manager: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), default=False)
     # The clinic OWNER — whoever bought the clinic. Preserves the pre-taxonomy
     # owner-only gates (onboarding pause, "owner of this tenant" lookups). Exactly one
     # per tenant in the steady state (signup provisioning sets it once); not DB-enforced.

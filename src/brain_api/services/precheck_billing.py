@@ -121,16 +121,23 @@ async def usage_summary(
             spend_currency=None,
         )
 
-    plan = catalog.get_plan(ent.plan)
+    # The PreCheck plan of the row, wherever it lives (`precheck_plan` on a dual row, else
+    # `plan`) — `ent.plan` alone is the secretarIA plan once a clinic has both products.
+    plan = catalog.precheck_plan_of(ent)
     canonical_plan_id = plan.id if plan is not None else ent.plan
     plan_name = plan.name if plan is not None else ent.plan
-    precheck_enabled = plan is not None and plan.precheck
+    precheck_enabled = plan is not None
 
     # Effective limits: the SAME plan-base + addon-grants + admin-override merge
     # services.entitlements.resolve_entitlement performs, so an admin's manual `limits`
-    # override wins here too.
+    # override wins here too. A dual row's PreCheck quota is the TIER's, not the anchor's.
     addons = {**catalog.default_addons(ent.plan), **(ent.addons or {})}
-    limits = {**catalog.compute_limits(ent.plan, addons), **(ent.limits or {})}
+    base_limits = catalog.compute_limits(ent.plan, addons)
+    if ent.precheck_plan and plan is not None:
+        base_limits[catalog.LIMIT_PRECHECK_CONSULTATIONS] = plan.base_limits.get(
+            catalog.LIMIT_PRECHECK_CONSULTATIONS, 0
+        )
+    limits = {**base_limits, **(ent.limits or {})}
     quota = limits.get(catalog.LIMIT_PRECHECK_CONSULTATIONS, 0)
     enforced = precheck_enabled and quota > 0
 

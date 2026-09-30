@@ -120,6 +120,7 @@ async def resolve_entitlement(session: AsyncSession, tenant_id: UUID) -> Entitle
         ),
         channels=channels,
         plan=ent.plan,
+        precheck_plan=ent.precheck_plan,
         secretaria_tier=catalog.plan_tier(ent.plan),
         status=ent.status,
         addons=addons,

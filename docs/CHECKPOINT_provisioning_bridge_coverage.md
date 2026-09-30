@@ -46,6 +46,7 @@ grep -rn "secretaria_enabled = \|precheck_enabled = \|\.status = \|Entitlement(\
 | `customer.subscription.deleted` / `invoice.*` | desliga ou só muda status | — | não precisa |
 | `scripts/seed_dev.py` | dev local | — | fora do app, não precisa |
 | `POST /admin/tenants` (`services/admin.py::create_tenant`, 2026-09-24, `docs/CHECKPOINT_admin_test_tenant.md`) | sim (produtos escolhidos pelo admin, `active`) | não existia | `ensure_products_provisioned` desde o nascimento |
+| `POST /billing/add-product` (`services/billing.py::add_product_to_subscription`, TASK C) | sim (liga o produto faltante na assinatura) | não existia | `ensure_products_provisioned` pós-commit, também em `already_present` |
 
 ## Decisões tomadas sem consulta
 

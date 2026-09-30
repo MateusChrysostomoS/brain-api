@@ -1,8 +1,9 @@
 """Billing endpoints (stripe-billing-entitlements skill).
 
 Authenticated tenant actions (create Checkout, open the Billing Portal, PreCheck top-up
-+ tier upgrade + usage read) and the Stripe webhook. The webhook is the ONLY billing-path
-writer of `entitlements.plan/status/addons/limits/period_*` — nothing here trusts the
++ tier upgrade + usage read + add-product) and the Stripe webhook.
+The webhook and successful add-product response are billing-path
+writers of `entitlements.plan/status/addons/limits/period_*` — nothing here trusts the
 client to say what was paid; entitlement state always derives from a signature-verified
 Stripe event recomputed through the catalog (the PreCheck upgrade route is the one
 deliberate exception: it also writes optimistically, see `services.billing.
@@ -16,16 +17,19 @@ HMAC via the stripe SDK — no I/O) and dedupes on `event.id` before mutating.
 from datetime import UTC, datetime
 
 import stripe
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_api.api.deps import Principal, require_tenant
+from brain_api.api.deps import Principal, is_billing_manager, require_tenant
 from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.models import Entitlement, Tenant
 from brain_api.schemas.billing import (
+    AddProductChargeOut,
+    AddProductIn,
+    AddProductOut,
     CheckoutRequest,
     CheckoutSessionOut,
     PortalSessionOut,
@@ -35,6 +39,7 @@ from brain_api.schemas.billing import (
     PrecheckUsageOut,
 )
 from brain_api.services import billing, precheck_billing
+from brain_api.services.entitlements import resolve_entitlement
 
 logger = get_logger(__name__)
 
@@ -57,6 +62,27 @@ async def require_billable_tenant(
     if tenant is not None and tenant.is_test:
         logger.warning("billing_refused_test_tenant", tenant_id=str(principal.tenant_id))
         raise HTTPException(status.HTTP_403_FORBIDDEN, "test_tenant_billing_disabled")
+    return principal
+
+
+BILLING_ROLE_REQUIRED = "billing_role_required"
+
+
+async def require_billing_manager(
+    principal: Principal = Depends(require_billable_tenant),
+) -> Principal:
+    """`require_billable_tenant` (tenant in context + not a test clinic — that 403 comes FIRST),
+    plus: only the people who run the clinic may change its subscription (decision D4,
+    `api/deps.is_billing_manager`) — 403 `billing_role_required` otherwise.
+
+    Before TASK C any role with a tenant could open a checkout or the Billing Portal. The
+    read-only `GET /billing/precheck/usage` keeps `require_tenant`.
+    """
+    if not is_billing_manager(principal):
+        logger.warning(
+            "billing_refused_role", tenant_id=str(principal.tenant_id), role=principal.role
+        )
+        raise HTTPException(status.HTTP_403_FORBIDDEN, BILLING_ROLE_REQUIRED)
     return principal
 
 
@@ -99,9 +125,8 @@ def _precheck_usage_out(summary: precheck_billing.PrecheckUsageSummary) -> Prech
         409: {
             "description": (
                 "Token has no tenant; or `has_active_subscription` — the tenant already "
-                "has a live Stripe subscription (active/trialing/past_due) or already "
-                "runs secretarIA, and a second subscription would replace its "
-                "entitlement (refused before any Stripe call; removed by TASK C)."
+                "has a live Stripe subscription (active/trialing/past_due). Refused before "
+                "any Stripe call; add the other product with POST /billing/add-product."
             )
         },
         403: {"description": "`test_tenant_billing_disabled` — test clinic."},
@@ -112,7 +137,7 @@ def _precheck_usage_out(summary: precheck_billing.PrecheckUsageSummary) -> Prech
 )
 async def checkout(
     payload: CheckoutRequest,
-    principal: Principal = Depends(require_billable_tenant),
+    principal: Principal = Depends(require_billing_manager),
     session: AsyncSession = Depends(get_session),
 ) -> CheckoutSessionOut:
     """Create a Stripe Checkout Session for the authenticated tenant's selection."""
@@ -135,7 +160,7 @@ async def checkout(
     },
 )
 async def portal(
-    principal: Principal = Depends(require_billable_tenant),
+    principal: Principal = Depends(require_billing_manager),
     session: AsyncSession = Depends(get_session),
 ) -> PortalSessionOut:
     """Let the tenant manage card/plan on Stripe's hosted portal."""
@@ -162,7 +187,7 @@ async def portal(
 )
 async def precheck_topup(
     payload: PrecheckTopupIn,
-    principal: Principal = Depends(require_billable_tenant),
+    principal: Principal = Depends(require_billing_manager),
     session: AsyncSession = Depends(get_session),
 ) -> CheckoutSessionOut:
     """One-off `mode=payment` Checkout Session for `payload.quantity` avulso PreCheck
@@ -198,7 +223,7 @@ async def precheck_topup(
 )
 async def precheck_upgrade(
     payload: PrecheckUpgradeIn,
-    principal: Principal = Depends(require_billable_tenant),
+    principal: Principal = Depends(require_billing_manager),
     session: AsyncSession = Depends(get_session),
 ) -> PrecheckUsageOut:
     """Live Stripe subscription-item price swap + an OPTIMISTIC local entitlement update
@@ -261,3 +286,101 @@ async def stripe_webhook(request: Request, session: AsyncSession = Depends(get_s
         session, event["id"], event["type"], event["data"]["object"].to_dict()
     )
     return JSONResponse({"received": True, "duplicate": not applied})
+
+
+@router.post(
+    "/billing/add-product",
+    response_model=AddProductOut,
+    summary="Add the other product (PreCheck or secretarIA) to the existing subscription",
+    responses={
+        401: {"description": "Missing/invalid token."},
+        402: {"description": "`payment_failed` — the card was declined; nothing was added."},
+        403: {
+            "description": (
+                "`billing_role_required` (only manager/owner), `test_tenant_billing_disabled`, "
+                "or `product_not_launched` (secretarIA, server-side launch gate)."
+            )
+        },
+        409: {
+            "description": (
+                "No tenant / `no_active_subscription` / `subscription_past_due` / "
+                "`subscription_trialing` / `product_already_active` / `payment_action_required` / "
+                "`payment_method_required` / `subscription_shape_unsupported` / "
+                "`add_product_in_progress` / `preview_changed` / `subscription_changed` / "
+                "`addon_already_on_subscription:*`."
+            )
+        },
+        422: {
+            "description": (
+                "`invalid_plan_for_product`, `unknown_addon:*`, `idempotency_key_required` / "
+                "`invalid_idempotency_key` (confirm=true), or a body naming anything else."
+            )
+        },
+        502: {
+            "description": (
+                "`stripe_error` / `stripe_unavailable` / "
+                "`preview_unavailable` / `add_product_unconfirmed`."
+            )
+        },
+        503: {"description": "`billing_not_configured` / `price_not_configured:*`."},
+    },
+)
+async def add_product(
+    payload: AddProductIn,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    principal: Principal = Depends(require_billing_manager),
+    session: AsyncSession = Depends(get_session),
+) -> AddProductOut:
+    """Add the product the clinic lacks to the subscription it already pays for — one
+    subscription, one invoice, one card. `confirm=false` previews the exact charge (read-only);
+    `confirm=true` executes it (needs `Idempotency-Key: <uuid>`) and returns the updated
+    entitlement. The local row is written only from Stripe's successful answer, through the same
+    function the webhook uses (`services.billing.apply_subscription_state`)."""
+    # Allowlist first: a hostile `return_to` is a 422 before any Stripe call or local write.
+    return_to = billing.validate_return_to(payload.return_to)
+
+    result = await billing.add_product_to_subscription(
+        session,
+        principal.tenant_id,
+        billing.AddProductRequest(
+            product=payload.product,
+            plan=payload.plan,
+            addons=tuple(payload.addons),
+            confirm=payload.confirm,
+            idempotency_key=idempotency_key,
+            quote_token=payload.quote_token,
+            expected_charge=(
+                billing.AddProductCharge(**payload.expected_charge.model_dump())
+                if payload.expected_charge is not None
+                else None
+            ),
+        ),
+    )
+    charge = (
+        AddProductChargeOut(
+            currency=result.charge.currency,
+            amount_due_now_cents=result.charge.amount_due_now_cents,
+            next_invoice_cents=result.charge.next_invoice_cents,
+            next_invoice_date=result.charge.next_invoice_date,
+        )
+        if result.charge is not None
+        else None
+    )
+    entitlement = (
+        await resolve_entitlement(session, principal.tenant_id)
+        if result.status != "preview"
+        else None
+    )
+    return_query = (
+        billing.return_query_for(return_to, carries_precheck=payload.product == "precheck")
+        if result.status != "preview"
+        else None
+    )
+    return AddProductOut(
+        status=result.status,
+        product=result.product,
+        charge=charge,
+        entitlement=entitlement,
+        return_query=return_query,
+        quote_token=result.quote_token,
+    )

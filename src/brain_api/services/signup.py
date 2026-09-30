@@ -491,6 +491,13 @@ async def provision_tenant_from_intent(
     # Whole-dict reassignment triggers JSON change tracking (no flag_modified needed).
     ent.addons = state["addons"]
     ent.limits = state["limits"]
+    ent.precheck_plan = (
+        None  # one plan came out of the intent: PreCheck-only, secretarIA-only or combo
+    )
+    # A subscription backs the products it carries; with NO subscription (courtesy coupon,
+    # the legacy "active" path) they are MANUAL — a later subscription that carries the family
+    # converts it, one that does not never switches it off (billing.apply_subscription_state).
+    ent.manual_products = [] if stripe_subscription_id else catalog.families_enabled(ent)
 
     intent.stripe_customer_id = stripe_customer_id
     intent.stripe_subscription_id = stripe_subscription_id

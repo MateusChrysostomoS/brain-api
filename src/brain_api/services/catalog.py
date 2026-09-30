@@ -460,3 +460,101 @@ def compute_entitlement_state(
         "addons": addons,
         "limits": compute_limits(plan.id, addons),
     }
+
+
+# --- Per-family composition (TASK C, docs/CHECKPOINT_billing_add_product.md) ----------------
+
+#: The two product families an entitlement row can carry. `manual_products` and the
+#: subscription derivation both speak these ids.
+FAMILY_PRECHECK = "precheck"
+FAMILY_SECRETARIA = "secretaria"
+
+
+def compose_entitlement_state(
+    secretaria_plan: str | None,
+    precheck_plan: str | None,
+    addon_overrides: dict[str, bool] | None = None,
+) -> dict:
+    """The full entitlement state for a clinic described PER PRODUCT FAMILY.
+
+    `secretaria_plan` is a plan with `secretaria=True` (`secretaria_basico` or the combo) or
+    None; `precheck_plan` is a PreCheck TIER (`PRECHECK_TIER_PLAN_IDS`) or None. A plan in the
+    wrong slot raises `ValueError` (the combo is never a tier — see PRECHECK_TIER_PLAN_IDS).
+
+    Returned keys are the entitlement columns to write:
+    - `plan`: the ANCHOR — the secretarIA plan when there is one, else the PreCheck tier, else
+      `free` (the rule documented on `Entitlement.plan`);
+    - `precheck_plan`: the tier, only when the anchor is a secretarIA plan WITHOUT PreCheck
+      (otherwise PreCheck comes from `plan` itself: PreCheck-only or the combo — and a tier
+      handed together with the combo is ignored, the combo wins);
+    - `precheck_enabled` / `secretaria_enabled`, `addons` (anchor-implied + overrides on top),
+      `limits` (anchor's, plus the tier's consultation quota for a dual row).
+
+    A pure function of its arguments: idempotent, one derivation for every writer.
+    """
+    sec_def = get_plan(secretaria_plan) if secretaria_plan else None
+    pre_def = get_plan(precheck_plan) if precheck_plan else None
+    if secretaria_plan and (sec_def is None or not sec_def.secretaria):
+        raise ValueError(f"not_a_secretaria_plan:{secretaria_plan}")
+    if precheck_plan and (pre_def is None or pre_def.id not in PRECHECK_TIER_PLAN_IDS):
+        raise ValueError(f"not_a_precheck_tier:{precheck_plan}")
+
+    anchor = sec_def.id if sec_def else (pre_def.id if pre_def else PLAN_FREE)
+    precheck_enabled = pre_def is not None or bool(sec_def and sec_def.precheck)
+    tier_column = (
+        pre_def.id
+        if (sec_def is not None and not sec_def.precheck and pre_def is not None)
+        else None
+    )
+
+    addons = default_addons(anchor)
+    for addon_id, active in (addon_overrides or {}).items():
+        if addon_id in addons:
+            addons[addon_id] = bool(active)
+    limits = compute_limits(anchor, addons)
+    if tier_column is not None and pre_def is not None:
+        limits[LIMIT_PRECHECK_CONSULTATIONS] = pre_def.base_limits.get(
+            LIMIT_PRECHECK_CONSULTATIONS, 0
+        )
+    return {
+        "plan": anchor,
+        "precheck_plan": tier_column,
+        "precheck_enabled": precheck_enabled,
+        "secretaria_enabled": sec_def is not None,
+        "addons": addons,
+        "limits": limits,
+    }
+
+
+def secretaria_plan_of(ent) -> PlanDef | None:
+    """The secretarIA plan a row is anchored on, or None (the anchor IS the secretarIA plan
+    whenever the clinic has secretarIA). `ent` is duck-typed (`.plan`)."""
+    plan = get_plan(getattr(ent, "plan", None))
+    return plan if plan is not None and plan.secretaria else None
+
+
+def precheck_plan_of(ent) -> PlanDef | None:
+    """The PreCheck plan of a row, wherever it lives: the tier in `precheck_plan` (dual row),
+    else `plan` itself when it carries PreCheck (PreCheck-only tier, or the combo), else None.
+
+    The ONE reader for PreCheck quota / top-up / upgrade: `Entitlement.plan` alone answers
+    "which secretarIA plan", not "which PreCheck plan", once a clinic has both. `ent` is
+    duck-typed (`.plan`, `.precheck_plan`); None -> None.
+    """
+    if ent is None:
+        return None
+    tier = get_plan(getattr(ent, "precheck_plan", None))
+    if tier is not None and tier.id in PRECHECK_TIER_PLAN_IDS:
+        return tier
+    plan = get_plan(getattr(ent, "plan", None))
+    return plan if plan is not None and plan.precheck else None
+
+
+def families_enabled(ent) -> list[str]:
+    """The product families a row has switched ON (by its own flags), PreCheck first."""
+    families: list[str] = []
+    if getattr(ent, "precheck_enabled", False):
+        families.append(FAMILY_PRECHECK)
+    if getattr(ent, "secretaria_enabled", False):
+        families.append(FAMILY_SECRETARIA)
+    return families

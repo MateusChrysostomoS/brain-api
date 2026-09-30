@@ -762,18 +762,23 @@ async def restart_test_window(
         "canceled",
         "incomplete_expired",
     ):
-        await billing._stripe_post(
-            f"/v1/subscriptions/{ent.stripe_subscription_id}",
-            {
-                "trial_end": str(int((now + timedelta(days=days)).timestamp())),
-                "proration_behavior": "none",
-                "cancel_at": "",
-            },
-        )
-        ent.cancel_scheduled_at = None
+        if live_subscription.get("status") == "trialing":
+            await billing._stripe_post(
+                f"/v1/subscriptions/{ent.stripe_subscription_id}",
+                {
+                    "trial_end": str(int((now + timedelta(days=days)).timestamp())),
+                    "proration_behavior": "none",
+                    "cancel_at": "",
+                },
+            )
+            ent.cancel_scheduled_at = None
+        # ELSE the subscription already charges (`active`, `past_due`, ...): a `trial_end`
+        # would turn it into a trial and FREEZE the billing of every product on it (a PreCheck
+        # + secretarIA subscription is one invoice). Only the LOCAL window restarts below.
     else:
-        addon_ids = [addon_id for addon_id, active in (ent.addons or {}).items() if active]
-        selection = billing.validate_selection(ent.plan, addon_ids)
+        selections = billing.paid_selections_for_entitlement(ent)
+        if not selections:
+            raise HTTPException(status.HTTP_409_CONFLICT, "checkout_required")
 
         data: dict[str, str] = {
             "customer": ent.stripe_customer_id,
@@ -781,7 +786,7 @@ async def restart_test_window(
             "proration_behavior": "none",
             "metadata[tenant_id]": str(tenant.id),
         }
-        billing._append_subscription_items(data, selection)
+        billing._append_subscription_selections(data, selections)
         if payment_methods:
             data["default_payment_method"] = payment_methods[0]["id"]
 

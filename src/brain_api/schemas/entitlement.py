@@ -74,6 +74,9 @@ class EntitlementOut(BaseModel):
     products: ProductsOut
     channels: ChannelsOut
     plan: str
+    # The PreCheck tier when `plan` is a secretarIA plan and the clinic ALSO has PreCheck
+    # (TASK C); null otherwise. Additive — consumers that only read `plan` keep working.
+    precheck_plan: str | None = None
     secretaria_tier: str | None = None
     status: str
     addons: dict = Field(default_factory=dict)

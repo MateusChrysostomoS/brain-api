@@ -9,6 +9,11 @@ O contrato de integração do canal Brain-Message (envio/recebimento entre produ
 `/internal/brain-message/*`, anexos, erros) está em `docs/PORTAL_MESSAGING_API.md` — mantenha em
 dia ao mudar este lado do contrato.
 
+O estado de assinatura por família (uma assinatura com PreCheck e secretarIA, cortesia + compra,
+`POST /billing/add-product`) está em `docs/CHECKPOINT_billing_add_product.md`. Leia antes de mudar
+`services/billing.py::apply_subscription_state`, `catalog.compose_entitlement_state` ou leitores de
+`Entitlement.plan`.
+
 Guarda 409 `has_active_subscription` em `POST /billing/checkout` (TASK B, 2026-09-29,
 `services/billing.py::checkout_block_reason`; temporário até a TASK C): decisões, provas e pendências em
 `Brain-Message-Frontend/docs/CHECKPOINT_brain_message_link_compra.md`.

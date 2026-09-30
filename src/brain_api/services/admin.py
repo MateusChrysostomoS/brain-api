@@ -324,6 +324,7 @@ async def create_tenant(
         status="active",
         **catalog.compute_entitlement_state(plan),
     )
+    ent.manual_products = catalog.families_enabled(ent)  # no Stripe, ever: every family is manual
     session.add(ent)
     try:
         await session.commit()
@@ -398,6 +399,9 @@ async def update_entitlement(
     if data.get("plan") is not None:
         # Schema validation guarantees an assignable catalog plan (aliases normalized).
         ent.plan = data["plan"]
+        ent.precheck_plan = (
+            None  # a plan patch re-materializes ONE plan; the tier column is for dual rows
+        )
         state = catalog.compute_entitlement_state(ent.plan)
         ent.precheck_enabled = state["precheck_enabled"]
         ent.secretaria_enabled = state["secretaria_enabled"]
@@ -422,6 +426,12 @@ async def update_entitlement(
         # Manual override merges over the (re)computed limits — an admin can raise one
         # cap without restating the rest.
         ent.limits = {**catalog.compute_limits(ent.plan, ent.addons or {}), **data["limits"]}
+
+    if not ent.stripe_subscription_id:
+        # No subscription behind the row: whatever is switched on now is manual. WITH a
+        # subscription this stays untouched — the next Stripe event still owns the row
+        # (documented behavior, docs/CHECKPOINT_billing_add_product.md).
+        ent.manual_products = catalog.families_enabled(ent)
 
     await session.commit()
     await session.refresh(ent)
@@ -569,9 +579,7 @@ class ImpersonationMint:
     target_user_id: UUID
 
 
-async def issue_impersonation_token(
-    session: AsyncSession, target_email: str
-) -> ImpersonationMint:
+async def issue_impersonation_token(session: AsyncSession, target_email: str) -> ImpersonationMint:
     """Mint a tenant-scoped doctor token for the admin "Modo médico" handoff.
 
     Resolves `target_email` (the configured demo clinic owner) to a tenant doctor user and
@@ -591,14 +599,10 @@ async def issue_impersonation_token(
         or user.tenant_id is None
         or user.role not in (ROLE_DOCTOR, ROLE_MANAGER, *_LEGACY_DOCTOR_ROLES)
     ):
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND, "impersonation_target_unavailable"
-        )
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "impersonation_target_unavailable")
     tenant = await session.get(Tenant, user.tenant_id)
     if tenant is None:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND, "impersonation_target_unavailable"
-        )
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "impersonation_target_unavailable")
 
     settings = get_settings()
     token = create_access_token(

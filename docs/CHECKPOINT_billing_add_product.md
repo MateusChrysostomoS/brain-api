@@ -6,12 +6,12 @@ Spec: `Brain-Message-Frontend/docs/superpowers/specs/2026-09-29-task-c-adicionar
 
 | Camada | Local | Commitado | Deployado |
 |---|---|---|---|
-| brain-api e migração `0026_entitlement_product_state` | implementados; migração provada em SQLite; suíte: 1224 passaram, 3 SKIP, 0 falhas | não | não; migração não aplicada em produção |
-| brain-frontend | TypeScript, 293 testes e build estático verdes | não | não |
-| Brain-Message-Frontend | TypeScript, 1405 testes e build estático verdes | não | não |
+| brain-api e migração `0026_entitlement_product_state` | implementados; migração provada em SQLite; suíte: 1224 passaram, 3 SKIP, 0 falhas | sim, TASK-015 integrada em `main` | não; migração não aplicada em produção |
+| brain-frontend | TypeScript, 296 testes e build estático verdes após merge | sim, TASK-015 integrada em `main` | não |
+| Brain-Message-Frontend | TypeScript, 1405 testes e build estático verdes | sim, TASK-015 integrada em `main` | não |
 | Stripe real e Postgres descartável | SKIP pelos insumos indisponíveis descritos na seção 6 | — | — |
 
-Tudo está nos worktrees `C:/TECH/BRAIN-worktrees/TASK-015/`. Nenhum commit, push, deploy, SQL remoto, alteração de ambiente ou cobrança foi feito. A revisão independente (`tasks/TASK-015/REVIEW.md`) encontrou sete pontos importantes; a correção e os testes de regressão constam dos resultados dos implementadores. O gate completo da API passou em quatro workers (`uv run --with pytest-xdist python -m pytest -n 4 -q -p no:cacheprovider`, 1224/3/0). Um teste legado de troca de assinatura foi atualizado para estabelecer a ID nova por `checkout.session.completed`, em acordo com a guarda contra eventos Stripe obsoletos; RED isolado antes, 31 testes focados verdes depois, suíte completa verde.
+A implementação saiu dos worktrees `C:/TECH/BRAIN-worktrees/TASK-015/` e foi integrada em `main` dos três repositórios por pedido explícito do dono. A revisão independente (`tasks/TASK-015/REVIEW.md`) encontrou sete pontos importantes; a correção e os testes de regressão constam dos resultados dos implementadores. O gate completo da API passou em quatro workers (`uv run --with pytest-xdist python -m pytest -n 4 -q -p no:cacheprovider`, 1224/3/0). Um teste legado de troca de assinatura foi atualizado para estabelecer a ID nova por `checkout.session.completed`, em acordo com a guarda contra eventos Stripe obsoletos; RED isolado antes, 31 testes focados verdes depois, suíte completa verde. Nenhum deploy, SQL remoto, alteração de ambiente ou cobrança foi feito.
 
 ## 2. Modelo
 

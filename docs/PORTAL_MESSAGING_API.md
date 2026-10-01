@@ -171,6 +171,22 @@ browser can never name the inbox a login code goes to — the address must have 
 server-to-server, from the conversation itself. A new product does not need to implement this
 to appear on the channel (§9); it is part of the *pending visitor* flow, which is optional.
 
+### 1.5 Internal booking contact (MVP Portal, Task 7A)
+
+| Internal route (secretarIA → brain-api) | Request | Success |
+|---|---|---|
+| `POST /internal/brain-message/patient-contact` | `PendingIdentityIn`: `tenant_id` and `external_id` (both UUIDs) | `200 {"email": "<address>"}` or `200 {"email": null}` |
+
+Uses the same `X-Internal-Api-Key` authentication as the other inbound service routes
+(401 for a missing/invalid key; 403 when the server key is unset). The handle must belong
+to the requested tenant. The address comes from its linked `MessagePatientAccount` when
+present and nonempty, otherwise from the legacy `MessagePatient.email`. Unknown,
+other-tenant and addressless handles all return null. This additive read supports booking
+confirmation and Calendar invitations; deploy brain-api before the secretarIA consumer.
+The raw address is PII: never log it or include it unmasked in an LLM prompt. Per the
+owner's 2026-09-30 plan amendment, secretarIA may store it on `Patient.email` with email
+pseudonymization; that supersedes the design spec's earlier transient-use requirement.
+
 ---
 
 ## 2. Send — patient → clinic

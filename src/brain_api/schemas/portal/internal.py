@@ -99,6 +99,16 @@ class PendingIdentityStatusOut(BaseModel):
     ]
 
 
+class PatientContactOut(BaseModel):
+    """Booking address for one clinic's patient handle, read on the service boundary.
+
+    Unknown, other-tenant and addressless handles all yield null. This is PII:
+    neither service may log it, and it must never enter an LLM prompt unmasked.
+    """
+
+    email: str | None = None
+
+
 class PendingOtpRequestOut(BaseModel):
     """The code was accepted for delivery; neither address nor credential leaves.
 

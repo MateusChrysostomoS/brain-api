@@ -21,8 +21,9 @@ from brain_api.core.database import get_session
 from brain_api.core.email_mask import mask_email
 from brain_api.core.logging import get_logger
 from brain_api.core.ratelimit import SlidingWindowLimiter
-from brain_api.models.patient_access import MessagePatient
+from brain_api.models.patient_access import MessagePatient, MessagePatientAccount
 from brain_api.schemas.portal.internal import (
+    PatientContactOut,
     PatientNameIn,
     PatientNameOut,
     PendingEmailClaimIn,
@@ -59,6 +60,32 @@ _INTERNAL_RESPONSES = {
     401: {"description": "Missing or invalid X-Internal-Api-Key."},
     403: {"description": "SECRETARIA_API_KEY not configured on the server."},
 }
+
+
+@router.post(
+    "/brain-message/patient-contact",
+    response_model=PatientContactOut,
+    summary="Booking contact address of one Brain-Message patient (internal)",
+    responses=_INTERNAL_RESPONSES,
+)
+async def patient_contact(
+    payload: PendingIdentityIn,
+    session: AsyncSession = Depends(get_session),
+) -> PatientContactOut:
+    """Return the booking contact for a handle belonging to the requested clinic.
+
+    Prefer the proven account address, falling back to the legacy patient address.
+    Unknown and other-tenant handles receive the same empty response. Never logged.
+    """
+    patient = await session.get(MessagePatient, payload.external_id)
+    if patient is None or patient.tenant_id != payload.tenant_id:
+        return PatientContactOut()
+    email = patient.email
+    if patient.account_id is not None:
+        account = await session.get(MessagePatientAccount, patient.account_id)
+        if account is not None and account.email:
+            email = account.email
+    return PatientContactOut(email=email or None)
 
 
 @router.post(

@@ -12,6 +12,11 @@
 > Every claim below cites the file it was read from. If a citation and the running code
 > disagree, the code wins — update this file in the same change that breaks it (see
 > `AI_WORKFLOW.md`'s documentation rule: update docs after validating, not before).
+>
+> **Update 2026-10-02 (TASK-028):** §4.1 was re-read against secretarIA commit `8c68831` (the
+> messages listing now returns the NEWEST page and gains `has_more` and `before`); §8.5's
+> "re-read the whole thread" was corrected to match. Every other section keeps its own
+> verification date (2026-09-18 unless a dated note in the text or the changelog says otherwise).
 
 ---
 
@@ -374,7 +379,7 @@ read), `external_id` (path) and `channel == "brain_message"`
 (`api/internal.py::list_brain_message_messages`). `since` is an exclusive timestamp cursor —
 **since 2026-09-19 (Onda 3) on `updated_at`, not `created_at`**: a row returns again whenever its
 delivery state moves, so the client upserts by `id` (§8.5). An unknown patient or an empty conversation returns
-`{"data": []}`, **never 404** — this endpoint is polled, so "nothing yet" must not be
+`{"data": [], "has_more": false}`, **never 404** — this endpoint is polled, so "nothing yet" must not be
 distinguishable from "wrong id" (`BrainMessageMessageList`):
 
 ```jsonc
@@ -382,8 +387,45 @@ distinguishable from "wrong id" (`BrainMessageMessageList`):
   { "id": "c1e9...", "direction": "outbound", "sender": "human",
     "body": "Sua consulta foi remarcada para sexta às 14h.",
     "created_at": "2026-09-18T14:33:10Z", "interactive": null, "interactive_reply_id": null }
-] }
+], "has_more": false }
 ```
+
+**Which messages come back — newest page first (2026-10-02, TASK-028).** Without `since` — the
+first load, and every Portal poll, because the Portal never sends `since` and re-reads the thread
+each time (`Brain-Message-Frontend/lib/real/patient-access.ts::pollMessages`) — `data` is the
+**`limit` NEWEST messages** (query param `limit`, default 50, max 200) in ascending chronological
+order (`created_at`, then `id`), and the new top-level field **`has_more`** (bool, default
+`false`) says whether older messages exist. Before this change the same call returned the 50
+**oldest** rows, which froze any conversation past 50 messages: the clinic's replies existed in the
+database and never reached the screen (`secretarIA/docs/LACUNAS_PORTAL_2026-10-01.md` §L1).
+
+- **`before`** (optional ISO 8601 datetime, only without `since`) — only messages with `created_at`
+  **strictly before** it, with the same "newest `limit` of those, oldest first" shape, so a client
+  pages backwards by passing the oldest `created_at` it already holds. It is an **opaque cursor**:
+  pass back exactly the `created_at` string that was received. Re-formatting it (for example
+  through a JavaScript `Date`) truncates microseconds to milliseconds and can skip older rows
+  created in that same millisecond. A naive datetime is accepted exactly like `since` (no extra
+  422). `since` and `before` together answer **422**. brain-api does not send `before` and the
+  Portal does not use it yet — it exists on this internal leg for paging backwards later.
+- **Ties — a page may exceed `limit`.** A page never ends *inside* a group of messages with the
+  same `created_at` (one transaction stamps every row it writes with the same `now()`, and the
+  `before` cursor is strict). If the cut falls inside such a group, the page is extended with the
+  rest of the group and `has_more` is recomputed after the extension, so `len(data)` can exceed
+  `limit` by the size of that group. A consumer must not assume `len(data) <= limit`.
+- **`since` is unchanged** — the rows CHANGED since the cursor, ordered by `updated_at` (§8.5);
+  `has_more` is always `false` there. Scope (`tenant_id` + `external_id` + channel
+  `brain_message`) is unchanged, and so is the unknown-patient answer above.
+- **brain-api relays the body untouched.** `message_switchboard.list_messages` returns the
+  product's body through `_project_attachments`, which rewrites only `data[].attachment`, and
+  `RelayOut` is a permissive envelope — so `has_more` reaches the browser inside `payload`
+  (`payload.has_more`) with **no brain-api code change**. This text is the whole brain-api side
+  of the change.
+- **State and deploy (2026-10-02).** Committed on secretarIA's `task/TASK-028-portal-recentes`
+  (`8c68831`, `api/internal.py::list_brain_message_messages`, `schemas/internal.py::
+  BrainMessageMessageList`); not merged, **not deployed**, not proven in production. Deploying it
+  means `secretaria_api` only — the route lives in the API, the worker is not touched, no
+  migration. `GET /build` may then report `deploy_parity: divergent` because the worker did not
+  change; that is expected here. Details: `secretarIA/docs/CHECKPOINT_portal_mensagens_recentes.md`.
 
 ### 4.2 PreCheck
 
@@ -695,7 +737,7 @@ there: staff↔patient real accounts on the "Chrysostomo For Eyes" tenant, ticks
 12 interactive bubbles at 340px; only the WhatsApp-thread read-mark exclusion stayed proven
 against the stub, not production, since that tenant has no WhatsApp patient). Status is mapped
 1:1, read marks fire once per cursor move on both screens, never on a WhatsApp thread, never from
-a hidden tab; neither client uses a `since` cursor — both re-read the whole thread, which is the
+a hidden tab; neither client uses a `since` cursor — both re-read the thread (since 2026-10-02 its newest page, §4.1, not the whole of it), which is the
 upsert by `id`. **Same day, still uncommitted:** the owner asked for two follow-ups after the
 production proof — the read tick's green got a contrast bump (`--tick-read`) and the interactive-
 bubble width dropped the `min(…, 100%)` percentage entirely for a fixed `340px` (a stale, never-
@@ -993,3 +1035,11 @@ e-mail address, a cookie, or a JWT from this channel.
   once and its first 200 replayed (`Idempotent-Replayed: true`) for 10 minutes; failures are not
   remembered; no header = today's behaviour. For the portal's automatic resend on mobile networks.
   In-process memory (`core/idempotency.py`), no migration, no change to any product's contract.
+- **2026-10-02** — TASK-028 (`secretarIA/docs/LACUNAS_PORTAL_2026-10-01.md` §L1). **§4.1** —
+  `GET /internal/brain-message/conversations/{external_id}/messages` without `since` returns the
+  NEWEST `limit` messages (oldest first) instead of the 50 oldest, so a Portal conversation past 50
+  messages no longer freezes; the body gains `has_more`, and an optional `before` cursor (opaque,
+  not combinable with `since`) pages backwards. A page may exceed `limit` by a group of rows with
+  an equal `created_at`. brain-api relays the body untouched — no code change here, and it does not
+  send `before`. **§8.5** — "re-read the whole thread" corrected. secretarIA `8c68831` on
+  `task/TASK-028-portal-recentes`: committed, not deployed (`secretaria_api` only, no migration).

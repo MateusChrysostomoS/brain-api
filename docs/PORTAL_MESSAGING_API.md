@@ -13,10 +13,12 @@
 > disagree, the code wins — update this file in the same change that breaks it (see
 > `AI_WORKFLOW.md`'s documentation rule: update docs after validating, not before).
 >
-> **Update 2026-10-02 (TASK-028):** §4.1 was re-read against secretarIA commit `8c68831` (the
-> messages listing now returns the NEWEST page and gains `has_more` and `before`); §8.5's
-> "re-read the whole thread" was corrected to match. Every other section keeps its own
-> verification date (2026-09-18 unless a dated note in the text or the changelog says otherwise).
+> **Update 2026-10-02 (TASK-028):** §4.1 was re-read against the secretarIA change: the messages
+> listing now returns the NEWEST page and gains `has_more` and `before` (secretarIA `8c68831`,
+> committed, not yet deployed — see §4.1); §8.5's "re-read the whole thread" was corrected to
+> match. The Portal front still needs a scroll fix to show it end to end (§4.1). Every other
+> section keeps its own verification date (2026-09-18 unless a dated note in the text or the
+> changelog says otherwise).
 
 ---
 
@@ -393,7 +395,7 @@ distinguishable from "wrong id" (`BrainMessageMessageList`):
 **Which messages come back — newest page first (2026-10-02, TASK-028).** Without `since` — the
 first load, and every Portal poll, because the Portal never sends `since` and re-reads the thread
 each time (`Brain-Message-Frontend/lib/real/patient-access.ts::pollMessages`) — `data` is the
-**`limit` NEWEST messages** (query param `limit`, default 50, max 200) in ascending chronological
+**`limit` NEWEST messages** (query param `limit` of this internal leg, default 50, max 200) in ascending chronological
 order (`created_at`, then `id`), and the new top-level field **`has_more`** (bool, default
 `false`) says whether older messages exist. Before this change the same call returned the 50
 **oldest** rows, which froze any conversation past 50 messages: the clinic's replies existed in the
@@ -419,13 +421,33 @@ database and never reached the screen (`secretarIA/docs/LACUNAS_PORTAL_2026-10-0
   product's body through `_project_attachments`, which rewrites only `data[].attachment`, and
   `RelayOut` is a permissive envelope — so `has_more` reaches the browser inside `payload`
   (`payload.has_more`) with **no brain-api code change**. This text is the whole brain-api side
-  of the change.
+  of this change.
+- **Consumer note — the Portal front still needs a change (2026-10-02).**
+  `Brain-Message-Frontend/components/patient/PatientMessageList.tsx` scrolls to the bottom in an
+  effect keyed on the message COUNT. With the fixed newest-50 window, a new reply pushes the
+  oldest row out, the count stays at 50, and the reply is **not scrolled into view**: in a
+  conversation past 50 messages the patient has to scroll by hand, so the original "silent"
+  symptom survives visually until the front triggers the scroll on the id of the last message
+  instead of the count. A second front item: `components/portal/PortalConversation.tsx::refresh`
+  never prunes its local copies of sent messages on the secretaria branch, so a copy whose server
+  twin has left the window can resurface as an orphan bubble (fix intent: prune with
+  `unconfirmedLocal` on each poll). Neither is part of this change; both are recorded in
+  secretarIA's CHECKPOINT ("Dependência do front") and a follow-up job.
+- **Paging back is not reachable from the browser (2026-10-02).** The Portal-facing route does
+  not forward `before` or `limit` (`message_switchboard.list_messages` forwards only `tenant_id`
+  and `since`); paging back from the browser needs a brain-api change (forward both, opaque and
+  verbatim) plus a "ver anteriores" control in the front — an owner decision, not part of
+  TASK-028. Until then messages older than the newest 50 cannot be reached from the Portal.
 - **State and deploy (2026-10-02).** Committed on secretarIA's `task/TASK-028-portal-recentes`
   (`8c68831`, `api/internal.py::list_brain_message_messages`, `schemas/internal.py::
-  BrainMessageMessageList`); not merged, **not deployed**, not proven in production. Deploying it
-  means `secretaria_api` only — the route lives in the API, the worker is not touched, no
-  migration. `GET /build` may then report `deploy_parity: divergent` because the worker did not
-  change; that is expected here. Details: `secretarIA/docs/CHECKPOINT_portal_mensagens_recentes.md`.
+  BrainMessageMessageList`); not merged, **not deployed**, not proven in production. The deploy
+  unit is the merged `main` HEAD: deploy `secretaria_api` AND `secretaria-worker` together
+  (secretarIA README, "Deploy both services, or neither"; its
+  `docs/superpowers/plans/2026-10-01-INDEX-execucao.md`, "Ordem de merge e de deploy"), no
+  migration, and `GET /build` must read `deploy_parity: match`. This change's own code lives only
+  in the API route, but `main` also carries the TASK-023 workers split, so the worker has to be
+  redeployed to keep parity; `divergent` is not something to wave away. Details:
+  `secretarIA/docs/CHECKPOINT_portal_mensagens_recentes.md`.
 
 ### 4.2 PreCheck
 
@@ -737,7 +759,7 @@ there: staff↔patient real accounts on the "Chrysostomo For Eyes" tenant, ticks
 12 interactive bubbles at 340px; only the WhatsApp-thread read-mark exclusion stayed proven
 against the stub, not production, since that tenant has no WhatsApp patient). Status is mapped
 1:1, read marks fire once per cursor move on both screens, never on a WhatsApp thread, never from
-a hidden tab; neither client uses a `since` cursor — both re-read the thread (since 2026-10-02 its newest page, §4.1, not the whole of it), which is the
+a hidden tab; neither client uses a `since` cursor — both re-read the thread (since 2026-10-02 its newest page, not the whole of it — secretarIA `8c68831`, committed, not yet deployed — see §4.1), which is the
 upsert by `id`. **Same day, still uncommitted:** the owner asked for two follow-ups after the
 production proof — the read tick's green got a contrast bump (`--tick-read`) and the interactive-
 bubble width dropped the `min(…, 100%)` percentage entirely for a fixed `340px` (a stale, never-
@@ -1041,5 +1063,9 @@ e-mail address, a cookie, or a JWT from this channel.
   messages no longer freezes; the body gains `has_more`, and an optional `before` cursor (opaque,
   not combinable with `since`) pages backwards. A page may exceed `limit` by a group of rows with
   an equal `created_at`. brain-api relays the body untouched — no code change here, and it does not
-  send `before`. **§8.5** — "re-read the whole thread" corrected. secretarIA `8c68831` on
-  `task/TASK-028-portal-recentes`: committed, not deployed (`secretaria_api` only, no migration).
+  send `before` or `limit`, so paging back is not reachable from the Portal yet. **§8.5** —
+  "re-read the whole thread" corrected. secretarIA `8c68831` on `task/TASK-028-portal-recentes`:
+  committed, not merged, not deployed; the deploy unit is the merged `main` HEAD, `secretaria_api`
+  AND `secretaria-worker` together, no migration, `GET /build` → `deploy_parity: match`. The Portal
+  front still needs a scroll fix (keyed on the last message id, not the count) for a new reply to
+  come into view in a conversation past 50 messages (§4.1, consumer note).

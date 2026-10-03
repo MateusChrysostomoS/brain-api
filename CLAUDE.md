@@ -349,6 +349,8 @@ Guarda 409 `has_active_subscription` em `POST /billing/checkout` (TASK B, 2026-0
 
 ## graphify
 
+Limpeza administrativa de pacientes (TASK-029): ver `docs/CHECKPOINT_tenant_patient_cleanup.md`; integrado à main local, não publicado em produção.
+
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
 Rules:

@@ -25,6 +25,7 @@ from brain_api.api import (
     public_signup,
     public_waitlist,
     sso,
+    tenant_patient_cleanup,
 )
 from brain_api.api.portal import internal as portal_internal, patient_access
 from brain_api.config import get_settings
@@ -68,6 +69,7 @@ def create_app() -> FastAPI:
     app.include_router(public_waitlist.router, tags=["public"])
     app.include_router(admin.router, tags=["admin"])
     app.include_router(privacy.router, tags=["admin", "privacy"])
+    app.include_router(tenant_patient_cleanup.router)
     app.include_router(doctor.router, tags=["doctor"])
     app.include_router(onboarding.router, tags=["doctor", "onboarding"])
     app.include_router(billing.router, tags=["billing"])

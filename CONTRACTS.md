@@ -1,5 +1,9 @@
 # brain-api — API & Data Contracts (Phase 1)
 
+## Additive contract: tenant patient cleanup (TASK-029, integrated into local main)
+
+Admin JWT (`require_role("admin")`) gates `GET /admin/tenants/{tenant_id}/patient-cleanup/preview` and `POST /admin/tenants/{tenant_id}/patient-cleanup`. POST body requires strict boolean `confirm=true` and exact `clinic_name`. Response contains `tenant_id`, `clinic_name`, aggregate `status` (`ready/blocked/completed/partial`), `products` with per-product `status/counts/blockers/warnings`, and global `warnings`. No patient content is returned. Brain calls SecretarIA via `X-Internal-Api-Key` and Precheck via `X-Internal-Token`, using existing configuration. A partial operation is retryable; no distributed rollback. Scope, prerequisites and Swagger workflow: [checkpoint](docs/CHECKPOINT_tenant_patient_cleanup.md). Not deployed.
+
 > **Status:** authoritative. Phase 2 (backend) and Phase 3 (frontend) build against
 > THIS document. If an implementation detail disagrees with this file, this file wins
 > until it is amended here first.

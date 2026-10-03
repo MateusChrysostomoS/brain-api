@@ -1,5 +1,7 @@
 # Portal Messaging API — the Brain-Message channel
 
+Administrative removal of clinic patients and message histories: [TASK-029 checkpoint](CHECKPOINT_tenant_patient_cleanup.md), additive admin endpoints, integrated into local main, awaiting push and deployment.
+
 > **Status:** integration reference, verified against code on **2026-09-18**. This is the
 > ONE place that documents how a patient exchanges messages with a clinic through the
 > Brain-Message channel (the web "Portal" `Brain-Message-Frontend`, as opposed to WhatsApp),

@@ -546,6 +546,20 @@ async def mark_read(
     return await _call(product, "POST", "/internal/brain-message/messages/read", json=body)
 
 
+# A new product implements the same internal heartbeat and transcript typing fields,
+# then joins by adding its route here (docs/PORTAL_MESSAGING_API.md, "Typing").
+TYPING_PRODUCTS: dict[str, str] = {PRODUCT_SECRETARIA: "/internal/brain-message/typing"}
+
+
+async def send_typing(product: str, *, tenant_id: UUID, patient_ref: str) -> dict[str, Any]:
+    """Relay a session-scoped heartbeat, or answer locally without a network call."""
+    path = TYPING_PRODUCTS.get(product)
+    if path is None:
+        return {"applied": False}
+    body = {"tenant_id": str(tenant_id), "external_id": patient_ref}
+    return await _call(product, "POST", path, json=body)
+
+
 # --- Attachments (2026-09-18): the multipart relay, the transcript reference, the stream ---
 
 

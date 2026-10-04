@@ -1071,3 +1071,51 @@ e-mail address, a cookie, or a JWT from this channel.
   AND `secretaria-worker` together, no migration, `GET /build` → `deploy_parity: match`. The Portal
   front still needs a scroll fix (keyed on the last message id, not the count) for a new reply to
   come into view in a conversation past 50 messages (§4.1, consumer note).
+
+## Typing — o contrato de digitação, qualquer produto
+
+Campos aditivos na listagem de mensagens de qualquer produto, preservados pelo relay dentro
+ de `RelayOut.payload`:
+
+| Campo | Default | Significado para o paciente |
+| --- | --- | --- |
+| `typing` | `false` | Há alguém digitando para este paciente agora. |
+| `typing_by` | `null` | `automation` ou `staff`; nunca `patient`, a própria digitação. |
+| `accepts_typing` | `false` | O cliente deve emitir batimentos enquanto o paciente digita. |
+
+`POST /patient-access/threads/{product}/typing` aceita sem corpo, `null` ou `{}`. Qualquer
+campo no corpo é rejeitado com 422, inclusive `tenant_id`, `external_id`, `patient_ref` e `by`.
+Exige o bearer de clínica autenticado (conta) ou da visita pendente; usa exclusivamente
+`patient.tenant_id` e `patient.id` da sessão. Produto/canal são autorizados antes de rede;
+a conexão de banco é liberada antes do relay. Resposta:
+
+```json
+{"product": "secretaria", "payload": {"applied": true}, "at": "2026-10-04T12:00:00Z"}
+```
+
+O cliente envia no máximo um batimento a cada aproximadamente 3 s, apenas enquanto digita e
+se `accepts_typing` for verdadeiro. Batimento é idempotente; não há limitador próprio.
+
+Hoje secretarIA recebe `POST /internal/brain-message/typing`, autenticado por
+`X-Internal-Api-Key`, com corpo fechado `{"tenant_id": "<uuid>", "external_id": "<patient.id>"}`,
+e responde `{"applied": bool}`. Só registra o paciente quando `handover_state == HUMAN_ACTIVE`.
+Com automação conduzindo ou paciente inexistente, responde `applied: false` sem escrever Redis.
+PreCheck não tem rota registrada: o brain-api responde `applied: false` sem qualquer rede.
+Uma falha no upstream mantém o tratamento de erros do mesh (502/503), sem expor seu corpo.
+
+Na secretarIA a chave é `brain_message:typing:<conversation_id>:<by>`, separada por conversa
+ e por quem digita: automação 90 s, equipe/paciente 6 s. Redis ausente ou indisponível falha
+aberto. O paciente vê `automation` antes de `staff`; o console vê `automation` antes de
+`patient`, nunca `staff` (a própria equipe). O turno limpa a marca da automação no `finally`;
+a equipe limpa sua marca ao enviar uma mensagem. Morte do worker é coberta pelo TTL.
+
+Para integrar um produto novo:
+
+1. Implementar os três campos na listagem, com os defaults acima e sem mostrar a própria digitação.
+2. Implementar sua rota interna autenticada de batimento com corpo fechado, escopo de tenant/paciente
+   e resposta `{"applied": bool}`; registrar o paciente somente quando um humano conduz.
+3. Adicionar o caminho em `services/message_switchboard.py::TYPING_PRODUCTS`. O cliente do Portal
+   mantém o mesmo contrato, sem condição específica de produto.
+
+Estado local e provas: `docs/CHECKPOINT_digitando_backend.md`. Ordem de deploy autorizado:
+`secretaria_api` + `secretaria-worker` → brain-api. Sem migração.

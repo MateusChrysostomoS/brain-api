@@ -358,3 +358,8 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+O contrato universal de digitação (`POST /patient-access/threads/{product}/typing`, registro
+`TYPING_PRODUCTS`, corpo fechado e escopo da sessão) está em `docs/PORTAL_MESSAGING_API.md`,
+seção “Typing — o contrato de digitação, qualquer produto”; estado local, validação e provas
+pendentes em `docs/CHECKPOINT_digitando_backend.md` (TASK-033, sem deploy).

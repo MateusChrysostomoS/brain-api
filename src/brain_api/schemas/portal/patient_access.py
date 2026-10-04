@@ -198,6 +198,12 @@ class PatientAttachmentForm(BaseModel):
     interactive_reply_id: str | None = Field(default=None, min_length=1, max_length=256)
 
 
+class PatientTypingIn(BaseModel):
+    """The heartbeat carries no fields: scope comes only from the session."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class PatientReadMarkIn(BaseModel):
     """`POST /patient-access/threads/{product}/messages/read` — "I have seen up to here".
 

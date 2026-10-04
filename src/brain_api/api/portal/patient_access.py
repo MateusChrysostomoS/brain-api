@@ -99,6 +99,7 @@ from brain_api.schemas.portal.patient_access import (
     PatientAttachmentForm,
     PatientMessageIn,
     PatientReadMarkIn,
+    PatientTypingIn,
     PendingProgressOut,
     PendingSessionIn,
     PendingSessionOut,
@@ -1338,6 +1339,37 @@ async def mark_thread_read(
         product=product,
         applied=result.get("applied"),
         marked=result.get("marked"),
+    )
+    return RelayOut(product=product, payload=result, at=datetime.now(UTC))
+
+
+@router.post(
+    "/threads/{product}/typing",
+    response_model=RelayOut,
+    summary="The patient is typing (heartbeat)",
+    description=(
+        "Send every ~3 s while typing, only when the transcript says `accepts_typing`. "
+        "Recorded by the product only while a human conducts; `payload.applied` reports it."
+    ),
+    responses={
+        401: {"description": "Missing or invalid patient session."},
+        403: {"description": "The clinic does not offer that product on this channel."},
+        422: {"description": "A body field was sent."},
+        502: {"description": "The product backend failed or is misconfigured."},
+        503: {"description": "The product's mesh leg is unconfigured or degraded."},
+    },
+)
+async def patient_typing(
+    product: str = Path(description="secretaria | precheck | any product the clinic offers."),
+    payload: PatientTypingIn | None = None,
+    patient: MessagePatient = Depends(get_thread_patient),
+    session: AsyncSession = Depends(get_session),
+) -> RelayOut:
+    ent = await resolve_entitlement(session, patient.tenant_id)
+    message_switchboard.require_product(ent, product)
+    await session.close()  # release the pooled connection before the upstream hop
+    result = await message_switchboard.send_typing(
+        product, tenant_id=patient.tenant_id, patient_ref=str(patient.id)
     )
     return RelayOut(product=product, payload=result, at=datetime.now(UTC))
 

@@ -857,6 +857,34 @@ Both are gated on the **resolved product being secretarIA** — the link's `prod
   portal polls the PreCheck thread in the background there and switches the patient to it as soon
   as it has messages (the hand-off reveal), so opening it would pull a patient away from booking.
 
+#### 8.6.1 Speak first on ENTRY — `POST /patient-access/threads/{product}/enter` (TASK-035, 2026-10-05)
+
+The triggers above only fire on a CREATED visit or a link opened with an account cookie, so a
+refresh, a clinic picked from the list or a returning account sat on an empty or stale thread
+until the patient typed. The owner's rule: the first message arrives **as soon as the patient
+enters**, chosen by context.
+
+```
+POST /patient-access/threads/{product}/enter      Authorization: Bearer <clinic or pending token>
+(no body, null or {} — any field → 422)
+→ 200 {"product": "secretaria", "payload": {"scheduled": true}, "at": "..."}
+→ 200 {"product": "precheck",   "payload": {"scheduled": false}, ...}   nothing is sent
+→ 401 no/invalid session · 403 product not offered
+```
+
+- The Portal calls it once per thread shown (`PortalConversation.tsx` entry effect →
+  `lib/real/patient-access.ts::enterThread`, decoration: failures are silent).
+- brain-api forwards **every** call (background task) to secretarIA's `/open` above, with the
+  identity's name; it keeps no state. Unlike `/pending`, a reload IS forwarded on purpose.
+- secretarIA decides. On an empty thread `/open` greets as before. On a thread with history
+  `/open` still answers `200 exists` **but now also queues `process_brain_message_enter`**, which
+  sends the context-aware opening (upcoming appointment / first visit after a consult / the menu
+  with [🗓️ Agendar, Outro]) unless it would talk over something: a human handling the thread,
+  consent not given yet, a last message younger than 30 min, or a flow mid-way. Details in
+  secretarIA `docs/CHECKPOINT_portal_primeira_mensagem.md`.
+- Deploy order is free in both directions: an old secretarIA answers `exists` and does nothing;
+  an old Portal never calls the route.
+
 ### 8.7 `email_masked` on `POST /internal/brain-message/pending-otp/request`
 
 Added 2026-09-19 (TASK-003 §3, same rollout as §8.6). The response is now

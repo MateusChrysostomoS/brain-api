@@ -1374,6 +1374,53 @@ async def patient_typing(
     return RelayOut(product=product, payload=result, at=datetime.now(UTC))
 
 
+@router.post(
+    "/threads/{product}/enter",
+    response_model=RelayOut,
+    summary="The patient is looking at this conversation (speak first)",
+    description=(
+        "Call once each time the conversation is shown — page load, refresh, picking the "
+        "clinic in the list, the switch to the account after the code. For secretarIA this "
+        "asks the automation to speak first: a greeting on an empty thread, or the "
+        "context-aware opening (upcoming appointment, the first visit after a consult, the "
+        "menu) on one with history. secretarIA alone decides whether anything is due — it "
+        "stays silent mid-flow, mid-onboarding and right after the last message — so calling "
+        "this on every load is safe. Fire-and-forget: `payload.scheduled` only says the request "
+        "was handed on. Other products: nothing is sent and `scheduled` is false."
+    ),
+    responses={
+        401: {"description": "Missing or invalid patient session."},
+        403: {"description": "The clinic does not offer that product on this channel."},
+        422: {"description": "A body field was sent."},
+    },
+)
+async def enter_thread(
+    background_tasks: BackgroundTasks,
+    product: str = Path(description="secretaria | precheck | any product the clinic offers."),
+    payload: PatientTypingIn | None = None,
+    patient: MessagePatient = Depends(get_thread_patient),
+    session: AsyncSession = Depends(get_session),
+) -> RelayOut:
+    """The trigger the Portal was missing (owner, 2026-10-05): before it, only a NEW visit
+    (`POST /pending`) or a link opened with an account cookie asked secretarIA to speak, so a
+    refresh, a clinic picked from the list or a returning account sat on an empty or stale
+    thread until the patient typed. Same identity scope as every thread route (the token names
+    the clinic and the handle; the body names nothing), and the same background-task discipline
+    as `_greet_if_secretaria`: the upstream can never fail or slow this answer.
+    """
+    ent = await resolve_entitlement(session, patient.tenant_id)
+    message_switchboard.require_product(ent, product)
+    scheduled = product == message_switchboard.PRODUCT_SECRETARIA
+    if scheduled:
+        background_tasks.add_task(
+            message_switchboard.open_conversation,
+            tenant_id=patient.tenant_id,
+            patient_ref=str(patient.id),
+            patient_name=patient.name,
+        )
+    return RelayOut(product=product, payload={"scheduled": scheduled}, at=datetime.now(UTC))
+
+
 def _media_headers(media: message_switchboard.MediaStream) -> dict[str, str]:
     """What makes a stored file safe to hand a browser from this origin.
 

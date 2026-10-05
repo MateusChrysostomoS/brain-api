@@ -1119,3 +1119,11 @@ Para integrar um produto novo:
 
 Estado local e provas: `docs/CHECKPOINT_digitando_backend.md`. Ordem de deploy autorizado:
 `secretaria_api` + `secretaria-worker` → brain-api. Sem migração.
+# Visita fundida na conta (TASK-034)
+
+Ao completar uma visita cujo e-mail já tinha identidade na clínica, o brain-api chama
+`POST {secretarIA}/internal/brain-message/visits/merge` em background. O corpo contém
+`tenant_id`, `visit_external_id` e `into_external_id`. A secretarIA descarta a conversa
+da visita e mostra o menu na conversa da conta; primeira visita mantém sua identidade
+e não dispara este aviso. Falha ou rota ausente não interrompe o login.
+Estado, validação e ordem de deploy em `secretarIA/docs/CHECKPOINT_portal_visita_fundida.md`.

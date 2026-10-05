@@ -452,6 +452,51 @@ async def open_conversation(
     return OPEN_FAILED
 
 
+_MERGE_PATH = "/internal/brain-message/visits/merge"
+MERGE_QUEUED = "queued"
+MERGE_UNCONFIGURED = "unconfigured"
+MERGE_FAILED = "failed"
+
+
+async def merge_visit(*, tenant_id: UUID, visit_ref: str, into_ref: str) -> str:
+    """Tell secretarIA to throw a merged visit's conversation away — FIRE AND FORGET.
+
+    Same contract as `open_conversation`: it never raises, because it runs after the response
+    to `POST /pending/complete` has been written and there is nobody to show an error to. A
+    secretarIA that has not got the route yet answers 404 — the visit's chat is then simply
+    left orphaned, exactly today's behaviour. Handles are ids, never logged.
+    """
+    try:
+        base, headers = _upstream(PRODUCT_SECRETARIA)
+    except HTTPException:
+        logger.warning("brain_message_merge_unconfigured", tenant_id=str(tenant_id))
+        return MERGE_UNCONFIGURED
+    body = {
+        "tenant_id": str(tenant_id),
+        "visit_external_id": visit_ref,
+        "into_external_id": into_ref,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=base, timeout=get_settings().SECRETARIA_TIMEOUT_SECONDS
+        ) as client:
+            resp = await client.request("POST", _MERGE_PATH, headers=headers, json=body)
+    except Exception as exc:  # noqa: BLE001 - "never raises" must hold for EVERY exception
+        logger.error(
+            "brain_message_merge_unexpected_error",
+            tenant_id=str(tenant_id),
+            error=type(exc).__name__,
+        )
+        return MERGE_FAILED
+    if resp.status_code == status.HTTP_202_ACCEPTED:
+        logger.info("brain_message_merge_queued", tenant_id=str(tenant_id))
+        return MERGE_QUEUED
+    logger.warning(
+        "brain_message_merge_refused", tenant_id=str(tenant_id), upstream_status=resp.status_code
+    )
+    return MERGE_FAILED
+
+
 async def open_precheck_session(*, tenant_id: UUID, patient_ref: str) -> str:
     """Ask PreCheck to open this patient's session and greet — FIRE AND FORGET, like above.
 

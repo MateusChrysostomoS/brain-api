@@ -363,3 +363,5 @@ O contrato universal de digitação (`POST /patient-access/threads/{product}/typ
 `TYPING_PRODUCTS`, corpo fechado e escopo da sessão) está em `docs/PORTAL_MESSAGING_API.md`,
 seção “Typing — o contrato de digitação, qualquer produto”; estado local, validação e provas
 pendentes em `docs/CHECKPOINT_digitando_backend.md` (TASK-033, sem deploy).
+
+TASK-034: Portal visit discard on account promotion; local validation and deployment order: `../secretarIA/docs/CHECKPOINT_portal_visita_fundida.md`. Not deployed.

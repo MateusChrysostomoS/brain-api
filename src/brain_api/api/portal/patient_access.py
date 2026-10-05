@@ -1846,6 +1846,7 @@ async def pending_status(
 )
 async def complete_pending(
     response: Response,
+    background_tasks: BackgroundTasks,
     visit: tuple[MessagePatient, MessagePendingSession] = Depends(get_current_pending),
     session: AsyncSession = Depends(get_session),
 ) -> PatientAccountOut:
@@ -1857,12 +1858,23 @@ async def complete_pending(
     `PatientAccountOut` every ordinary OTP login uses.
     """
     _, pending = visit
+    # Read the handles before the one-time exchange commits.
+    visit_ref = str(pending.patient_id)
+    into_ref = str(pending.superseded_by) if pending.superseded_by else None
+    tenant_id = pending.tenant_id
     completed = await patient_access.complete_pending_identity(session, pending)
     if completed is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "pending_verification_incomplete")
     account, canonical, raw_session, session_id = completed
     set_patient_session_cookie(response, raw_session)
     clear_patient_pending_cookie(response)
+    if into_ref is not None and into_ref != visit_ref:
+        background_tasks.add_task(
+            message_switchboard.merge_visit,
+            tenant_id=tenant_id,
+            visit_ref=visit_ref,
+            into_ref=into_ref,
+        )
     return await _account_body(
         session,
         account,

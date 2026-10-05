@@ -1,11 +1,11 @@
 ﻿{
     "metadata_schema":  "brain.graphify-metadata/v1",
     "repository":  "brain-api",
-    "repository_path":  "C:\\TECH\\BRAIN-worktrees\\TASK-029\\brain-api",
-    "branch":  "task/TASK-029-patient-cleanup",
-    "commit":  "760e3c0e9f563274bff98a46437d98d336c5c1e5",
-    "generated_at":  "2026-10-03T15:47:52.4599651Z",
+    "repository_path":  "C:\\TECH\\BRAIN-worktrees\\TASK-034\\brain-api",
+    "branch":  "task/TASK-034-portal-visita",
+    "commit":  "5629776f193e257a3cfc88718bad49954da9c337",
+    "generated_at":  "2026-10-05T01:23:51.2045753Z",
     "graphify_version":  "0.9.5",
     "graph_schema":  "networkx-node-link (unversioned upstream)",
-    "graph_sha256":  "d73377d7f157b0d342b02d932008ec5980801491a0384faf242d1ccb59bbcf83"
+    "graph_sha256":  "1aaeced5ba35e383c0d4c24cc4e2b9a6c07fe5451bab595ebd08f9b2dd014e0a"
 }

@@ -1239,10 +1239,11 @@ async def _relay_send(
 @router.get(
     "/threads/{product}/messages",
     response_model=RelayOut,
-    summary="Poll one product thread for new messages",
+    summary="Read the recent window or an older page of one product thread",
     responses={
         401: {"description": "Missing or invalid patient session."},
         403: {"description": "The clinic does not offer that product on this channel."},
+        422: {"description": "Invalid before/limit, or since and before used together."},
         502: {"description": "The product backend failed or is misconfigured."},
         503: {"description": "That product's leg of the mesh is unconfigured or degraded."},
     },
@@ -1258,6 +1259,10 @@ async def poll_thread_messages(
             "take the next cursor from the largest `updated_at` received."
         ),
     ),
+    before: str | None = Query(
+        default=None, description="Older messages, strictly before this offset-aware ISO instant."
+    ),
+    limit: int = Query(default=50, ge=1, le=100, description="secretaria page size (1–100)."),
     patient: MessagePatient = Depends(get_thread_patient),
     session: AsyncSession = Depends(get_session),
 ) -> RelayOut:
@@ -1268,6 +1273,15 @@ async def poll_thread_messages(
     message's delivery state (`status`, `delivered_at`, `read_at`, `updated_at` on secretaria)
     is the product's and passes through as it came (`message_switchboard.list_messages`).
     """
+    if before is not None:
+        if since is not None:
+            raise HTTPException(status_code=422, detail="since_and_before_are_exclusive")
+        try:
+            instant = datetime.fromisoformat(before.replace("Z", "+00:00"))
+            if instant.utcoffset() is None:
+                raise ValueError("Offset required")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="before_requires_offset_aware_iso") from exc
     ent = await resolve_entitlement(session, patient.tenant_id)
     message_switchboard.require_product(ent, product)
     # Release the pooled connection before the upstream hop, same as `send_thread_message`
@@ -1281,6 +1295,8 @@ async def poll_thread_messages(
         tenant_id=patient.tenant_id,
         patient_ref=str(patient.id),
         since=since,
+        before=before,
+        limit=limit,
     )
     return RelayOut(product=product, payload=result, at=datetime.now(UTC))
 

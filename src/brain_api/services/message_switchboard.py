@@ -304,6 +304,8 @@ async def list_messages(
     tenant_id: UUID,
     patient_ref: str,
     since: str | None = None,
+    before: str | None = None,
+    limit: int = 50,
 ) -> dict[str, Any]:
     """Poll `product` for this patient's transcript.
 
@@ -327,9 +329,11 @@ async def list_messages(
     and the client upserts by `id`. This service never filters, dedupes or re-sorts rows.
     """
     if product == PRODUCT_SECRETARIA:
-        params: dict[str, Any] = {"tenant_id": str(tenant_id)}
+        params: dict[str, Any] = {"tenant_id": str(tenant_id), "limit": limit}
         if since:
             params["since"] = since
+        if before:
+            params["before"] = before
         payload = await _call(
             product,
             "GET",

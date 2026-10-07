@@ -371,6 +371,17 @@ passed through **opaque** — brain-api does not know or reformat either product
 format, because re-formatting a value it does not own is exactly how a cursor silently starts
 skipping a row.
 
+**Portal history (TASK-039, local implementation 2026-10-07).** The browser-facing route also
+accepts `before` (offset-aware ISO 8601, passed verbatim) and `limit` (integer 1–100, default
+50). For `secretaria`, both reach the product unchanged; `before` + `since`, malformed/naive
+`before` and an out-of-range `limit` return 422 before the upstream call. PreCheck ignores
+valid `before`/`limit` and continues relaying its own transcript; its history is outside this
+task. Tenant/patient scope still comes from the authenticated session, and the pooled DB
+connection is released before the network hop. Responses preserve `has_more`, ordering and
+all product fields through the existing attachment projection. No retention limit or deletion
+was introduced. Deployment of TASK-039 is NOT AUTHORIZED; deploy brain-api before the frontend
+when separately authorized.
+
 ### 4.1 secretarIA
 
 ```
@@ -408,9 +419,9 @@ database and never reached the screen (`secretarIA/docs/LACUNAS_PORTAL_2026-10-0
   pages backwards by passing the oldest `created_at` it already holds. It is an **opaque cursor**:
   pass back exactly the `created_at` string that was received. Re-formatting it (for example
   through a JavaScript `Date`) truncates microseconds to milliseconds and can skip older rows
-  created in that same millisecond. A naive datetime is accepted exactly like `since` (no extra
-  422). `since` and `before` together answer **422**. brain-api does not send `before` and the
-  Portal does not use it yet — it exists on this internal leg for paging backwards later.
+  created in that same millisecond. The internal product route accepts a naive datetime;
+  the Portal-facing brain-api route requires an explicit offset. `since` and `before`
+  together answer **422**. TASK-039 forwards `before` and the Portal uses it when scrolling up.
 - **Ties — a page may exceed `limit`.** A page never ends *inside* a group of messages with the
   same `created_at` (one transaction stamps every row it writes with the same `now()`, and the
   `before` cursor is strict). If the cut falls inside such a group, the page is extended with the
@@ -422,24 +433,16 @@ database and never reached the screen (`secretarIA/docs/LACUNAS_PORTAL_2026-10-0
 - **brain-api relays the body untouched.** `message_switchboard.list_messages` returns the
   product's body through `_project_attachments`, which rewrites only `data[].attachment`, and
   `RelayOut` is a permissive envelope — so `has_more` reaches the browser inside `payload`
-  (`payload.has_more`) with **no brain-api code change**. This text is the whole brain-api side
-  of this change.
-- **Consumer note — the Portal front still needs a change (2026-10-02).**
-  `Brain-Message-Frontend/components/patient/PatientMessageList.tsx` scrolls to the bottom in an
-  effect keyed on the message COUNT. With the fixed newest-50 window, a new reply pushes the
-  oldest row out, the count stays at 50, and the reply is **not scrolled into view**: in a
-  conversation past 50 messages the patient has to scroll by hand, so the original "silent"
-  symptom survives visually until the front triggers the scroll on the id of the last message
-  instead of the count. A second front item: `components/portal/PortalConversation.tsx::refresh`
-  never prunes its local copies of sent messages on the secretaria branch, so a copy whose server
-  twin has left the window can resurface as an orphan bubble (fix intent: prune with
-  `unconfirmedLocal` on each poll). Neither is part of this change; both are recorded in
-  secretarIA's CHECKPOINT ("Dependência do front") and a follow-up job.
-- **Paging back is not reachable from the browser (2026-10-02).** The Portal-facing route does
-  not forward `before` or `limit` (`message_switchboard.list_messages` forwards only `tenant_id`
-  and `since`); paging back from the browser needs a brain-api change (forward both, opaque and
-  verbatim) plus a "ver anteriores" control in the front — an owner decision, not part of
-  TASK-028. Until then messages older than the newest 50 cannot be reached from the Portal.
+  (`payload.has_more`). TASK-039 changes only parameter forwarding and validation on this leg.
+- **Consumer status (2026-10-07).** TASK-031 replaced count-based scrolling with `scrollKey`
+  and prunes confirmed local copies with `afterSecretariaPoll`/`unconfirmedLocal`. TASK-039
+  retains older pages independently from the polled window, merges by ID (recent values win),
+  preserves the visible reading position and loads older rows with an IntersectionObserver.
+  A reader above the end is not pulled down by arrivals or typing. Leaving a clinic/product,
+  signing out or reloading discards retained history; it is never written to browser storage.
+  A disjoint recent window after suspension moves the lazy backfill cursor to that window's
+  beginning so intervening rows remain reachable. See frontend
+  `docs/CHECKPOINT_portal_historico_completo.md` for local proof and limits.
 - **State and deploy (2026-10-02).** Committed on secretarIA's `task/TASK-028-portal-recentes`
   (`8c68831`, `api/internal.py::list_brain_message_messages`, `schemas/internal.py::
   BrainMessageMessageList`); not merged, **not deployed**, not proven in production. The deploy

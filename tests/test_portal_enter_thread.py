@@ -86,6 +86,43 @@ async def test_every_entry_is_forwarded_secretaria_dedupes(pclient, monkeypatch)
     assert len(calls) - before == 2
 
 
+async def test_explicit_reminder_is_forwarded_with_authenticated_identity(pclient, monkeypatch):
+    from uuid import uuid4
+
+    client, maker, seed = pclient
+    base._configure_mesh(monkeypatch)
+    calls = _spy(monkeypatch)
+    login = await _logged_in(client, maker, seed.both)
+    context = {"source": "reminder_link", "reminder_id": str(uuid4())}
+    response = await client.post(URL, headers=base._bearer(login["access_token"]),
+                                 json={"entry_context": context})
+    assert response.status_code == 200, response.text
+    assert calls[-1]["json"]["entry_context"] == context
+    assert calls[-1]["json"]["external_id"] == login["patient_ref"]
+    assert calls[-1]["json"]["tenant_id"] == str(seed.both)
+
+
+async def test_reminder_after_anonymous_otp_uses_existing_patient_identity(pclient, monkeypatch):
+    from uuid import UUID, uuid4
+
+    client, maker, seed = pclient
+    base._configure_mesh(monkeypatch)
+    calls = _spy(monkeypatch)
+    existing = await pend._seed_identity(maker, seed.both, pend.PATIENT_EMAIL)
+    opened = (await pend._open(client, maker, seed.both)).json()
+    await pend._claim(client, monkeypatch, seed.both, UUID(opened["patient_ref"]))
+    login = await pend._prove(client, maker, opened["pending_token"])
+    assert login.status_code == 200, login.text
+    assert login.json()["patient_ref"] == str(existing)
+    context = {"source": "reminder_link", "reminder_id": str(uuid4())}
+    response = await client.post(URL, headers=base._bearer(login.json()["access_token"]),
+                                 json={"entry_context": context})
+    assert response.status_code == 200, response.text
+    assert calls[-1]["json"]["external_id"] == str(existing)
+    assert calls[-1]["json"]["external_id"] != opened["patient_ref"]
+    assert calls[-1]["json"]["entry_context"] == context
+
+
 async def test_a_pending_visitor_entering_is_forwarded_too(pclient, monkeypatch):
     """F5 on a visit whose greeting never landed: the empty thread gets its greeting now."""
     client, maker, seed = pclient

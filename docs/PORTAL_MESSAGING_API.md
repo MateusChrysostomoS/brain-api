@@ -869,7 +869,7 @@ enters**, chosen by context.
 
 ```
 POST /patient-access/threads/{product}/enter      Authorization: Bearer <clinic or pending token>
-(no body, null or {} — any field → 422)
+(optional body {"entry_context": {"source": "navigation|clinic_link|reminder_link", "reminder_id": uuid|null}} — null, {} or omitted is valid; any other field → 422. TASK-032: only `reminder_link` overrides the quiet-window/flow-in-progress silence; the context is untrusted intent, authorization is re-checked in secretarIA)
 → 200 {"product": "secretaria", "payload": {"scheduled": true}, "at": "..."}
 → 200 {"product": "precheck",   "payload": {"scheduled": false}, ...}   nothing is sent
 → 401 no/invalid session · 403 product not offered
@@ -885,8 +885,9 @@ POST /patient-access/threads/{product}/enter      Authorization: Bearer <clinic 
   with [🗓️ Agendar, Outro]) unless it would talk over something: a human handling the thread,
   consent not given yet, a last message younger than 30 min, or a flow mid-way. Details in
   secretarIA `docs/CHECKPOINT_portal_primeira_mensagem.md`.
-- Deploy order is free in both directions: an old secretarIA answers `exists` and does nothing;
-  an old Portal never calls the route.
+- Deploy order (TASK-032, `entry_context`): **secretarIA (migration `c2d5f8a1e4b6` first, then worker and API) →
+  brain-api → frontend**. A brain-api forwarding `entry_context` to an old secretarIA gets 422 (`extra=forbid`);
+  an old frontend never sends it. Without the context the behaviour is the previous one.
 
 ### 8.7 `email_masked` on `POST /internal/brain-message/pending-otp/request`
 

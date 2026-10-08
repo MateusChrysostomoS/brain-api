@@ -370,7 +370,8 @@ OPEN_FAILED = "failed"
 
 
 async def open_conversation(
-    *, tenant_id: UUID, patient_ref: str, patient_name: str | None = None
+    *, tenant_id: UUID, patient_ref: str, patient_name: str | None = None,
+    entry_context: dict | None = None,
 ) -> str:
     """Ask secretarIA to open this patient's conversation and greet them — FIRE AND FORGET.
 
@@ -413,6 +414,8 @@ async def open_conversation(
         "external_id": patient_ref,
         "patient_name": patient_name,
     }
+    if entry_context is not None:
+        body["entry_context"] = entry_context
     try:
         async with httpx.AsyncClient(
             base_url=base, timeout=get_settings().SECRETARIA_TIMEOUT_SECONDS

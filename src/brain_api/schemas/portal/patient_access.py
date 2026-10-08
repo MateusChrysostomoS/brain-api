@@ -24,6 +24,19 @@ from brain_api.core.invite_codes import MAX_INVITE_LENGTH
 _DEPRECATED = {"deprecated": True}
 
 
+class ConversationEntryContext(BaseModel):
+    """Presentation intent only; identity always comes from the session."""
+
+    model_config = ConfigDict(extra="forbid")
+    source: Literal["navigation", "clinic_link", "reminder_link"] = "navigation"
+    reminder_id: UUID | None = None
+
+
+class PatientEnterIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    entry_context: ConversationEntryContext | None = None
+
+
 class OtpRequestIn(BaseModel):
     """`POST /patient-access/request-otp`."""
 

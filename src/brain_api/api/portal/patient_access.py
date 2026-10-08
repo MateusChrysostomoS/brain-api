@@ -97,6 +97,7 @@ from brain_api.schemas.portal.patient_access import (
     OtpVerifyIn,
     PatientAccountOut,
     PatientAttachmentForm,
+    PatientEnterIn,
     PatientMessageIn,
     PatientReadMarkIn,
     PatientTypingIn,
@@ -1413,7 +1414,7 @@ async def patient_typing(
 async def enter_thread(
     background_tasks: BackgroundTasks,
     product: str = Path(description="secretaria | precheck | any product the clinic offers."),
-    payload: PatientTypingIn | None = None,
+    payload: PatientEnterIn | None = None,
     patient: MessagePatient = Depends(get_thread_patient),
     session: AsyncSession = Depends(get_session),
 ) -> RelayOut:
@@ -1433,6 +1434,8 @@ async def enter_thread(
             tenant_id=patient.tenant_id,
             patient_ref=str(patient.id),
             patient_name=patient.name,
+            **({"entry_context": payload.entry_context.model_dump(mode="json")}
+               if payload is not None and payload.entry_context is not None else {}),
         )
     return RelayOut(product=product, payload={"scheduled": scheduled}, at=datetime.now(UTC))
 

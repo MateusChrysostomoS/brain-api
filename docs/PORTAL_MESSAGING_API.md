@@ -1159,3 +1159,24 @@ Ao completar uma visita cujo e-mail já tinha identidade na clínica, o brain-ap
 da visita e mostra o menu na conversa da conta; primeira visita mantém sua identidade
 e não dispara este aviso. Falha ou rota ausente não interrompe o login.
 Estado, validação e ordem de deploy em `secretarIA/docs/CHECKPOINT_portal_visita_fundida.md`.
+
+# Retenção de visitas vazias (TASK-042)
+
+Uma visita que só abriu o link (sem e-mail digitado, sem código, sem verificação, já expirada)
+é apagada depois de `VISIT_RETENTION_HOURS` (24 h) pelo job `services/portal/visit_retention.py`.
+Antes de apagar o próprio lado, o brain-api chama, de forma **síncrona**:
+
+`POST {secretarIA}/internal/brain-message/visits/discard` — `X-Internal-Api-Key`, corpo fechado
+(`extra="forbid"`) `{"tenant_id": UUID, "external_id": str(1..64)}`.
+
+| Resposta | Significado | O que o brain-api faz |
+|---|---|---|
+| `200 {"status":"discarded"}` | a secretarIA apagou a ficha, a conversa e as mensagens do bot | apaga a visita e a identidade |
+| `200 {"status":"absent"}` | a secretarIA não tem a visita | 1ª pergunta: mantém e marca `retention_kept_at`; visita já perguntada numa rodada anterior (`retention_discard_requested_at`): apaga — a secretarIA já fez a parte dela |
+| `409 {"detail":"visit_not_empty"}` | o paciente escreveu, marcou ou segura um horário | mantém e marca `retention_kept_at` |
+| outro (inclui 404 durante o rollout) | falha | não apaga nada; tenta na próxima rodada |
+
+Visita com e-mail digitado nunca entra na lista (decisão do dono). Visita em que o paciente mandou qualquer coisa (texto, toque ou arquivo, para qualquer produto) nunca entra: o relay grava `message_patients.patient_wrote_at`; a saudação automática do PreCheck não grava. Em clínica com PreCheck, visitas anteriores à marca (`activity_tracked = false`) ficam. Desligado por padrão
+(`VISIT_RETENTION_ENABLED`), com `VISIT_RETENTION_DRY_RUN` ligado para a primeira rodada. Ordem de
+deploy: migrações `0027` e `0028` → `secretaria_api` (rota nova) → brain-api. Estado e provas em
+`docs/CHECKPOINT_retencao_visitas_portal.md`.

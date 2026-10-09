@@ -1187,6 +1187,10 @@ async def send_thread_message(
     patient, verified = identity
     ent = await resolve_entitlement(session, patient.tenant_id)
     message_switchboard.require_product(ent, product)
+    # TASK-042: the patient is sending something (to either product), so this visit is not
+    # "only opened the link" any more. Stamped before the relay: a send that fails upstream
+    # still means the patient wrote, and keeping the visit is the safe side.
+    await patient_access.mark_patient_wrote(session, patient.id)
     # The database is done with — release its connection BEFORE any client-paced I/O. The
     # session's own teardown runs only after the response is sent, so otherwise a patient
     # dribbling a body (or a slow upload on a mobile link) holds a pooled connection all the

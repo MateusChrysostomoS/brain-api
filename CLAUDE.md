@@ -365,3 +365,5 @@ seção “Typing — o contrato de digitação, qualquer produto”; estado loc
 pendentes em `docs/CHECKPOINT_digitando_backend.md` (TASK-033, sem deploy).
 
 TASK-034: Portal visit discard on account promotion; local validation and deployment order: `../secretarIA/docs/CHECKPOINT_portal_visita_fundida.md`. Not deployed.
+
+TASK-042: retenção de visitas vazias do Portal (job, migração 0027, e-mail digitado nunca apagado): `docs/CHECKPOINT_retencao_visitas_portal.md`. Local, não deployado.

@@ -504,6 +504,60 @@ async def merge_visit(*, tenant_id: UUID, visit_ref: str, into_ref: str) -> str:
     return MERGE_FAILED
 
 
+_DISCARD_PATH = "/internal/brain-message/visits/discard"
+DISCARD_DISCARDED = "discarded"
+DISCARD_ABSENT = "absent"
+DISCARD_NOT_EMPTY = "not_empty"
+DISCARD_FAILED = "failed"
+DISCARD_UNCONFIGURED = "unconfigured"
+
+
+async def discard_empty_visit(*, tenant_id: UUID, visit_ref: str) -> str:
+    """Ask secretarIA to delete an EMPTY visit's conversation — and wait for the answer.
+
+    The retention job (`services/portal/visit_retention.py`, TASK-042) deletes its own rows
+    ONLY after this returns `DISCARD_DISCARDED`; every other outcome keeps them. Unlike
+    `merge_visit` this is synchronous, because the answer is the permission.
+
+    Outcomes: `200 {"status": "discarded"}` -> `DISCARD_DISCARDED`, `200 {"status":
+    "absent"}` -> `DISCARD_ABSENT` (secretarIA never had it), `409` -> `DISCARD_NOT_EMPTY`
+    (the patient wrote, booked or holds a slot), anything else -> `DISCARD_FAILED` (including
+    404 while secretarIA does not have the route yet: the visit simply stays). Never raises;
+    the handle is an id and still never logged.
+    """
+    try:
+        base, headers = _upstream(PRODUCT_SECRETARIA)
+    except HTTPException:
+        return DISCARD_UNCONFIGURED
+    body = {"tenant_id": str(tenant_id), "external_id": visit_ref}
+    try:
+        async with httpx.AsyncClient(
+            base_url=base, timeout=get_settings().SECRETARIA_TIMEOUT_SECONDS
+        ) as client:
+            resp = await client.request("POST", _DISCARD_PATH, headers=headers, json=body)
+    except Exception as exc:  # noqa: BLE001 - "never raises" must hold for EVERY exception
+        logger.warning(
+            "visit_retention_discard_error", tenant_id=str(tenant_id), error=type(exc).__name__
+        )
+        return DISCARD_FAILED
+    if resp.status_code == status.HTTP_409_CONFLICT:
+        return DISCARD_NOT_EMPTY
+    if resp.status_code == status.HTTP_200_OK:
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = None
+        answer = payload.get("status") if isinstance(payload, dict) else None
+        if answer in (DISCARD_DISCARDED, DISCARD_ABSENT):
+            return answer
+    logger.warning(
+        "visit_retention_discard_refused",
+        tenant_id=str(tenant_id),
+        upstream_status=resp.status_code,
+    )
+    return DISCARD_FAILED
+
+
 async def open_precheck_session(*, tenant_id: UUID, patient_ref: str) -> str:
     """Ask PreCheck to open this patient's session and greet — FIRE AND FORGET, like above.
 

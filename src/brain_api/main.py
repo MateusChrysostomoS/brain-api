@@ -4,6 +4,8 @@ Run with:
     uvicorn brain_api.main:app --host 0.0.0.0 --port 8000
 """
 
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -39,9 +41,21 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logger.info("api_starting", env=settings.APP_ENV)
+    # TASK-042: empty Portal visits are deleted after 24 h. brain-api has no worker, so the
+    # job is a background task of the API process, off unless VISIT_RETENTION_ENABLED.
+    retention = None
+    if settings.VISIT_RETENTION_ENABLED:
+        from brain_api.core.database import async_session_factory
+        from brain_api.services.portal.visit_retention import retention_loop
+
+        retention = asyncio.create_task(retention_loop(async_session_factory))
     try:
         yield
     finally:
+        if retention is not None:
+            retention.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await retention
         logger.info("api_stopped")
 
 

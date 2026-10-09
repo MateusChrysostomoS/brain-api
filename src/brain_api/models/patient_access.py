@@ -342,8 +342,19 @@ class MessagePendingSession(Base):
         ForeignKey("message_patients.id", ondelete="SET NULL"), nullable=True
     )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # TASK-042 (0027): the visit-retention job asked secretarIA about this empty-looking visit
+    # and was told to keep it (the patient wrote, or secretarIA never heard of it). Kept for
+    # good; the job never asks again. NULL for every visit the job has not decided on.
+    retention_kept_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Stamped (and committed) BEFORE the job asks secretarIA to discard. A later `absent`
+    # on a stamped visit means secretarIA already did its half, so brain-api deletes its own.
+    retention_discard_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        DateTime(timezone=True), server_default=func.now(), index=True
     )
 
 

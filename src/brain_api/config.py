@@ -396,6 +396,19 @@ class Settings(BaseSettings):
     # in which a stolen device resumes someone else's conversation; lowering it below a few
     # hours starts dropping real bookings mid-flow.
     PATIENT_PENDING_EXPIRE_HOURS: int = 24
+    # --- Retention of EMPTY visits (TASK-042, owner 2026-10-09) ---------------------------
+    # A visit that only opened the link (no e-mail typed, not verified, secretarIA confirms
+    # no patient message) is deleted on both sides after VISIT_RETENTION_HOURS. A visit with
+    # a typed e-mail is NEVER deleted (owner's decision). Off by default; the first production
+    # round runs with DRY_RUN on (counts only, deletes nothing) and needs the owner's sign-off
+    # before DRY_RUN is turned off. `services/portal/visit_retention.py`.
+    VISIT_RETENTION_ENABLED: bool = False
+    VISIT_RETENTION_DRY_RUN: bool = True
+    VISIT_RETENTION_HOURS: int = 24
+    # Visits examined per round, and rounds per hour. Small on purpose: one secretarIA call
+    # per visit, and nothing here is urgent.
+    VISIT_RETENTION_BATCH_SIZE: int = 50
+    VISIT_RETENTION_INTERVAL_MINUTES: int = 60
     # Per-IP budget for POST /patient-access/pending and POST /patient-access/clinics/lookup —
     # the only two UNAUTHENTICATED routes that touch the database without a code. The first
     # writes (an identity + a session per call), so its budget is what stops a script from

@@ -16,12 +16,16 @@ brain-api cannot see the conversation, so emptiness is decided in two halves:
   * by secretarIA (`POST /internal/brain-message/visits/discard`), which refuses with 409 if
     the patient wrote a single message, booked anything or holds a slot.
 
-PRECHECK IS NOT ASKED, SO ITS CLINICS ARE NOT TOUCHED
+PRECHECK: brain-api KNOWS WHETHER THE PATIENT TYPED (owner, 2026-10-09)
 The same visit can talk to PreCheck (its tab, its QR code), and PreCheck has no "is this visit
-empty?" route. secretarIA would answer "only my greeting" for a visitor who answered the whole
-questionnaire in PreCheck. So every clinic whose entitlement includes PreCheck is skipped
-entirely, until PreCheck can be asked too (review C1). Known gap, stated: a clinic that had
-PreCheck and has since lost it is no longer skipped.
+empty?" route — secretarIA would answer "only my greeting" for a visitor who answered the whole
+questionnaire in PreCheck (review C1). But every patient message to either product passes
+through brain-api's relay, which stamps `MessagePatient.patient_wrote_at`; PreCheck's own
+automatic greeting never does. So: a stamped identity is never a candidate, at any clinic.
+Identities created before the stamp existed (`activity_tracked = False`) cannot prove they
+never wrote to PreCheck, so at a clinic with PreCheck they are left alone; at a clinic without
+PreCheck secretarIA's answer is enough, as before. PreCheck's own empty session (its greeting)
+is left in PreCheck: it holds nothing the patient said.
 
 A VISIT WITH A TYPED E-MAIL IS NEVER DELETED (owner, 2026-10-09: "nunca apague esse email
 digitado e nunca verificado"). That is the `email IS NULL` / `claimed_at IS NULL` filter, and
@@ -46,7 +50,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import delete, exists, select, text, update
+from sqlalchemy import delete, exists, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
@@ -89,7 +93,7 @@ class RetentionRound:
     kept_not_empty: int = 0
     kept_absent: int = 0
     failed: int = 0
-    precheck_clinics_skipped: int = 0
+    precheck_clinics: int = 0
     skipped_by_lock: bool = False
 
 
@@ -109,6 +113,8 @@ def _empty_visit_filter(now: datetime, older_than: timedelta) -> list:
         MessagePatient.email.is_(None),
         MessagePatient.account_id.is_(None),
         MessagePatient.name.is_(None),
+        # The patient sent something to some product through the relay: never empty.
+        MessagePatient.patient_wrote_at.is_(None),
         # One visit per identity by construction; anything else is not this job's shape.
         ~exists().where(
             sibling.patient_id == MessagePendingSession.patient_id,
@@ -120,7 +126,7 @@ def _empty_visit_filter(now: datetime, older_than: timedelta) -> list:
 
 
 async def _precheck_clinics(session: AsyncSession, tenant_ids: set[UUID]) -> set[UUID]:
-    """The clinics among `tenant_ids` that have PreCheck — never cleaned (see module doc)."""
+    """The clinics among `tenant_ids` that have PreCheck (untracked visits stay there)."""
     skipped = set()
     for tenant_id in tenant_ids:
         if (await resolve_entitlement(session, tenant_id)).products.precheck:
@@ -131,15 +137,20 @@ async def _precheck_clinics(session: AsyncSession, tenant_ids: set[UUID]) -> set
 async def find_empty_visits(
     session: AsyncSession, *, now: datetime, older_than: timedelta, limit: int | None
 ) -> tuple[list[EmptyVisit], int]:
-    """`(visits, PreCheck clinics skipped)`: the oldest empty-looking visits. Reads only."""
+    """`(visits, PreCheck clinics among them)`: the oldest empty-looking visits. Reads only."""
     where = _empty_visit_filter(now, older_than)
     joined = select(MessagePendingSession.tenant_id).join(
         MessagePatient, MessagePatient.id == MessagePendingSession.patient_id
     )
     tenants = set(await session.scalars(joined.where(*where).distinct()))
-    excluded = await _precheck_clinics(session, tenants)
-    if excluded:
-        where.append(MessagePendingSession.tenant_id.notin_(excluded))
+    precheck = await _precheck_clinics(session, tenants)
+    if precheck:
+        where.append(
+            or_(
+                MessagePendingSession.tenant_id.notin_(precheck),
+                MessagePatient.activity_tracked.is_(True),
+            )
+        )
     query = (
         select(
             MessagePendingSession.id,
@@ -169,7 +180,7 @@ async def find_empty_visits(
             )
         )
         visits = [v for v in visits if str(v.patient_id) not in consented]
-    return visits, len(excluded)
+    return visits, len(precheck)
 
 
 async def _stamp(session: AsyncSession, visit: EmptyVisit, **values) -> None:
@@ -191,6 +202,10 @@ async def _delete_brain_side(session: AsyncSession, visit: EmptyVisit) -> bool:
             MessagePendingSession.email.is_(None),
             MessagePendingSession.claimed_at.is_(None),
             MessagePendingSession.verified_at.is_(None),
+            ~exists().where(
+                MessagePatient.id == MessagePendingSession.patient_id,
+                MessagePatient.patient_wrote_at.is_not(None),
+            ),
         )
         .execution_options(synchronize_session=False)
     )
@@ -225,7 +240,7 @@ async def run_retention_round(
         dry_run=settings.VISIT_RETENTION_DRY_RUN if dry_run is None else dry_run
     )
     async with session_factory() as session:
-        visits, result.precheck_clinics_skipped = await find_empty_visits(
+        visits, result.precheck_clinics = await find_empty_visits(
             session,
             now=current,
             older_than=timedelta(hours=settings.VISIT_RETENTION_HOURS),
@@ -269,7 +284,7 @@ async def run_retention_round(
         kept_not_empty=result.kept_not_empty,
         kept_absent=result.kept_absent,
         failed=result.failed,
-        precheck_clinics_skipped=result.precheck_clinics_skipped,
+        precheck_clinics=result.precheck_clinics,
     )
     return result
 

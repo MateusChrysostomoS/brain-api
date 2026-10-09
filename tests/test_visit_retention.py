@@ -265,21 +265,94 @@ async def test_absent_after_an_earlier_ask_finishes_the_delete(maker, secretaria
     assert await _count(maker, MessagePatient) == 0
 
 
-async def test_a_clinic_with_precheck_is_never_cleaned(maker, secretaria) -> None:
-    """PreCheck cannot be asked whether the visitor wrote there (C1)."""
-    handle = await _visit(maker, age_hours=30)
-    other = await _visit(maker, age_hours=30)
+async def _with_precheck(maker, handle: UUID) -> None:
     async with maker() as session:
         tenant_id = (await session.get(MessagePatient, handle)).tenant_id
         session.add(Entitlement(tenant_id=tenant_id, precheck_enabled=True))
         await session.commit()
 
+
+async def _set_patient(maker, handle: UUID, **values) -> None:
+    async with maker() as session:
+        patient = await session.get(MessagePatient, handle)
+        for key, value in values.items():
+            setattr(patient, key, value)
+        await session.commit()
+
+
+async def test_a_precheck_clinic_visit_where_nobody_typed_is_cleaned(maker, secretaria) -> None:
+    """PreCheck's automatic greeting does not count: no patient message -> cleaned (owner)."""
+    handle = await _visit(maker, age_hours=30)
+    await _with_precheck(maker, handle)
+
     result = await _run(maker)
 
-    assert secretaria.asked == [str(other)]
-    assert result.precheck_clinics_skipped == 1
+    assert secretaria.asked == [str(handle)]
+    assert result.discarded == 1
+    assert result.precheck_clinics == 1
+
+
+async def test_a_visit_where_the_patient_typed_is_never_a_candidate(maker, secretaria) -> None:
+    """Typed in PreCheck (or anywhere): kept, at any clinic, without even asking secretarIA."""
+    with_precheck = await _visit(maker, age_hours=30)
+    await _with_precheck(maker, with_precheck)
+    without = await _visit(maker, age_hours=30)
+    for handle in (with_precheck, without):
+        await _set_patient(maker, handle, patient_wrote_at=NOW - timedelta(hours=29))
+
+    result = await _run(maker)
+
+    assert result.candidates == 0
+    assert secretaria.asked == []
+    assert await _count(maker, MessagePatient) == 2
+
+
+async def test_an_untracked_visit_is_kept_only_where_precheck_exists(maker, secretaria) -> None:
+    """Before the stamp existed nobody recorded PreCheck typing: those visits stay there."""
+    at_precheck = await _visit(maker, age_hours=30)
+    await _with_precheck(maker, at_precheck)
+    elsewhere = await _visit(maker, age_hours=30)
+    for handle in (at_precheck, elsewhere):
+        await _set_patient(maker, handle, activity_tracked=False)
+
+    await _run(maker)
+
+    assert secretaria.asked == [str(elsewhere)]
     async with maker() as session:
-        assert await session.get(MessagePatient, handle) is not None
+        assert await session.get(MessagePatient, at_precheck) is not None
+        assert await session.get(MessagePatient, elsewhere) is None
+
+
+async def test_a_message_typed_during_the_round_blocks_the_local_delete(maker, monkeypatch):
+    handle = await _visit(maker, age_hours=30)
+
+    async def _discard_while_patient_types(*, tenant_id, visit_ref):
+        await _set_patient(maker, handle, patient_wrote_at=NOW)
+        return message_switchboard.DISCARD_DISCARDED
+
+    monkeypatch.setattr(message_switchboard, "discard_empty_visit", _discard_while_patient_types)
+    result = await _run(maker)
+
+    assert result.discarded == 0
+    assert await _count(maker, MessagePendingSession) == 1
+
+
+async def test_mark_patient_wrote_stamps_once_and_never_an_account_identity(maker) -> None:
+    from brain_api.services.portal import patient_access
+
+    visit = await _visit(maker, age_hours=1)
+    account_row = await _visit(maker, age_hours=1)
+    await _set_patient(maker, account_row, email="conta@exemplo.com")
+    async with maker() as session:
+        await patient_access.mark_patient_wrote(session, visit)
+        await patient_access.mark_patient_wrote(session, account_row)
+        first = (await session.get(MessagePatient, visit)).patient_wrote_at
+    async with maker() as session:
+        await patient_access.mark_patient_wrote(session, visit)
+    async with maker() as session:
+        again = await session.get(MessagePatient, visit)
+        assert first is not None and again.patient_wrote_at == first
+        assert (await session.get(MessagePatient, account_row)).patient_wrote_at is None
 
 
 async def test_a_visit_just_past_expiry_waits_for_the_grace(maker, secretaria) -> None:

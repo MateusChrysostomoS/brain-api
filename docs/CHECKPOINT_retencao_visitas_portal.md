@@ -23,6 +23,8 @@ pushado, não deployado. Migração `0027_pending_retention_kept` provada só no
   `VISIT_RETENTION_HOURS=24`, `VISIT_RETENTION_BATCH_SIZE=50`, `VISIT_RETENTION_INTERVAL_MINUTES=60`.
 - Migração `0027` (aditiva, anulável): `message_pending_sessions.retention_kept_at`,
   `message_pending_sessions.retention_discard_requested_at`, índice em `created_at`.
+- Migração `0028` (aditiva): `message_patients.patient_wrote_at` (anulável) e
+  `message_patients.activity_tracked` (bool, padrão `false` no banco).
 - Contrato: `docs/PORTAL_MESSAGING_API.md`, seção "Retenção de visitas vazias (TASK-042)".
 
 ## Regra de "visita vazia"
@@ -33,10 +35,18 @@ visita para a mesma identidade, criada há mais de 24 h e expirada há mais de 1
 uma mensagem enviada no último segundo ainda na fila da secretarIA). Lado secretarIA: recusa (409)
 se houver qualquer mensagem do paciente, qualquer consulta (por paciente OU conversa) ou reserva viva.
 
-**Clínicas com PreCheck são puladas inteiras.** A mesma visita pode falar com o PreCheck (aba, QR),
-e o PreCheck não tem rota para dizer "esta visita está vazia". Sem isso, um visitante que respondeu
-o questionário inteiro no PreCheck pareceria vazio para a secretarIA (achado C1 da revisão).
-Lacuna declarada: clínica que teve PreCheck e perdeu deixa de ser pulada.
+**PreCheck: o brain-api sabe se o paciente escreveu (dono, 2026-10-09, migração `0028`).** A mesma visita
+pode falar com o PreCheck (aba, QR), e o PreCheck não tem rota para dizer "esta visita está vazia" — a
+secretarIA diria "só a minha saudação" para quem respondeu o questionário inteiro no PreCheck (achado C1).
+Toda mensagem do PACIENTE para qualquer produto passa pelo relay do brain-api
+(`api/portal/patient_access.py::send_thread_message`), que grava `MessagePatient.patient_wrote_at`
+(`services/portal/patient_access.py::mark_patient_wrote`): texto digitado, opção tocada (inclui o
+"Concordo" da LGPD do PreCheck) ou arquivo. A saudação automática do PreCheck NUNCA grava (o dono
+exigiu isso). Identidade com a marca nunca é candidata, em clínica nenhuma.
+`MessagePatient.activity_tracked`: a migração deixa toda linha antiga `False` (pode ter escrito no PreCheck
+antes da marca existir); identidades novas nascem `True`. Em clínica COM PreCheck só visitas `True` entram;
+em clínica sem PreCheck a resposta da secretarIA basta. A ficha vazia do PreCheck (só a saudação dele) fica
+no PreCheck — não guarda nada do paciente; limpá-la exigiria mexer no PreCheck (fora de escopo, decisão do dono).
 
 ## Ordem anti-perda
 
@@ -51,7 +61,7 @@ Lacuna declarada: clínica que teve PreCheck e perdeu deixa de ser pulada.
 4. Dry-run conta TODA a fila (sem limite de lote) e não chama ninguém.
 
 Log: uma linha `visit_retention_round` por rodada, só contagens (`candidates`, `discarded`,
-`kept_not_empty`, `kept_absent`, `failed`, `precheck_clinics_skipped`). Nenhum id, nenhum e-mail.
+`kept_not_empty`, `kept_absent`, `failed`, `precheck_clinics`). Nenhum id, nenhum e-mail.
 
 ## E-mail digitado e nunca verificado — decisão do dono e risco registrado
 
@@ -74,7 +84,7 @@ Ver `BRAIN/tasks/TASK-042/TASK.md` (suítes completas, ruff, mutações que prov
 
 ## Deploy (não autorizado)
 
-`alembic upgrade head` (0027) → `secretaria_api` + `secretaria-worker` → brain-api com
+`alembic upgrade head` (0027 e 0028) → `secretaria_api` + `secretaria-worker` → brain-api com
 `VISIT_RETENTION_ENABLED=true` e `VISIT_RETENTION_DRY_RUN=true` → levar a contagem ao dono →
 só então `VISIT_RETENTION_DRY_RUN=false`. Se o brain-api subir antes da secretarIA, a rota dá 404:
 nada é apagado e a rodada para após 3 falhas.

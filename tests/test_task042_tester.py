@@ -216,26 +216,48 @@ async def test_a_lost_reply_is_healed_next_round_without_orphaning_brain_api(mak
     assert await _count(maker, MessagePendingSession) == 0
 
 
-async def test_a_clinic_with_precheck_is_never_cleaned_but_a_secretaria_only_one_is(
-    pclient, secretaria
+async def test_a_precheck_clinic_visit_is_cleaned_only_if_the_patient_never_typed(
+    pclient, secretaria, monkeypatch
 ) -> None:
-    """PreCheck cannot be asked if the visitor used it, so its clinics are left entirely alone."""
+    """Owner, 2026-10-09: PreCheck's own greeting is not the patient; a typed message is.
+
+    Three real visits at a clinic with PreCheck, opened through the real route: one never
+    typed (cleaned), one typed in the PreCheck tab (kept), one typed in the secretarIA tab
+    (kept). The stamp is set by the relay of the PATIENT's message, whichever product.
+    """
+    from tests.test_patient_access import _bearer, _configure_mesh, _spy_transport
+
     client, sessionmaker, seed = pclient
-    with_precheck = (await _open(client, sessionmaker, seed.both)).json()
-    only_sec = (await _open(client, sessionmaker, seed.only_secretaria)).json()
+    opened = []
+    for _ in range(3):
+        client.cookies.clear()  # a fresh browser each time, or the visit is resumed
+        opened.append((await _open(client, sessionmaker, seed.both)).json())
+    silent, typed_precheck, typed_secretaria = opened
+    assert len({o["patient_ref"] for o in opened}) == 3
+    _configure_mesh(monkeypatch)
+    _spy_transport(monkeypatch)
+    for opened, product in ((typed_precheck, "precheck"), (typed_secretaria, "secretaria")):
+        resp = await client.post(
+            f"/patient-access/threads/{product}/messages",
+            headers=_bearer(opened["pending_token"]),
+            json={"text": "oi"},
+        )
+        assert resp.status_code == 200, resp.text
 
     result = await visit_retention.run_retention_round(
         sessionmaker, now=datetime.now(UTC) + timedelta(days=3), dry_run=False
     )
 
-    assert result.precheck_clinics_skipped == 1
-    assert secretaria.asked == [(seed.only_secretaria, only_sec["patient_ref"])]
-    assert (
-        await _count(
-            sessionmaker, MessagePatient, MessagePatient.id == UUID(with_precheck["patient_ref"])
+    assert result.precheck_clinics == 1
+    assert secretaria.asked == [(seed.both, silent["patient_ref"])]
+    assert result.discarded == 1
+    for kept in (typed_precheck, typed_secretaria):
+        assert (
+            await _count(
+                sessionmaker, MessagePatient, MessagePatient.id == UUID(kept["patient_ref"])
+            )
+            == 1
         )
-        == 1
-    )
 
 
 # --- (c)/(f) every secretarIA answer, through the real client ----------------------------------

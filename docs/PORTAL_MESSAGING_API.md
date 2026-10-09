@@ -1176,7 +1176,7 @@ Antes de apagar o próprio lado, o brain-api chama, de forma **síncrona**:
 | `409 {"detail":"visit_not_empty"}` | o paciente escreveu, marcou ou segura um horário | mantém e marca `retention_kept_at` |
 | outro (inclui 404 durante o rollout) | falha | não apaga nada; tenta na próxima rodada |
 
-Visita com e-mail digitado nunca entra na lista (decisão do dono). Clínicas com PreCheck são puladas (o PreCheck não tem como dizer se o visitante escreveu lá). Desligado por padrão
+Visita com e-mail digitado nunca entra na lista (decisão do dono). Visita em que o paciente mandou qualquer coisa (texto, toque ou arquivo, para qualquer produto) nunca entra: o relay grava `message_patients.patient_wrote_at`; a saudação automática do PreCheck não grava. Em clínica com PreCheck, visitas anteriores à marca (`activity_tracked = false`) ficam. Desligado por padrão
 (`VISIT_RETENTION_ENABLED`), com `VISIT_RETENTION_DRY_RUN` ligado para a primeira rodada. Ordem de
-deploy: migração `0027` → `secretaria_api` (rota nova) → brain-api. Estado e provas em
+deploy: migrações `0027` e `0028` → `secretaria_api` (rota nova) → brain-api. Estado e provas em
 `docs/CHECKPOINT_retencao_visitas_portal.md`.

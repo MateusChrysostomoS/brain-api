@@ -48,6 +48,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -181,6 +182,21 @@ class MessagePatient(Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     name_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # TASK-042 (0028): the first time the PATIENT sent anything through the Portal relay —
+    # typed text, a tapped option or a file — to ANY product (secretarIA or PreCheck). Never
+    # set by a product's own messages (PreCheck greets on its own the moment a link opens).
+    # It is what lets the visit-retention job tell "only opened the link" from "started the
+    # questionnaire" without asking PreCheck. Stamped only on rows with no address (visits).
+    patient_wrote_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # TASK-042 (0028): True for identities created by a brain-api that stamps
+    # `patient_wrote_at`; the migration leaves every older row False. An untracked visit may
+    # have written to PreCheck before the stamp existed, so at a PreCheck clinic the
+    # retention job only touches tracked visits.
+    activity_tracked: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("false"), default=True, nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

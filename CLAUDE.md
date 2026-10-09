@@ -1,5 +1,11 @@
 # brain-api
 
+Plano preparado (2026-10-08): [avisos ao médico, entrada por lembrete e QA R6](../z_prompts/PROMPT_CORRECAO_EMAIL_MEDICO_ENTRADA_LEMBRETE_R6.md). Participação condicional do gateway na propagação do contexto/autenticação; nenhuma correção aplicada nesta rodada.
+
+## Plano preparado — TASK-036
+
+- [Vínculo PreCheck e estabilidade Brain-Message](../z_prompts/PROMPT_BRAIN_MESSAGE_PRECHECK_VINCULO_E_ESTABILIDADE.md): resposta 409 confirmada; conferir identidade/tenant, reparar vínculo e validar os produtos preservando P2a. PLANEJADO; nenhum reparo/deploy realizado por esta sessão.
+
 ## Documentação
 
 `docs/` é a fonte de verdade deste repo. Regra geral de quando/como atualizar (CHECKPOINT,

@@ -47,6 +47,7 @@ from brain_api.schemas.internal import (
 )
 from brain_api.services import onboarding_sync
 from brain_api.services.entitlements import ACTIVE_STATUSES, resolve_entitlement
+from brain_api.services.hub_scope import AGENDA_SCOPE_OWN, resolve_agenda_scope
 from brain_api.services.precheck_handoff import request_handoff, request_portal_handoff
 from brain_api.services.usage import record_usage
 
@@ -112,6 +113,9 @@ async def verify_hub_token(
     active/trialing; `secretaria_enabled`. Everything else is `active=false` — the
     caller fails closed. Always 200 for an authenticated service caller (the refusal
     is data, not an HTTP error).
+
+    `agenda_scope`: "clinic" or "own", read live from the user named by the token's
+    `act` claim; "own" for refused tokens or anything that cannot be proven.
     """
     claims = decode_hub_token(payload.token)
     if claims is None:
@@ -135,7 +139,18 @@ async def verify_hub_token(
     active = ent.status in ACTIVE_STATUSES and ent.products.secretaria
     if not active:
         logger.info("hub_token_refused", tenant_id=str(tenant_id), status=ent.status)
-    return HubTokenVerifyOut(active=active, tenant_id=tenant_id, professional_id=professional_id)
+    # Owner decision 2026-10-09 A: current user permissions, never token role state.
+    agenda_scope = (
+        await resolve_agenda_scope(session, tenant_id, claims.get("act"))
+        if active
+        else AGENDA_SCOPE_OWN
+    )
+    return HubTokenVerifyOut(
+        active=active,
+        tenant_id=tenant_id,
+        professional_id=professional_id,
+        agenda_scope=agenda_scope,
+    )
 
 
 @router.get(

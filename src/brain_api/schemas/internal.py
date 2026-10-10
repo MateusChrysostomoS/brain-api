@@ -41,11 +41,15 @@ class HubTokenVerifyOut(BaseModel):
     so a refused-but-valid session can be logged tenant-scoped on the caller side.
     `professional_id` rides the same way (present when the token carried one, parsed
     safely — a malformed claim reads as absent, never a 500).
+    `agenda_scope` tells secretarIA whose appointments the session may see;
+    "own" whenever brain-api cannot prove more, including refused sessions.
     """
 
     active: bool
     tenant_id: UUID | None = None
     professional_id: UUID | None = None
+    # Read live from the acting user's row; older secretarIA versions ignore this key.
+    agenda_scope: Literal["clinic", "own"] = "own"
 
 
 class InternalEntitlementOut(BaseModel):

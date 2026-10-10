@@ -24,6 +24,10 @@ Guarda 409 `has_active_subscription` em `POST /billing/checkout` (TASK B, 2026-0
 `services/billing.py::checkout_block_reason`; temporário até a TASK C): decisões, provas e pendências em
 `Brain-Message-Frontend/docs/CHECKPOINT_brain_message_link_compra.md`.
 
+`docs/CHECKPOINT_hub_token_agenda_scope.md` — TASK-044: a introspecção do hub token responde
+`agenda_scope` ("clinic" | "own", lido ao vivo do usuário) para a secretarIA aplicar quem vê a
+agenda inteira; local, não deployado; deploy ANTES da secretarIA R7.
+
 ## Prompts pendentes
 
 - `z_prompts/PROMPT_BRAIN_ADMIN_TEST_TENANT_1_BRAIN_API.md` (raiz de BRAIN, gerado 2026-09-24

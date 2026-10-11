@@ -1133,6 +1133,11 @@ Hoje secretarIA recebe `POST /internal/brain-message/typing`, autenticado por
 e responde `{"applied": bool}`. Só registra o paciente quando `handover_state == HUMAN_ACTIVE`.
 Com automação conduzindo ou paciente inexistente, responde `applied: false` sem escrever Redis.
 PreCheck não tem rota registrada: o brain-api responde `applied: false` sem qualquer rede.
+O PreCheck preenche `typing`/`typing_by` na listagem (`GET /internal/brain-message/sessions/{ref}/messages`)
+**derivando do histórico**, sem estado: `typing=true` e `typing_by="automation"` quando a última linha da
+sessão é do paciente e tem menos de 90 s; a primeira linha do assistente apaga o indicador, e se o n8n nunca
+responder ele some em 90 s. `accepts_typing` fica sempre `false` (ninguém humano conduz o PreCheck). Limite
+aceito: a abertura (`/open`) não grava linha de paciente, então não há indicador nela.
 Uma falha no upstream mantém o tratamento de erros do mesh (502/503), sem expor seu corpo.
 
 Na secretarIA a chave é `brain_message:typing:<conversation_id>:<by>`, separada por conversa

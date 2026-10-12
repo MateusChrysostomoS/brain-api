@@ -1189,7 +1189,7 @@ token via `core/subscription.py::verify_subscription_token`. That seam is now RE
 3. **Introspect (secretarIA → brain-api):** secretarIA never validates it locally. It
    calls `POST /internal/secretaria/hub-token/verify` with `X-Internal-Api-Key` (the
    §12.1 PAIR key) and body `{"token": ...}`. brain-api answers
-   `{"active": bool, "tenant_id": uuid|null, "professional_id": uuid|null, "agenda_scope": "clinic"|"own"}`
+   `{"active": bool, "tenant_id": uuid|null, "professional_id": uuid|null, "agenda_scope": "clinic"|"own", "role": str|null, "is_owner": bool|null, "is_manager": bool|null}`
    where `active` requires ALL of: valid
    signature/expiry/scope, entitlement status `active|trialing`, `secretaria_enabled`.
    The entitlement is re-read LIVE on every introspection — a cancellation locks the
@@ -1205,6 +1205,13 @@ token via `core/subscription.py::verify_subscription_token`. That seam is now RE
    `professional_id` remains the parse-safe token claim; `active` and id semantics
    are unchanged. secretarIA R7 enforces this on its hub agenda: `"own"` sees only
    that professional's appointments, none when `professional_id` is null.
+   `role` / `is_owner` / `is_manager` (TASK-020) are the acting user's role claims, copied
+   parse-safe from the TOKEN (not re-read live, unlike `agenda_scope`): a wrong type or a
+   missing claim yields `null`, never a 500. secretarIA uses them to gate manager-only
+   actions (e.g. the clinic's Pix key and payment settings) and fails closed on `null`.
+   Known trade-off (owner-accepted): a manager demoted mid-session keeps manager powers
+   until the hub token expires, whereas `agenda_scope` follows the change within the
+   cache TTL. Aligning the two is a future task, not a defect of this contract.
    Existing secretarIA versions ignore this additive response key. Deploy this
    producer before the R7 consumer; mutable permissions take effect within its
    positive-cache TTL, including sessions whose tokens predate the role change.
@@ -1215,7 +1222,7 @@ accepts `SECRETARIA_API_KEY_PREVIOUS` during rotation):
 
 | method | path | notes |
 |---|---|---|
-| `POST` | `/internal/secretaria/hub-token/verify` | introspection above. Always `200` for an authenticated service caller — refusal is `active:false`, not an HTTP error. Answer also carries `professional_id` and `agenda_scope` (see §12.2 step 3). |
+| `POST` | `/internal/secretaria/hub-token/verify` | introspection above. Always `200` for an authenticated service caller — refusal is `active:false`, not an HTTP error. Answer also carries `professional_id`, `agenda_scope`, `role`, `is_owner` and `is_manager` (see §12.2 step 3). |
 | `GET` | `/internal/tenants/{tenant_id}/entitlements` | entitlement summary `{tenant_id, status, active, secretaria_enabled, plan, secretaria_tier, addons, limits}` — the gate data secretarIA's plugin registry consumes (same `is_entitled` semantics, §3.2) |
 | `POST` | `/internal/usage-events` | metering leg only (`stripe-billing-entitlements`; NO Stripe call — meter forwarding is a later billing round). Body `{tenant_id, feature, amount, event_id}` — `feature` must be a catalog `LIMIT_KEYS` id (422 otherwise), `amount` `1..10000`, `event_id` is the CALLER's own idempotency key (e.g. `"reminder:24h:<appointment_id>"`). Inserts a `usage_events` row (§6.3d) AND increments `entitlements.usage[feature]` in ONE transaction (upserts the entitlement row if missing). Always `200 {recorded: bool}` — `false` means `event_id` was already applied (replay), no double-count, never an HTTP error |
 | `POST` | `/internal/precheck-handoff` | secretarIA → brain-api → PreCheck patient handoff (§12.3). Body `{tenant_id}` + **exactly one** handle: `phone_number` (digits only, `8..15`) **or** `external_id` (UUID, the Portal patient's `MessagePatient.id` — TASK-003 §5.1); both or neither → `422`. Plus the OPTIONAL booking context `patient_name?` / `booked_service?` (both `str|null`, ≤255 chars — FEAT 38). Entitlement-gated: `403 precheck_not_entitled` unless status active/trialing AND `precheck_enabled`. `phone_number` forwards to PreCheck (full status matrix in §12.3); `external_id` opens the Portal patient's session through PreCheck's `/internal/brain-message/open` — **see §12.3.2**. No DB write |

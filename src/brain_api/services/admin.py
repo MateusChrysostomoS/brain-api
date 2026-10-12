@@ -598,6 +598,8 @@ async def issue_impersonation_token(session: AsyncSession, target_email: str) ->
         user is None
         or user.tenant_id is None
         or user.role not in (ROLE_DOCTOR, ROLE_MANAGER, *_LEGACY_DOCTOR_ROLES)
+        or user.requires_password_change
+        or user.access_revoked_at is not None
     ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "impersonation_target_unavailable")
     tenant = await session.get(Tenant, user.tenant_id)
@@ -612,6 +614,7 @@ async def issue_impersonation_token(session: AsyncSession, target_email: str) ->
         professional_id=str(user.professional_id) if user.professional_id else None,
         is_owner=user.is_owner,
         is_manager=user.is_manager,
+        credential_version=user.credential_version,
     )
     out = ImpersonationTokenOut(
         access_token=token,

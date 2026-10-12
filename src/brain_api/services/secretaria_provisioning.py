@@ -161,8 +161,22 @@ async def get_config_status(tenant_id: UUID) -> dict[str, Any] | None:
     return resp.json()
 
 
+async def get_professionals(tenant_id: UUID) -> list[dict[str, Any]] | None:
+    """Fresh full roster; None must not be mistaken for an empty clinic."""
+    resp = await _request("GET", f"/internal/tenants/{tenant_id}/professionals")
+    if resp is None or resp.status_code >= 400:
+        return None
+    rows = resp.json()
+    return rows if isinstance(rows, list) else None
+
+
 async def create_professional(
-    tenant_id: UUID, *, name: str, specialty: str | None, about: str | None
+    tenant_id: UUID,
+    *,
+    name: str,
+    specialty: str | None,
+    about: str | None,
+    interactive: bool = False,
 ) -> dict[str, Any] | None:
     """`POST /internal/tenants/{id}/professionals` (attach-by-name, idempotent on
     secretaria's side: a case-insensitive match on an existing active professional
@@ -172,8 +186,19 @@ async def create_professional(
     resp = await _request(
         "POST",
         f"/internal/tenants/{tenant_id}/professionals",
-        json={"name": name, "specialty": specialty, "about": about},
+        json={
+            "name": name,
+            "specialty": specialty,
+            "about": about,
+            **({"interactive": True} if interactive else {}),
+        },
     )
+    if interactive and resp is not None and resp.status_code in (403, 409):
+        from fastapi import HTTPException
+
+        detail = resp.json().get("detail")
+        if detail in ("multi_professional_not_entitled", "professional_limit_reached"):
+            raise HTTPException(resp.status_code, detail)
     if resp is None or resp.status_code >= 400:
         return None
     return resp.json()
@@ -210,4 +235,6 @@ async def send_notification_email(to: str, template: str, variables: dict[str, A
             template=template,
             upstream_status=resp.status_code,
         )
-    return resp is not None and resp.status_code < 400
+    if resp is None or resp.status_code >= 400:
+        return False
+    return resp.json().get("queued") is True

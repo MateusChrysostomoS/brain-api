@@ -1034,6 +1034,22 @@ async def test_pause_owner_sets_kill_switches_independently(client):
 # ===========================================================================================
 
 
+async def test_roster_inactive_option_keeps_own_link_visible(client, monkeypatch):
+    async def all_rows(tenant_id):
+        return [{"id": str(OWNER_A_PROFESSIONAL_ID), "name": "Own", "is_active": False}]
+
+    monkeypatch.setattr(secretaria_provisioning, "get_professionals", all_rows, raising=False)
+    token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
+    response = await client.get(
+        "/doctor/professionals?include_inactive=true", headers=_bearer(token)
+    )
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["is_active"] is False
+    assert items[0]["linked_user_email"] == OWNER_A_EMAIL
+
+
 async def test_list_professionals_joins_local_user_linkage(client, monkeypatch):
     async def fake_config_status(tenant_id):
         return {
@@ -1085,7 +1101,7 @@ async def test_invite_professional_end_to_end(client, monkeypatch):
     new_professional_id = str(uuid4())
     create_calls: list[dict] = []
 
-    async def fake_create_professional(tenant_id, *, name, specialty, about):
+    async def fake_create_professional(tenant_id, *, name, specialty, about, **kwargs):
         create_calls.append({"name": name, "specialty": specialty, "about": about})
         return {"professional_id": new_professional_id, "created": True}
 
@@ -1174,7 +1190,7 @@ async def test_invite_professional_secretaria_failure_returns_502(client, monkey
     assert resp.status_code == 502
 
 
-async def test_invite_professional_allows_staff(client, monkeypatch):
+async def test_invite_professional_denies_staff_without_management(client, monkeypatch):
     """Corrections round (2026-07-22): invites are no longer owner-only — any doctor
     (owner or staff) may invite a professional now that the endpoint depends on
     `require_doctor` instead of `require_owner`."""
@@ -1196,13 +1212,45 @@ async def test_invite_professional_allows_staff(client, monkeypatch):
         headers=_bearer(staff_token),
         json={"name": "Staff Invited Doc", "email": "staff.invited@example.com"},
     )
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["invite_link"]
+    assert resp.status_code == 403
 
 
 # ===========================================================================================
 # POST /doctor/professionals/self
 # ===========================================================================================
+
+
+async def test_self_bind_cannot_take_another_accounts_professional(client, monkeypatch):
+    from sqlalchemy import select
+    from brain_api.core.database import get_session
+    from brain_api.main import app
+    from brain_api.models import User
+
+    claimed_id = uuid4()
+    session_gen = app.dependency_overrides[get_session]()
+    db = await session_gen.__anext__()
+    owner = await db.scalar(select(User).where(User.email == OWNER_B_EMAIL))
+    db.add(
+        User(
+            tenant_id=owner.tenant_id,
+            email="other-fixture@example.com",
+            name="Other fixture",
+            role="doctor",
+            password_hash="not-a-live-password",
+            professional_id=claimed_id,
+        )
+    )
+    await db.commit()
+    await session_gen.aclose()
+    monkeypatch.setattr(
+        secretaria_provisioning,
+        "create_professional",
+        _noop_async({"professional_id": str(claimed_id), "created": False}),
+    )
+    token = await _token(client, OWNER_B_EMAIL, OWNER_B_PASSWORD)
+    response = await client.post("/doctor/professionals/self", json={}, headers=_bearer(token))
+    assert response.status_code == 409
+    assert response.json()["detail"] == "professional_already_linked"
 
 
 async def test_self_bind_success_for_unbound_owner(client, monkeypatch):

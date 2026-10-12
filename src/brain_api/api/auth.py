@@ -26,6 +26,7 @@ from brain_api.api.deps import Principal, get_current_principal
 from brain_api.config import get_settings
 from brain_api.core.cookies import (
     clear_refresh_cookie,
+    clear_staff_setup_cookie,
     read_refresh_cookie,
     require_client_header,
     set_refresh_cookie,
@@ -105,6 +106,7 @@ def build_session_response(user: User, refresh_token: str) -> TokenResponse:
             professional_id=str(user.professional_id) if user.professional_id else None,
             is_owner=user.is_owner,
             is_manager=user.is_manager,
+            credential_version=user.credential_version,
         ),
         refresh_token=refresh_token,
         expires_in=get_settings().ACCESS_TOKEN_EXPIRE_MINUTES * 60,
@@ -129,6 +131,9 @@ def issue_session(response: Response, user: User, refresh_token: str) -> TokenRe
     browser is. The frontend marks that session non-refreshable for the same
     reason.
     """
+    if user.requires_password_change or user.access_revoked_at is not None:
+        raise HTTPException(401, "Invalid or expired token")
+    clear_staff_setup_cookie(response)
     set_refresh_cookie(response, refresh_token)
     return build_session_response(user, refresh_token)
 
@@ -174,6 +179,10 @@ async def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciais inválidas",
         )
+    if user.requires_password_change:
+        from brain_api.api.staff_first_access import setup_response
+
+        return setup_response(response, user)
     refresh = await issue_refresh_token(session, user.id)
     # Stable reference only — never log the email, password or either token.
     logger.info("login", user_id=str(user.id))
@@ -275,6 +284,7 @@ async def logout(
         await revoke_refresh_token(session, token)
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     clear_refresh_cookie(response)
+    clear_staff_setup_cookie(response)
     return response
 
 

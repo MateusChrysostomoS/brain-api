@@ -209,7 +209,7 @@ async def test_secretary_can_pause_onboarding_but_a_plain_doctor_still_cannot(cl
 # --- REACHES: team management ----------------------------------------------
 
 
-async def test_secretary_invites_a_secretary_without_creating_a_professional(client, monkeypatch):
+async def test_owner_invites_a_secretary_without_creating_a_professional(client, monkeypatch):
     """The invite mirrors the professional one EXCEPT for the secretaria round-trip: no
     `professionals` row, no `professional_id`, and the reused `professional_invite`
     template."""
@@ -225,7 +225,7 @@ async def test_secretary_invites_a_secretary_without_creating_a_professional(cli
     monkeypatch.setattr(secretaria_provisioning, "send_notification_email", fake_email)
     monkeypatch.setattr(secretaria_provisioning, "create_professional", must_not_be_called)
 
-    token = await _token(client, SECRETARY_EMAIL, SECRETARY_PASSWORD)
+    token = await _token(client, OWNER_EMAIL, OWNER_PASSWORD)
     resp = await client.post(
         "/doctor/secretaries/invites",
         json={"name": "Nova Recepção", "email": "Nova@Clinic.com"},
@@ -261,8 +261,8 @@ async def test_secretary_invites_a_secretary_without_creating_a_professional(cli
     assert dup.json()["detail"] == "email_already_registered"
 
 
-async def test_secretary_can_invite_a_professional(client, monkeypatch):
-    """Team management is not limited to inviting peers — a secretary invites doctors."""
+async def test_secretary_cannot_invite_a_professional(client, monkeypatch):
+    """Reception access cannot grant other people access to the clinic."""
     monkeypatch.setattr(secretaria_provisioning, "send_notification_email", _noop_async(True))
     monkeypatch.setattr(
         secretaria_provisioning,
@@ -275,7 +275,7 @@ async def test_secretary_can_invite_a_professional(client, monkeypatch):
         json={"name": "Dr. Novo", "email": "novo@clinic.com"},
         headers=_bearer(token),
     )
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == 403
 
 
 async def test_invited_secretary_completes_the_invite_flow(client, monkeypatch):

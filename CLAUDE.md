@@ -1,5 +1,7 @@
 # brain-api
 
+TASK-054: equipe e primeiro acesso com senha temporária; implementação local, sem publicação: [checkpoint](docs/CHECKPOINT_equipe_primeiro_acesso.md).
+
 Plano preparado (2026-10-08): [avisos ao médico, entrada por lembrete e QA R6](../z_prompts/PROMPT_CORRECAO_EMAIL_MEDICO_ENTRADA_LEMBRETE_R6.md). Participação condicional do gateway na propagação do contexto/autenticação; nenhuma correção aplicada nesta rodada.
 
 ## Plano preparado — TASK-036

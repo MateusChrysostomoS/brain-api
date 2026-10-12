@@ -2045,3 +2045,37 @@ user and therefore no address, so secretarIA's booking-notification hook
 (`plugins/professional_notification.py`) is a logged no-op for them. Both frontends'
 professionals screen states this explicitly on the row ("Sem e-mail vinculado — não
 recebe aviso de nova consulta") rather than leaving it blank.
+
+## TASK-054 — Clinic team and restricted staff first access (local)
+
+Additive identity fields: `is_owner`, `is_manager`, `requires_password_change`,
+`credential_version`. Normal authentication re-reads live user/tenant/permissions;
+revoked or pending users and stale versions cannot use operational endpoints.
+Legacy tokens without a version remain compatible for version-zero users.
+
+`POST /auth/token` with a temporary password returns `requires_password_change=true`,
+a `staff_password_setup` token (maximum 10 minutes) and the HttpOnly
+`__Host-staff_setup` cookie, without a normal refresh. `/auth/first-access/resume`
+requires the browser CSRF header; `/auth/first-access/complete` accepts only the
+restricted bearer and `{new_password}`, performs versioned completion, and returns
+the normal session. Personal password must differ from temporary and fit bcrypt's
+72-byte ceiling. Temporary passwords expire in 72 hours. Existing accounts and
+already-issued legacy invite links are not forced into the new flow.
+
+`GET /doctor/team`, `POST /doctor/team/invites`, and per-user management/resend/revoke
+routes require live management of the caller's clinic. Inputs admit `doctor`,
+`manager`, `secretary`; only doctors may optionally carry management. No ownership
+transfer, cross-clinic email association, or credential in a response. Owner/last
+active manager are protected. Revocation preserves appointments/professional data.
+
+`GET /doctor/professionals?include_inactive=true` is a fresh complete roster.
+Foreground professional creation sends additive `interactive=true` to secretaria;
+old bootstrap calls remain unchanged. All interactive linkage checks existing owners.
+
+New `staff_temporary_password` mail template uses encrypted Redis job envelopes and
+versioned internal delivery callbacks under the mesh key. Queue acceptance is not
+delivery. New configuration `BRAIN_MESSAGE_STAFF_LOGIN_URL` must point to the staff
+portal root, never the patient portal. Missing/invalid configuration refuses creation.
+
+Implementation, validation, publication order and limits:
+`docs/CHECKPOINT_equipe_primeiro_acesso.md`. Local only; no deployment authorized.

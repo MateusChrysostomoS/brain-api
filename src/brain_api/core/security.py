@@ -53,6 +53,7 @@ def create_access_token(
     professional_id: str | None = None,
     is_owner: bool = False,
     is_manager: bool = False,
+    credential_version: int = 0,
 ) -> str:
     """Mint a short-lived access token. `sub` is the brain user id (UUID string).
 
@@ -73,6 +74,7 @@ def create_access_token(
         "role": role,  # admin | doctor | manager (legacy: tenant_owner | tenant_staff)
         "is_owner": is_owner,  # the clinic owner (role-taxonomy round)
         "is_manager": is_manager,  # "also a manager" (role-taxonomy round)
+        "credential_version": credential_version,
         "iat": now,
         "exp": now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
     }
@@ -131,7 +133,11 @@ def decode_token(token: str) -> dict[str, Any] | None:
 
 
 def create_hub_token(
-    *, tenant_id: str, actor_user_id: str, professional_id: str | None = None
+    *,
+    tenant_id: str,
+    actor_user_id: str,
+    professional_id: str | None = None,
+    credential_version: int = 0,
 ) -> str:
     """Mint the tenant-scoped token the doctor portal presents to secretarIA's hub.
 
@@ -152,6 +158,7 @@ def create_hub_token(
         "sub": tenant_id,  # the tenant the hub session acts for
         "scope": HUB_TOKEN_SCOPE,
         "act": actor_user_id,  # audit: which doctor opened the hub session
+        "credential_version": credential_version,
         "iat": now,
         "exp": now + timedelta(minutes=settings.HUB_TOKEN_EXPIRE_MINUTES),
     }

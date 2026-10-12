@@ -17,12 +17,13 @@ row (stripe-billing-entitlements: never from a token, never from Stripe).
 """
 
 import secrets
+from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Security, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, Security, status
 from fastapi.security import APIKeyHeader
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
@@ -33,6 +34,7 @@ from brain_api.models import Entitlement, Tenant, User
 from brain_api.schemas.internal import (
     HubTokenVerifyIn,
     HubTokenVerifyOut,
+    StaffDeliveryUpdate,
     InternalEntitlementOut,
     InternalOnboardingEventIn,
     InternalOnboardingEventOut,
@@ -50,6 +52,7 @@ from brain_api.services.entitlements import ACTIVE_STATUSES, resolve_entitlement
 from brain_api.services.hub_scope import AGENDA_SCOPE_OWN, resolve_agenda_scope
 from brain_api.services.precheck_handoff import request_handoff, request_portal_handoff
 from brain_api.services.usage import record_usage
+from brain_api.services.staff_first_access import aware
 
 logger = get_logger(__name__)
 
@@ -137,6 +140,22 @@ async def verify_hub_token(
 
     ent = await resolve_entitlement(session, tenant_id)
     active = ent.status in ACTIVE_STATUSES and ent.products.secretaria
+    try:
+        actor_id = UUID(str(claims.get("act")))
+    except (ValueError, TypeError):
+        return HubTokenVerifyOut(active=False)
+    actor = await session.get(User, actor_id, populate_existing=True)
+    version = claims.get("credential_version", 0)
+    if (
+        actor is None
+        or actor.tenant_id != tenant_id
+        or actor.access_revoked_at is not None
+        or actor.requires_password_change
+        or type(version) is not int
+        or version != actor.credential_version
+    ):
+        return HubTokenVerifyOut(active=False)
+    professional_id = actor.professional_id
     if not active:
         logger.info("hub_token_refused", tenant_id=str(tenant_id), status=ent.status)
     # Owner decision 2026-10-09 A: current user permissions, never token role state.
@@ -151,6 +170,52 @@ async def verify_hub_token(
         professional_id=professional_id,
         agenda_scope=agenda_scope,
     )
+
+
+@router.get("/tenants/{tenant_id}/team/{user_id}/delivery")
+async def staff_delivery_check(
+    tenant_id: UUID,
+    user_id: UUID,
+    credential_version: int = Query(ge=0),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    user = await session.get(User, user_id, populate_existing=True)
+    valid = bool(
+        user
+        and user.tenant_id == tenant_id
+        and user.requires_password_change
+        and user.access_revoked_at is None
+        and user.credential_version == credential_version
+        and user.temporary_password_expires_at
+        and aware(user.temporary_password_expires_at) > datetime.now(UTC)
+    )
+    return {
+        "deliverable": valid,
+        "expires_at": user.temporary_password_expires_at if valid else None,
+    }
+
+
+@router.post("/tenants/{tenant_id}/team/{user_id}/delivery", status_code=204)
+async def staff_delivery_update(
+    tenant_id: UUID,
+    user_id: UUID,
+    payload: StaffDeliveryUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    conditions = [
+        User.id == user_id,
+        User.tenant_id == tenant_id,
+        User.credential_version == payload.credential_version,
+        User.requires_password_change.is_(True),
+        User.access_revoked_at.is_(None),
+    ]
+    if payload.status == "failed":
+        conditions.append(User.invite_delivery_status != "sent")
+    await session.execute(
+        update(User).where(*conditions).values(invite_delivery_status=payload.status)
+    )
+    await session.commit()
+    return Response(status_code=204)
 
 
 @router.get(

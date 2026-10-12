@@ -6,7 +6,7 @@ default-resolution paths), and demo-request capture (happy path, validation,
 honeypot). Asserts the never-leak rule (no password_hash in /auth/me).
 """
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -21,12 +21,13 @@ from brain_api.main import app
 from brain_api.models import Entitlement, PrecheckAccountLink, Tenant, User
 from brain_api.models.user import ROLE_ADMIN, ROLE_TENANT_OWNER
 
+SMOKE_ADMIN_ID = UUID("00000000-0000-4000-8000-000000000001")
+
 
 def _admin_token() -> str:
-    """A platform-admin JWT (role=admin, no tenant). No admin user row is needed: the admin
-    routes authorize purely from the token's role claim (require_role) — server state for
-    the secretaria proxy lives upstream, not in brain's DB."""
-    return create_access_token(sub=str(uuid4()), tenant_id=None, role=ROLE_ADMIN)
+    """The real seeded administrator; signatures do not replace live user state."""
+    return create_access_token(sub=str(SMOKE_ADMIN_ID), tenant_id=None, role=ROLE_ADMIN)
+
 
 # Environment for settings is configured in tests/conftest.py (loaded first).
 
@@ -59,6 +60,15 @@ async def client():
 
     # Seed: entitled tenant + owner, and a second tenant with no entitlement row.
     async with sessionmaker() as session, session.begin():
+        session.add(
+            User(
+                id=SMOKE_ADMIN_ID,
+                email="admin-fixture@example.com",
+                name="Admin fixture",
+                role=ROLE_ADMIN,
+                password_hash="not-a-live-password",
+            )
+        )
         t1 = Tenant(clinic_name=OWNER_CLINIC)
         session.add(t1)
         await session.flush()

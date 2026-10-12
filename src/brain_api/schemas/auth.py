@@ -52,6 +52,7 @@ class TokenResponse(BaseModel):
     name: str | None = None
     email: str | None = None
     professional_id: UUID | None = None
+    requires_password_change: bool = False
 
 
 class RefreshRequest(BaseModel):
@@ -89,6 +90,10 @@ class UserOut(BaseModel):
     name: str
     role: str
     professional_id: UUID | None = None
+    is_owner: bool = False
+    is_manager: bool = False
+    requires_password_change: bool = False
+    credential_version: int = 0
 
 
 class TenantOut(BaseModel):
@@ -147,6 +152,8 @@ class SetPasswordIn(BaseModel):
     @field_validator("new_password")
     @classmethod
     def _password_policy(cls, v: str) -> str:
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("password must not exceed 72 bytes")
         if not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
             raise ValueError("password must contain at least one letter and one digit")
         return v
@@ -213,6 +220,4 @@ class PasswordResetConfirmIn(BaseModel):
     @field_validator("new_password")
     @classmethod
     def _password_policy(cls, v: str) -> str:
-        if not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
-            raise ValueError("password must contain at least one letter and one digit")
-        return v
+        return SetPasswordIn._password_policy(v)

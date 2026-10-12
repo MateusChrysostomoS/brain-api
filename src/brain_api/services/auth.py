@@ -43,6 +43,13 @@ async def authenticate(session: AsyncSession, email: str, password: str) -> User
         return None
     if not verify_password(password, user.password_hash):
         return None
+    if user.access_revoked_at is not None:
+        return None
+    if user.requires_password_change and (
+        user.temporary_password_expires_at is None
+        or _as_utc(user.temporary_password_expires_at) <= datetime.now(UTC)
+    ):
+        return None
     return user
 
 
@@ -90,6 +97,8 @@ async def set_password(session: AsyncSession, user_id: UUID, new_password: str) 
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
     user.password_hash = hash_password(new_password)
+    user.invite_token_hash = None
+    user.invite_token_expires_at = None
     await session.commit()
 
 
@@ -156,13 +165,41 @@ async def complete_password_reset(
     letter + digit) — the same policy the account was created under.
     """
     user = await find_password_reset_user(session, raw_token)
-    if user is None:
+    if user is None or user.access_revoked_at is not None:
         return None
-    user.password_hash = hash_password(new_password)
-    # Burn: single-use, same as the invite token after exchange.
-    user.reset_token_hash = None
-    user.reset_token_expires_at = None
+    if user.requires_password_change and verify_password(new_password, user.password_hash):
+        raise HTTPException(422, "password_must_be_different")
+    now = datetime.now(UTC)
+    # Burn proof and old invitations atomically, including concurrent recovery requests.
+    changed = await session.execute(
+        update(User)
+        .where(
+            User.id == user.id,
+            User.reset_token_hash == hash_refresh_token(raw_token),
+            User.reset_token_expires_at > now,
+            User.access_revoked_at.is_(None),
+        )
+        .values(
+            password_hash=hash_password(new_password),
+            requires_password_change=False,
+            temporary_password_expires_at=None,
+            credential_version=User.credential_version + 1,
+            reset_token_hash=None,
+            reset_token_expires_at=None,
+            invite_token_hash=None,
+            invite_token_expires_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if changed.rowcount != 1:
+        return None
+    await session.execute(
+        update(RefreshToken)
+        .where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=now)
+    )
     await session.commit()
+    await session.refresh(user)
     return user
 
 
@@ -229,7 +266,7 @@ async def rotate_refresh_token(session: AsyncSession, raw: str) -> RefreshResult
         return None
 
     user = await session.get(User, row.user_id)
-    if user is None:
+    if user is None or user.access_revoked_at is not None or user.requires_password_change:
         row.revoked_at = now
         await session.commit()
         return None

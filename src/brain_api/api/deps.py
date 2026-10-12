@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from brain_api.core.database import get_session
 from brain_api.core.security import decode_token
 from brain_api.models.user import (
     ROLE_DOCTOR,
@@ -17,6 +19,7 @@ from brain_api.models.user import (
     ROLE_SECRETARY,
     ROLE_TENANT_OWNER,
     ROLE_TENANT_STAFF,
+    User,
 )
 
 # LEGACY (pre role-taxonomy round): a doctor-portal token minted before the deploy that
@@ -40,9 +43,10 @@ class Principal:
     # identity (sub/tenant_id/role) is otherwise valid.
     is_owner: bool = False
     is_manager: bool = False
+    credential_version: int = 0
 
 
-def get_current_principal(authorization: str | None = Header(default=None)) -> Principal:
+def get_token_principal(authorization: str | None = Header(default=None)) -> Principal:
     """Turn an `Authorization: Bearer <jwt>` header into a validated Principal."""
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
@@ -54,6 +58,9 @@ def get_current_principal(authorization: str | None = Header(default=None)) -> P
         # sessions — they must never authenticate a browser-facing route.
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
     tid = claims.get("tenant_id")
+    version = claims.get("credential_version", 0)
+    if type(version) is not int or version < 0:
+        raise HTTPException(401, "Invalid or expired token")
     raw_professional_id = claims.get("professional_id")
     professional_id: UUID | None = None
     if raw_professional_id:
@@ -72,7 +79,47 @@ def get_current_principal(authorization: str | None = Header(default=None)) -> P
         # legacy pre-taxonomy token) reads as False — never a 401.
         is_owner=bool(claims.get("is_owner", False)),
         is_manager=bool(claims.get("is_manager", False)),
+        credential_version=version,
     )
+
+
+async def get_current_principal(
+    token: Principal = Depends(get_token_principal),
+    session: AsyncSession = Depends(get_session),
+) -> Principal:
+    """Mutable clinic access is checked on every request, including old bearer tokens."""
+    try:
+        uid = UUID(token.user_id)
+    except (ValueError, TypeError):
+        raise HTTPException(401, "Invalid or expired token") from None
+    user = await session.get(User, uid, populate_existing=True)
+    if (
+        user is None
+        or user.tenant_id != token.tenant_id
+        or user.access_revoked_at is not None
+        or user.requires_password_change
+        or user.credential_version != token.credential_version
+    ):
+        raise HTTPException(401, "Invalid or expired token")
+    return Principal(
+        str(user.id),
+        user.tenant_id,
+        user.role,
+        user.professional_id,
+        user.is_owner,
+        user.is_manager,
+        user.credential_version,
+    )
+
+
+def require_team_manager(p: Principal = Depends(get_current_principal)) -> Principal:
+    if (
+        p.role not in (ROLE_DOCTOR, ROLE_MANAGER)
+        or p.tenant_id is None
+        or not (p.is_owner or p.role == ROLE_MANAGER or (p.role == ROLE_DOCTOR and p.is_manager))
+    ):
+        raise HTTPException(403, "team_manager_required")
+    return p
 
 
 def require_role(*allowed: str):

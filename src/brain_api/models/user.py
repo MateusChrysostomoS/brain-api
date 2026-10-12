@@ -7,7 +7,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, func, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from brain_api.core.database import Base
@@ -65,8 +65,8 @@ class User(Base):
     # native enum and no CHECK constraint, which is why adding `secretary` needed no
     # schema change (migrations/versions/0013_secretary_role.py).
     role: Mapped[str] = mapped_column(String(32), default=ROLE_DOCTOR)
-    # "Also a manager": a doctor with manager powers. Stored + exposed today; no backend
-    # gate of its own yet (product: a manager gate will layer on top later).
+    # "Also a manager": a doctor with manager powers. Checked live for team management and billing; it does not
+    # replace the doctor role or the clinical professional linkage.
     is_manager: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), default=False)
     # The clinic OWNER — whoever bought the clinic. Preserves the pre-taxonomy
     # owner-only gates (onboarding pause, "owner of this tenant" lookups). Exactly one
@@ -80,6 +80,19 @@ class User(Base):
     # access/hub token claims (core/security.py) when present. ALWAYS NULL for a
     # `secretary` (see ROLE_SECRETARY) — a receptionist is not bookable.
     professional_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    requires_password_change: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("false"), default=False
+    )
+    temporary_password_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    credential_version: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
+    access_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    invite_delivery_status: Mapped[str] = mapped_column(
+        String(32), server_default="not_requested", default="not_requested"
+    )
     # sha256 hex of a single-use professional-invite token (POST
     # /doctor/professionals/invites, B2) — same hashed-at-rest scheme as
     # RefreshToken.token_hash / SignupIntent.onboarding_token_hash. Burned (nulled) on

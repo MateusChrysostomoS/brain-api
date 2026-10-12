@@ -29,7 +29,7 @@ from brain_api.core.security import (
     decode_token,
     hash_refresh_token,
 )
-from brain_api.models import Tenant
+from brain_api.models import Tenant, User
 from brain_api.models.patient_access import (
     CONSENT_KIND_ACCOUNT_LINK,
     CONSENT_KIND_CHANNEL_ACCESS,
@@ -583,8 +583,17 @@ async def test_an_email_only_login_keeps_the_clinic_it_was_pinned_to(pclient):
 async def test_the_staff_reads_its_own_invite(pclient, monkeypatch):
     client, sessionmaker, seed = pclient
     monkeypatch.setattr(get_settings(), "BRAIN_MESSAGE_PORTAL_URL", "https://portal.exemplo/")
-    staff = create_access_token(sub=str(uuid.uuid4()), tenant_id=str(seed.both), role="doctor")
     async with sessionmaker() as session, session.begin():
+        user = User(
+            tenant_id=seed.both,
+            email="staff-fixture@example.com",
+            name="Staff fixture",
+            role="doctor",
+            password_hash="not-a-live-password",
+        )
+        session.add(user)
+        await session.flush()
+        staff = create_access_token(sub=str(user.id), tenant_id=str(seed.both), role="doctor")
         (await session.get(Tenant, seed.both)).patient_invite_code = None  # deploy-window tenant
 
     # Two reads racing on a tenant with no code must hand out ONE code — the stored one.

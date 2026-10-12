@@ -108,6 +108,7 @@ from tests.test_rbac import (  # noqa: E402
     CLINIC_B,
     OWNER_A_EMAIL,
     OWNER_A_PASSWORD,
+    OWNER_A_PROFESSIONAL_ID,
     _bearer,
     _token,
 )
@@ -241,7 +242,7 @@ async def test_a_refused_token_is_still_a_200_with_own(client, pair_key):
         }
 
 
-async def test_professional_id_passthrough_is_unchanged(client, pair_key):
+async def test_professional_id_comes_from_actor_current_link(client, pair_key):
     admin, ids = await _clinics(client)
     professional_id = str(uuid4())
 
@@ -249,7 +250,10 @@ async def test_professional_id_passthrough_is_unchanged(client, pair_key):
         client, ids[CLINIC_A], await _owner_a_id(client, admin), professional_id=professional_id
     )
 
-    assert body["professional_id"] == professional_id and body["tenant_id"] == ids[CLINIC_A]
+    assert (
+        body["professional_id"] == str(OWNER_A_PROFESSIONAL_ID)
+        and body["tenant_id"] == ids[CLINIC_A]
+    )
 
 
 @pytest.mark.parametrize("status", ["canceled", "inactive"])
@@ -269,7 +273,7 @@ async def test_inactive_entitlement_is_own_even_for_an_owner(client, pair_key, s
     assert body == {
         "active": False,
         "tenant_id": ids[CLINIC_A],
-        "professional_id": professional_id,
+        "professional_id": str(OWNER_A_PROFESSIONAL_ID),
         "agenda_scope": "own",
     }
 
@@ -290,9 +294,9 @@ async def test_secretaria_disabled_is_own_even_for_an_owner(client, pair_key):
 
 
 @pytest.mark.parametrize("actor", [None, "", 42, [], {}])
-async def test_malformed_actor_claim_is_own_without_changing_active(client, pair_key, actor):
+async def test_malformed_actor_claim_refuses_operational_access(client, pair_key, actor):
     _, ids = await _clinics(client)
 
     body = await _verify(client, ids[CLINIC_A], actor)
 
-    assert body["active"] is True and body["agenda_scope"] == "own"
+    assert body["active"] is False and body["agenda_scope"] == "own"

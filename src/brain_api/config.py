@@ -294,6 +294,8 @@ class Settings(BaseSettings):
     # Base URL of the brain-frontend portal — used to build the professional-invite link
     # (POST /doctor/professionals/invites -> "{FRONTEND_BASE_URL}/convite?token=...").
     FRONTEND_BASE_URL: str = "http://localhost:3000"
+    # Staff invitations never use the patient portal URL or a browser-supplied Origin.
+    BRAIN_MESSAGE_STAFF_LOGIN_URL: str = ""
     # Fallback for the ativo transition when secretaria's Coexistence "mode resolved"
     # signal (history/smb_app_state_sync webhook fields, secretaria-side) never arrives:
     # a tenant whose WhatsApp `connected_at` is older than this many hours is treated as

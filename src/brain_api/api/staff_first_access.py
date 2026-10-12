@@ -1,8 +1,10 @@
 """Only this surface accepts the staff_password_setup scope."""
 
 from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.core.cookies import (
@@ -41,12 +43,20 @@ def setup_response(response: Response, user: User, token: str | None = None) -> 
     )
 
 
-@router.post("/resume", response_model=TokenResponse)
+class NoPendingFirstAccess(BaseModel):
+    requires_password_change: Literal[False] = False
+
+
+@router.post("/resume", response_model=TokenResponse | NoPendingFirstAccess)
 async def resume(
     request: Request, response: Response, session: AsyncSession = Depends(get_session)
 ):
     require_client_header(request)
     token = request.cookies.get(STAFF_SETUP_COOKIE_NAME, "")
+    if not token:
+        # Older frontends already fall back to ordinary refresh for this JSON.
+        # Do not issue a credential or clear the normal session's cookie.
+        return NoPendingFirstAccess()
     try:
         user, _ = await resolve_staff_setup(session, token)
     except HTTPException:

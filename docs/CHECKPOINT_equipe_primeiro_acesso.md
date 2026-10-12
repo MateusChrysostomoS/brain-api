@@ -1,5 +1,7 @@
 # TASK-054 — Equipe e primeiro acesso
 
+Correção complementar de Contexto aprovada e validada localmente: resume sem cookie de setup retorna `200 {requires_password_change:false}`, sem credencial e sem tocar no cookie normal. Mantém CSRF e 401 para cookie inválido/expirado. Frontend anterior já tolera a ausência no formato JSON, permitindo rollout backend primeiro. Testes de autenticação relacionados: 44 passed. Detalhes em `C:/TECH/BRAIN/tasks/TASK-054/CONTEXT_FIX.md`. Integração e push para origin/main autorizados pelo usuário; sem deploy.
+
 Integra??o e push para `origin/main` autorizados pelo usu?rio em 2026-10-12. Implementa??o validada nos worktrees TASK-054; deploy e migra??o remota ficam a cargo do usu?rio e n?o foram executados pelo agente.
 
 ## Comportamento

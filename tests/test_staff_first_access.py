@@ -94,6 +94,23 @@ async def test_resume_requires_csrf_and_keeps_restricted_scope(pending_client):
     assert decode_token(resumed.json()["access_token"])["scope"] == "staff_password_setup"
 
 
+async def test_resume_without_setup_cookie_is_not_an_authentication_failure(pending_client):
+    c, _, _ = pending_client
+    response = await c.post("/auth/first-access/resume", headers={"X-Brain-Client": "web"})
+    assert response.status_code == 200
+    assert response.json() == {"requires_password_change": False}
+    assert "set-cookie" not in response.headers
+    assert (await c.post("/auth/first-access/resume")).status_code == 403
+
+
+async def test_resume_with_invalid_setup_cookie_still_rejects(pending_client):
+    c, _, _ = pending_client
+    c.cookies.set("__Host-staff_setup", "invalid", domain="test.example.com", path="/")
+    response = await c.post("/auth/first-access/resume", headers={"X-Brain-Client": "web"})
+    assert response.status_code == 401
+    assert not c.cookies.get("__Host-staff_setup")
+
+
 async def test_expired_temporary_password_cannot_login(pending_client):
     c, user, db = pending_client
     user.temporary_password_expires_at = datetime.now(UTC) - timedelta(seconds=1)

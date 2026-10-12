@@ -1151,6 +1151,28 @@ async def adopt_pending_identity(
     return result.rowcount == 1
 
 
+async def mark_patient_wrote(session: AsyncSession, patient_id: UUID) -> None:
+    """Stamp that the PATIENT sent something on this visit's identity. Commits.
+
+    Called by the relay of a patient's own message (text, tapped option or file) to either
+    product — never by anything a product sends, so PreCheck's automatic greeting can never set
+    it (owner, 2026-10-09). One conditional UPDATE: only identities with no address (visits),
+    only the first time, so every later send matches nothing. The visit-retention job
+    (`services/portal/visit_retention.py`) never deletes an identity that carries it.
+    """
+    await session.execute(
+        update(MessagePatient)
+        .where(
+            MessagePatient.id == patient_id,
+            MessagePatient.email.is_(None),
+            MessagePatient.patient_wrote_at.is_(None),
+        )
+        .values(patient_wrote_at=datetime.now(UTC))
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+
+
 async def close_pending_session(
     session: AsyncSession,
     pending: MessagePendingSession,

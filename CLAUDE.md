@@ -1,5 +1,11 @@
 # brain-api
 
+Plano preparado (2026-10-08): [avisos ao médico, entrada por lembrete e QA R6](../z_prompts/PROMPT_CORRECAO_EMAIL_MEDICO_ENTRADA_LEMBRETE_R6.md). Participação condicional do gateway na propagação do contexto/autenticação; nenhuma correção aplicada nesta rodada.
+
+## Plano preparado — TASK-036
+
+- [Vínculo PreCheck e estabilidade Brain-Message](../z_prompts/PROMPT_BRAIN_MESSAGE_PRECHECK_VINCULO_E_ESTABILIDADE.md): resposta 409 confirmada; conferir identidade/tenant, reparar vínculo e validar os produtos preservando P2a. PLANEJADO; nenhum reparo/deploy realizado por esta sessão.
+
 ## Documentação
 
 `docs/` é a fonte de verdade deste repo. Regra geral de quando/como atualizar (CHECKPOINT,
@@ -17,6 +23,10 @@ O estado de assinatura por família (uma assinatura com PreCheck e secretarIA, c
 Guarda 409 `has_active_subscription` em `POST /billing/checkout` (TASK B, 2026-09-29,
 `services/billing.py::checkout_block_reason`; temporário até a TASK C): decisões, provas e pendências em
 `Brain-Message-Frontend/docs/CHECKPOINT_brain_message_link_compra.md`.
+
+`docs/CHECKPOINT_hub_token_agenda_scope.md` — TASK-044: a introspecção do hub token responde
+`agenda_scope` ("clinic" | "own", lido ao vivo do usuário) para a secretarIA aplicar quem vê a
+agenda inteira; local, não deployado; deploy ANTES da secretarIA R7.
 
 ## Prompts pendentes
 
@@ -349,6 +359,8 @@ Guarda 409 `has_active_subscription` em `POST /billing/checkout` (TASK B, 2026-0
 
 ## graphify
 
+Limpeza administrativa de pacientes (TASK-029): ver `docs/CHECKPOINT_tenant_patient_cleanup.md`; integrado à main local, não publicado em produção.
+
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
 Rules:
@@ -356,3 +368,12 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+O contrato universal de digitação (`POST /patient-access/threads/{product}/typing`, registro
+`TYPING_PRODUCTS`, corpo fechado e escopo da sessão) está em `docs/PORTAL_MESSAGING_API.md`,
+seção “Typing — o contrato de digitação, qualquer produto”; estado local, validação e provas
+pendentes em `docs/CHECKPOINT_digitando_backend.md` (TASK-033, sem deploy).
+
+TASK-034: Portal visit discard on account promotion; local validation and deployment order: `../secretarIA/docs/CHECKPOINT_portal_visita_fundida.md`. Not deployed.
+
+TASK-042: retenção de visitas vazias do Portal (job, migração 0027, e-mail digitado nunca apagado): `docs/CHECKPOINT_retencao_visitas_portal.md`. Local, não deployado.

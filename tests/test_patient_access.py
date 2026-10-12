@@ -394,7 +394,7 @@ async def test_no_plaintext_code_reaches_the_logs(pclient, caplog):
     # The CODE is checked against EVERY record, the database driver's own DEBUG echo
     # of bound parameters included — nothing anywhere may carry it in the clear, and
     # this is what proves the column really holds only a hash.
-    everything = '\n'.join(r.getMessage() for r in caplog.records)
+    everything = "\n".join(r.getMessage() for r in caplog.records)
     assert code not in everything, "the OTP code leaked into a log line"
 
     # The ADDRESS is checked against THIS service's loggers only. aiosqlite echoes
@@ -402,10 +402,8 @@ async def test_no_plaintext_code_reaches_the_logs(pclient, caplog):
     # driver output of the INSERT that stores it — an artifact of SQLite echo in the
     # test harness, not something brain-api logged. Narrowing the scope keeps this
     # an assertion about our code instead of a permanently-red one about the driver.
-    app_logs = '\n'.join(
-        r.getMessage()
-        for r in caplog.records
-        if not r.name.startswith(("aiosqlite", "sqlalchemy"))
+    app_logs = "\n".join(
+        r.getMessage() for r in caplog.records if not r.name.startswith(("aiosqlite", "sqlalchemy"))
     )
     assert PATIENT_EMAIL not in app_logs, "the patient e-mail leaked into a log line"
     # And it is not in the database in the clear either.
@@ -724,6 +722,64 @@ async def test_poll_relays_to_each_products_own_read_route(pclient, monkeypatch)
     assert calls[1]["params"]["tenant_id"] == str(seed.both)
 
 
+async def test_history_parameters_reach_secretaria_unchanged(pclient, monkeypatch):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    payload = {"data": [{"id": "old"}], "has_more": True}
+    calls = _spy_transport(monkeypatch, payload=payload)
+    body = (await _login(client, sessionmaker, seed.both)).json()
+    cursor = "2026-10-07T12:30:00.123456+03:00"
+    response = await client.get(
+        "/patient-access/threads/secretaria/messages",
+        params={"before": cursor, "limit": 23},
+        headers=_bearer(body["access_token"]),
+    )
+    assert response.status_code == 200
+    assert response.json()["payload"] == payload
+    assert calls[0]["params"] == {"tenant_id": str(seed.both), "before": cursor, "limit": 23}
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"before": "2026-10-07T12:00:00Z", "since": "2026-10-06T12:00:00Z"},
+        {"before": "2026-10-07T12:00:00"},
+        {"before": "invalid"},
+        {"limit": 0},
+        {"limit": 101},
+    ],
+)
+async def test_invalid_history_query_never_reaches_upstream(pclient, monkeypatch, params):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    calls = _spy_transport(monkeypatch)
+    body = (await _login(client, sessionmaker, seed.both)).json()
+    response = await client.get(
+        "/patient-access/threads/secretaria/messages",
+        params=params,
+        headers=_bearer(body["access_token"]),
+    )
+    assert response.status_code == 422
+    assert calls == []
+
+
+async def test_history_default_and_precheck_ignores_pagination(pclient, monkeypatch):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    calls = _spy_transport(monkeypatch)
+    body = (await _login(client, sessionmaker, seed.both)).json()
+    headers = _bearer(body["access_token"])
+    await client.get("/patient-access/threads/secretaria/messages", headers=headers)
+    assert calls[0]["params"]["limit"] == 50
+    response = await client.get(
+        "/patient-access/threads/precheck/messages",
+        params={"before": "2026-10-07T12:00:00Z", "limit": 17},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert calls[1]["params"] == {"tenant_id": str(seed.both)}
+
+
 async def test_poll_releases_the_pooled_connection_before_the_upstream_hop(pclient, monkeypatch):
     """The poll is the MOST called route (every client's every tick) — holding its DB
     session open across the upstream HTTP hop would keep a pooled connection busy for the
@@ -906,9 +962,7 @@ async def test_a_token_pairing_one_patient_with_another_tenant_is_refused(pclien
         session_id=real_sid,
         login_session_id=real_sid,
     )
-    assert (
-        await client.get("/patient-access/threads", headers=_bearer(forged))
-    ).status_code == 401
+    assert (await client.get("/patient-access/threads", headers=_bearer(forged))).status_code == 401
 
 
 async def test_logout_revokes_the_session_row_and_clears_the_cookie(pclient):
@@ -918,18 +972,14 @@ async def test_logout_revokes_the_session_row_and_clears_the_cookie(pclient):
     raw = resp.cookies[PATIENT_SESSION_COOKIE_NAME]
 
     token = resp.json()["access_token"]
-    assert (
-        await client.get("/patient-access/threads", headers=_bearer(token))
-    ).status_code == 200
+    assert (await client.get("/patient-access/threads", headers=_bearer(token))).status_code == 200
 
     out = await client.post("/patient-access/logout")
     assert out.status_code == 200
     async with sessionmaker() as session:
         assert await patient_access.find_patient_session(session, raw) is None
     # The access leg dies WITH the row (its `sid`), not whenever its 30 minutes run out.
-    assert (
-        await client.get("/patient-access/threads", headers=_bearer(token))
-    ).status_code == 401
+    assert (await client.get("/patient-access/threads", headers=_bearer(token))).status_code == 401
     # Idempotent: a second logout with nothing to revoke is still a clean 200.
     assert (await client.post("/patient-access/logout")).status_code == 200
 
@@ -945,9 +995,7 @@ async def test_a_patient_token_without_its_session_claims_is_refused(pclient, cl
     claims = decode_token(body["access_token"])
     claims.pop(claim)
     legacy = jwt.encode(claims, get_settings().SECRET_KEY, algorithm=ALGORITHM)
-    assert (
-        await client.get("/patient-access/threads", headers=_bearer(legacy))
-    ).status_code == 401
+    assert (await client.get("/patient-access/threads", headers=_bearer(legacy))).status_code == 401
 
 
 # --- 7) The multi-clinic account: discover, confirm by name, end it whole -----------------
@@ -1048,9 +1096,9 @@ async def test_confirm_without_a_matching_candidate_is_refused(pclient, reason):
     assert resp.json()["detail"] == "sibling_not_found"
     async with sessionmaker() as session:
         assert await session.scalar(_link_events()) == 0
-        assert (
-            await session.scalar(select(func.count()).select_from(MessagePatientSession)) == 1
-        ), "a refused confirmation must not mint a session"
+        assert await session.scalar(select(func.count()).select_from(MessagePatientSession)) == 1, (
+            "a refused confirmation must not mint a session"
+        )
 
 
 async def test_a_sibling_token_opens_that_clinic_and_only_that_clinic(pclient, monkeypatch):
@@ -1088,9 +1136,7 @@ async def test_a_sibling_token_opens_that_clinic_and_only_that_clinic(pclient, m
         session_id=linked_claims["sid"],
         login_session_id=linked_claims["login_sid"],
     )
-    assert (
-        await client.get("/patient-access/threads", headers=_bearer(forged))
-    ).status_code == 401
+    assert (await client.get("/patient-access/threads", headers=_bearer(forged))).status_code == 401
 
 
 async def test_logout_with_a_bearer_ends_every_session_of_the_account(pclient):
@@ -1308,9 +1354,7 @@ async def test_the_session_slides_to_ninety_days_on_every_refresh(pclient):
     assert resp.status_code == 200, resp.text
     async with sessionmaker() as session:
         row = await session.get(MessagePatientSession, sid)
-    assert patient_access._as_utc(row.expires_at) > datetime.now(UTC) + timedelta(
-        days=89, hours=23
-    )
+    assert patient_access._as_utc(row.expires_at) > datetime.now(UTC) + timedelta(days=89, hours=23)
     # `created_at` did NOT get younger: the proof of the code is what it always was.
     assert patient_access._as_utc(row.created_at) < datetime.now(UTC) - timedelta(days=79)
     # The browser's copy slides with it, with every hardening attribute intact.
@@ -1385,9 +1429,10 @@ async def test_two_refreshes_with_the_same_cookie_do_not_lock_the_patient_out(pc
     second = await _refresh(client, cookie=t0)  # the same value, again, moments later
     assert second.status_code == 200, second.text
     assert "set-cookie" not in second.headers, "the browser already holds t1 — do not race it"
-    assert decode_token(second.json()["access_token"])["sid"] == decode_token(
-        login["access_token"]
-    )["sid"]
+    assert (
+        decode_token(second.json()["access_token"])["sid"]
+        == decode_token(login["access_token"])["sid"]
+    )
     assert (await _threads(client, second.json()["access_token"])).status_code == 200
     # The linked clinic came back on BOTH answers.
     assert [s["tenant_id"] for s in second.json()["linked_sessions"]] == [
@@ -1482,9 +1527,7 @@ async def test_refresh_logs_ids_only(pclient, caplog, capsys):
     everything = console + "\n".join(r.getMessage() for r in caplog.records)
     assert t0 not in everything and t1 not in everything, "a session token leaked into a log"
     app_logs = console + "\n".join(
-        r.getMessage()
-        for r in caplog.records
-        if not r.name.startswith(("aiosqlite", "sqlalchemy"))
+        r.getMessage() for r in caplog.records if not r.name.startswith(("aiosqlite", "sqlalchemy"))
     )
     assert PATIENT_EMAIL not in app_logs
     assert "patient_session_refreshed" in console

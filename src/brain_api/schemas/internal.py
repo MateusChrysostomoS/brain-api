@@ -46,6 +46,9 @@ class HubTokenVerifyOut(BaseModel):
     passed through so secretarIA can gate clinic-manager-only actions. All optional:
     `null` means the token did not carry a well-formed value (a pre-TASK-020 token, or a
     malformed claim). brain-api does not interpret them here; secretarIA fails closed.
+
+    `agenda_scope` tells secretarIA whose appointments the session may see;
+    "own" whenever brain-api cannot prove more, including refused sessions.
     """
 
     active: bool
@@ -54,6 +57,8 @@ class HubTokenVerifyOut(BaseModel):
     role: str | None = None
     is_owner: bool | None = None
     is_manager: bool | None = None
+    # Read live from the acting user's row; older secretarIA versions ignore this key.
+    agenda_scope: Literal["clinic", "own"] = "own"
 
 
 class InternalEntitlementOut(BaseModel):

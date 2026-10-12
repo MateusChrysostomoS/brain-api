@@ -97,8 +97,10 @@ from brain_api.schemas.portal.patient_access import (
     OtpVerifyIn,
     PatientAccountOut,
     PatientAttachmentForm,
+    PatientEnterIn,
     PatientMessageIn,
     PatientReadMarkIn,
+    PatientTypingIn,
     PendingProgressOut,
     PendingSessionIn,
     PendingSessionOut,
@@ -1185,6 +1187,10 @@ async def send_thread_message(
     patient, verified = identity
     ent = await resolve_entitlement(session, patient.tenant_id)
     message_switchboard.require_product(ent, product)
+    # TASK-042: the patient is sending something (to either product), so this visit is not
+    # "only opened the link" any more. Stamped before the relay: a send that fails upstream
+    # still means the patient wrote, and keeping the visit is the safe side.
+    await patient_access.mark_patient_wrote(session, patient.id)
     # The database is done with — release its connection BEFORE any client-paced I/O. The
     # session's own teardown runs only after the response is sent, so otherwise a patient
     # dribbling a body (or a slow upload on a mobile link) holds a pooled connection all the
@@ -1238,10 +1244,11 @@ async def _relay_send(
 @router.get(
     "/threads/{product}/messages",
     response_model=RelayOut,
-    summary="Poll one product thread for new messages",
+    summary="Read the recent window or an older page of one product thread",
     responses={
         401: {"description": "Missing or invalid patient session."},
         403: {"description": "The clinic does not offer that product on this channel."},
+        422: {"description": "Invalid before/limit, or since and before used together."},
         502: {"description": "The product backend failed or is misconfigured."},
         503: {"description": "That product's leg of the mesh is unconfigured or degraded."},
     },
@@ -1257,6 +1264,10 @@ async def poll_thread_messages(
             "take the next cursor from the largest `updated_at` received."
         ),
     ),
+    before: str | None = Query(
+        default=None, description="Older messages, strictly before this offset-aware ISO instant."
+    ),
+    limit: int = Query(default=50, ge=1, le=100, description="secretaria page size (1–100)."),
     patient: MessagePatient = Depends(get_thread_patient),
     session: AsyncSession = Depends(get_session),
 ) -> RelayOut:
@@ -1267,6 +1278,15 @@ async def poll_thread_messages(
     message's delivery state (`status`, `delivered_at`, `read_at`, `updated_at` on secretaria)
     is the product's and passes through as it came (`message_switchboard.list_messages`).
     """
+    if before is not None:
+        if since is not None:
+            raise HTTPException(status_code=422, detail="since_and_before_are_exclusive")
+        try:
+            instant = datetime.fromisoformat(before.replace("Z", "+00:00"))
+            if instant.utcoffset() is None:
+                raise ValueError("Offset required")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="before_requires_offset_aware_iso") from exc
     ent = await resolve_entitlement(session, patient.tenant_id)
     message_switchboard.require_product(ent, product)
     # Release the pooled connection before the upstream hop, same as `send_thread_message`
@@ -1280,6 +1300,8 @@ async def poll_thread_messages(
         tenant_id=patient.tenant_id,
         patient_ref=str(patient.id),
         since=since,
+        before=before,
+        limit=limit,
     )
     return RelayOut(product=product, payload=result, at=datetime.now(UTC))
 
@@ -1340,6 +1362,86 @@ async def mark_thread_read(
         marked=result.get("marked"),
     )
     return RelayOut(product=product, payload=result, at=datetime.now(UTC))
+
+
+@router.post(
+    "/threads/{product}/typing",
+    response_model=RelayOut,
+    summary="The patient is typing (heartbeat)",
+    description=(
+        "Send every ~3 s while typing, only when the transcript says `accepts_typing`. "
+        "Recorded by the product only while a human conducts; `payload.applied` reports it."
+    ),
+    responses={
+        401: {"description": "Missing or invalid patient session."},
+        403: {"description": "The clinic does not offer that product on this channel."},
+        422: {"description": "A body field was sent."},
+        502: {"description": "The product backend failed or is misconfigured."},
+        503: {"description": "The product's mesh leg is unconfigured or degraded."},
+    },
+)
+async def patient_typing(
+    product: str = Path(description="secretaria | precheck | any product the clinic offers."),
+    payload: PatientTypingIn | None = None,
+    patient: MessagePatient = Depends(get_thread_patient),
+    session: AsyncSession = Depends(get_session),
+) -> RelayOut:
+    ent = await resolve_entitlement(session, patient.tenant_id)
+    message_switchboard.require_product(ent, product)
+    await session.close()  # release the pooled connection before the upstream hop
+    result = await message_switchboard.send_typing(
+        product, tenant_id=patient.tenant_id, patient_ref=str(patient.id)
+    )
+    return RelayOut(product=product, payload=result, at=datetime.now(UTC))
+
+
+@router.post(
+    "/threads/{product}/enter",
+    response_model=RelayOut,
+    summary="The patient is looking at this conversation (speak first)",
+    description=(
+        "Call once each time the conversation is shown — page load, refresh, picking the "
+        "clinic in the list, the switch to the account after the code. For secretarIA this "
+        "asks the automation to speak first: a greeting on an empty thread, or the "
+        "context-aware opening (upcoming appointment, the first visit after a consult, the "
+        "menu) on one with history. secretarIA alone decides whether anything is due — it "
+        "stays silent mid-flow, mid-onboarding and right after the last message — so calling "
+        "this on every load is safe. Fire-and-forget: `payload.scheduled` only says the request "
+        "was handed on. Other products: nothing is sent and `scheduled` is false."
+    ),
+    responses={
+        401: {"description": "Missing or invalid patient session."},
+        403: {"description": "The clinic does not offer that product on this channel."},
+        422: {"description": "A body field was sent."},
+    },
+)
+async def enter_thread(
+    background_tasks: BackgroundTasks,
+    product: str = Path(description="secretaria | precheck | any product the clinic offers."),
+    payload: PatientEnterIn | None = None,
+    patient: MessagePatient = Depends(get_thread_patient),
+    session: AsyncSession = Depends(get_session),
+) -> RelayOut:
+    """The trigger the Portal was missing (owner, 2026-10-05): before it, only a NEW visit
+    (`POST /pending`) or a link opened with an account cookie asked secretarIA to speak, so a
+    refresh, a clinic picked from the list or a returning account sat on an empty or stale
+    thread until the patient typed. Same identity scope as every thread route (the token names
+    the clinic and the handle; the body names nothing), and the same background-task discipline
+    as `_greet_if_secretaria`: the upstream can never fail or slow this answer.
+    """
+    ent = await resolve_entitlement(session, patient.tenant_id)
+    message_switchboard.require_product(ent, product)
+    scheduled = product == message_switchboard.PRODUCT_SECRETARIA
+    if scheduled:
+        background_tasks.add_task(
+            message_switchboard.open_conversation,
+            tenant_id=patient.tenant_id,
+            patient_ref=str(patient.id),
+            patient_name=patient.name,
+            **({"entry_context": payload.entry_context.model_dump(mode="json")}
+               if payload is not None and payload.entry_context is not None else {}),
+        )
+    return RelayOut(product=product, payload={"scheduled": scheduled}, at=datetime.now(UTC))
 
 
 def _media_headers(media: message_switchboard.MediaStream) -> dict[str, str]:
@@ -1814,6 +1916,7 @@ async def pending_status(
 )
 async def complete_pending(
     response: Response,
+    background_tasks: BackgroundTasks,
     visit: tuple[MessagePatient, MessagePendingSession] = Depends(get_current_pending),
     session: AsyncSession = Depends(get_session),
 ) -> PatientAccountOut:
@@ -1825,12 +1928,23 @@ async def complete_pending(
     `PatientAccountOut` every ordinary OTP login uses.
     """
     _, pending = visit
+    # Read the handles before the one-time exchange commits.
+    visit_ref = str(pending.patient_id)
+    into_ref = str(pending.superseded_by) if pending.superseded_by else None
+    tenant_id = pending.tenant_id
     completed = await patient_access.complete_pending_identity(session, pending)
     if completed is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "pending_verification_incomplete")
     account, canonical, raw_session, session_id = completed
     set_patient_session_cookie(response, raw_session)
     clear_patient_pending_cookie(response)
+    if into_ref is not None and into_ref != visit_ref:
+        background_tasks.add_task(
+            message_switchboard.merge_visit,
+            tenant_id=tenant_id,
+            visit_ref=visit_ref,
+            into_ref=into_ref,
+        )
     return await _account_body(
         session,
         account,

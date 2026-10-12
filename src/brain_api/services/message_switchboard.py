@@ -304,6 +304,8 @@ async def list_messages(
     tenant_id: UUID,
     patient_ref: str,
     since: str | None = None,
+    before: str | None = None,
+    limit: int = 50,
 ) -> dict[str, Any]:
     """Poll `product` for this patient's transcript.
 
@@ -327,9 +329,11 @@ async def list_messages(
     and the client upserts by `id`. This service never filters, dedupes or re-sorts rows.
     """
     if product == PRODUCT_SECRETARIA:
-        params: dict[str, Any] = {"tenant_id": str(tenant_id)}
+        params: dict[str, Any] = {"tenant_id": str(tenant_id), "limit": limit}
         if since:
             params["since"] = since
+        if before:
+            params["before"] = before
         payload = await _call(
             product,
             "GET",
@@ -366,7 +370,8 @@ OPEN_FAILED = "failed"
 
 
 async def open_conversation(
-    *, tenant_id: UUID, patient_ref: str, patient_name: str | None = None
+    *, tenant_id: UUID, patient_ref: str, patient_name: str | None = None,
+    entry_context: dict | None = None,
 ) -> str:
     """Ask secretarIA to open this patient's conversation and greet them — FIRE AND FORGET.
 
@@ -409,6 +414,8 @@ async def open_conversation(
         "external_id": patient_ref,
         "patient_name": patient_name,
     }
+    if entry_context is not None:
+        body["entry_context"] = entry_context
     try:
         async with httpx.AsyncClient(
             base_url=base, timeout=get_settings().SECRETARIA_TIMEOUT_SECONDS
@@ -450,6 +457,105 @@ async def open_conversation(
         "brain_message_open_refused", tenant_id=str(tenant_id), upstream_status=resp.status_code
     )
     return OPEN_FAILED
+
+
+_MERGE_PATH = "/internal/brain-message/visits/merge"
+MERGE_QUEUED = "queued"
+MERGE_UNCONFIGURED = "unconfigured"
+MERGE_FAILED = "failed"
+
+
+async def merge_visit(*, tenant_id: UUID, visit_ref: str, into_ref: str) -> str:
+    """Tell secretarIA to throw a merged visit's conversation away — FIRE AND FORGET.
+
+    Same contract as `open_conversation`: it never raises, because it runs after the response
+    to `POST /pending/complete` has been written and there is nobody to show an error to. A
+    secretarIA that has not got the route yet answers 404 — the visit's chat is then simply
+    left orphaned, exactly today's behaviour. Handles are ids, never logged.
+    """
+    try:
+        base, headers = _upstream(PRODUCT_SECRETARIA)
+    except HTTPException:
+        logger.warning("brain_message_merge_unconfigured", tenant_id=str(tenant_id))
+        return MERGE_UNCONFIGURED
+    body = {
+        "tenant_id": str(tenant_id),
+        "visit_external_id": visit_ref,
+        "into_external_id": into_ref,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=base, timeout=get_settings().SECRETARIA_TIMEOUT_SECONDS
+        ) as client:
+            resp = await client.request("POST", _MERGE_PATH, headers=headers, json=body)
+    except Exception as exc:  # noqa: BLE001 - "never raises" must hold for EVERY exception
+        logger.error(
+            "brain_message_merge_unexpected_error",
+            tenant_id=str(tenant_id),
+            error=type(exc).__name__,
+        )
+        return MERGE_FAILED
+    if resp.status_code == status.HTTP_202_ACCEPTED:
+        logger.info("brain_message_merge_queued", tenant_id=str(tenant_id))
+        return MERGE_QUEUED
+    logger.warning(
+        "brain_message_merge_refused", tenant_id=str(tenant_id), upstream_status=resp.status_code
+    )
+    return MERGE_FAILED
+
+
+_DISCARD_PATH = "/internal/brain-message/visits/discard"
+DISCARD_DISCARDED = "discarded"
+DISCARD_ABSENT = "absent"
+DISCARD_NOT_EMPTY = "not_empty"
+DISCARD_FAILED = "failed"
+DISCARD_UNCONFIGURED = "unconfigured"
+
+
+async def discard_empty_visit(*, tenant_id: UUID, visit_ref: str) -> str:
+    """Ask secretarIA to delete an EMPTY visit's conversation — and wait for the answer.
+
+    The retention job (`services/portal/visit_retention.py`, TASK-042) deletes its own rows
+    ONLY after this returns `DISCARD_DISCARDED`; every other outcome keeps them. Unlike
+    `merge_visit` this is synchronous, because the answer is the permission.
+
+    Outcomes: `200 {"status": "discarded"}` -> `DISCARD_DISCARDED`, `200 {"status":
+    "absent"}` -> `DISCARD_ABSENT` (secretarIA never had it), `409` -> `DISCARD_NOT_EMPTY`
+    (the patient wrote, booked or holds a slot), anything else -> `DISCARD_FAILED` (including
+    404 while secretarIA does not have the route yet: the visit simply stays). Never raises;
+    the handle is an id and still never logged.
+    """
+    try:
+        base, headers = _upstream(PRODUCT_SECRETARIA)
+    except HTTPException:
+        return DISCARD_UNCONFIGURED
+    body = {"tenant_id": str(tenant_id), "external_id": visit_ref}
+    try:
+        async with httpx.AsyncClient(
+            base_url=base, timeout=get_settings().SECRETARIA_TIMEOUT_SECONDS
+        ) as client:
+            resp = await client.request("POST", _DISCARD_PATH, headers=headers, json=body)
+    except Exception as exc:  # noqa: BLE001 - "never raises" must hold for EVERY exception
+        logger.warning(
+            "visit_retention_discard_error", tenant_id=str(tenant_id), error=type(exc).__name__
+        )
+        return DISCARD_FAILED
+    if resp.status_code == status.HTTP_409_CONFLICT:
+        return DISCARD_NOT_EMPTY
+    if resp.status_code == status.HTTP_200_OK:
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = None
+        answer = payload.get("status") if isinstance(payload, dict) else None
+        if answer in (DISCARD_DISCARDED, DISCARD_ABSENT):
+            return answer
+    logger.warning(
+        "visit_retention_discard_refused",
+        tenant_id=str(tenant_id),
+        upstream_status=resp.status_code,
+    )
+    return DISCARD_FAILED
 
 
 async def open_precheck_session(*, tenant_id: UUID, patient_ref: str) -> str:
@@ -544,6 +650,20 @@ async def mark_read(
     if up_to is not None:
         body["up_to"] = up_to.isoformat()
     return await _call(product, "POST", "/internal/brain-message/messages/read", json=body)
+
+
+# A new product implements the same internal heartbeat and transcript typing fields,
+# then joins by adding its route here (docs/PORTAL_MESSAGING_API.md, "Typing").
+TYPING_PRODUCTS: dict[str, str] = {PRODUCT_SECRETARIA: "/internal/brain-message/typing"}
+
+
+async def send_typing(product: str, *, tenant_id: UUID, patient_ref: str) -> dict[str, Any]:
+    """Relay a session-scoped heartbeat, or answer locally without a network call."""
+    path = TYPING_PRODUCTS.get(product)
+    if path is None:
+        return {"applied": False}
+    body = {"tenant_id": str(tenant_id), "external_id": patient_ref}
+    return await _call(product, "POST", path, json=body)
 
 
 # --- Attachments (2026-09-18): the multipart relay, the transcript reference, the stream ---

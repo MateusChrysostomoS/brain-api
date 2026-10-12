@@ -1,5 +1,7 @@
 # Portal Messaging API — the Brain-Message channel
 
+Administrative removal of clinic patients and message histories: [TASK-029 checkpoint](CHECKPOINT_tenant_patient_cleanup.md), additive admin endpoints, integrated into local main, awaiting push and deployment.
+
 > **Status:** integration reference, verified against code on **2026-09-18**. This is the
 > ONE place that documents how a patient exchanges messages with a clinic through the
 > Brain-Message channel (the web "Portal" `Brain-Message-Frontend`, as opposed to WhatsApp),
@@ -12,6 +14,13 @@
 > Every claim below cites the file it was read from. If a citation and the running code
 > disagree, the code wins — update this file in the same change that breaks it (see
 > `AI_WORKFLOW.md`'s documentation rule: update docs after validating, not before).
+>
+> **Update 2026-10-02 (TASK-028):** §4.1 was re-read against the secretarIA change: the messages
+> listing now returns the NEWEST page and gains `has_more` and `before` (secretarIA `8c68831`,
+> committed, not yet deployed — see §4.1); §8.5's "re-read the whole thread" was corrected to
+> match. The Portal front still needs a scroll fix to show it end to end (§4.1). Every other
+> section keeps its own verification date (2026-09-18 unless a dated note in the text or the
+> changelog says otherwise).
 
 ---
 
@@ -170,6 +179,22 @@ claim_pending_email`, `schemas/portal/internal.py::PendingEmailClaimIn`). This e
 browser can never name the inbox a login code goes to — the address must have been captured
 server-to-server, from the conversation itself. A new product does not need to implement this
 to appear on the channel (§9); it is part of the *pending visitor* flow, which is optional.
+
+### 1.5 Internal booking contact (MVP Portal, Task 7A)
+
+| Internal route (secretarIA → brain-api) | Request | Success |
+|---|---|---|
+| `POST /internal/brain-message/patient-contact` | `PendingIdentityIn`: `tenant_id` and `external_id` (both UUIDs) | `200 {"email": "<address>"}` or `200 {"email": null}` |
+
+Uses the same `X-Internal-Api-Key` authentication as the other inbound service routes
+(401 for a missing/invalid key; 403 when the server key is unset). The handle must belong
+to the requested tenant. The address comes from its linked `MessagePatientAccount` when
+present and nonempty, otherwise from the legacy `MessagePatient.email`. Unknown,
+other-tenant and addressless handles all return null. This additive read supports booking
+confirmation and Calendar invitations; deploy brain-api before the secretarIA consumer.
+The raw address is PII: never log it or include it unmasked in an LLM prompt. Per the
+owner's 2026-09-30 plan amendment, secretarIA may store it on `Patient.email` with email
+pseudonymization; that supersedes the design spec's earlier transient-use requirement.
 
 ---
 
@@ -346,6 +371,17 @@ passed through **opaque** — brain-api does not know or reformat either product
 format, because re-formatting a value it does not own is exactly how a cursor silently starts
 skipping a row.
 
+**Portal history (TASK-039, local implementation 2026-10-07).** The browser-facing route also
+accepts `before` (offset-aware ISO 8601, passed verbatim) and `limit` (integer 1–100, default
+50). For `secretaria`, both reach the product unchanged; `before` + `since`, malformed/naive
+`before` and an out-of-range `limit` return 422 before the upstream call. PreCheck ignores
+valid `before`/`limit` and continues relaying its own transcript; its history is outside this
+task. Tenant/patient scope still comes from the authenticated session, and the pooled DB
+connection is released before the network hop. Responses preserve `has_more`, ordering and
+all product fields through the existing attachment projection. No retention limit or deletion
+was introduced. Deployment of TASK-039 is NOT AUTHORIZED; deploy brain-api before the frontend
+when separately authorized.
+
 ### 4.1 secretarIA
 
 ```
@@ -358,7 +394,7 @@ read), `external_id` (path) and `channel == "brain_message"`
 (`api/internal.py::list_brain_message_messages`). `since` is an exclusive timestamp cursor —
 **since 2026-09-19 (Onda 3) on `updated_at`, not `created_at`**: a row returns again whenever its
 delivery state moves, so the client upserts by `id` (§8.5). An unknown patient or an empty conversation returns
-`{"data": []}`, **never 404** — this endpoint is polled, so "nothing yet" must not be
+`{"data": [], "has_more": false}`, **never 404** — this endpoint is polled, so "nothing yet" must not be
 distinguishable from "wrong id" (`BrainMessageMessageList`):
 
 ```jsonc
@@ -366,8 +402,57 @@ distinguishable from "wrong id" (`BrainMessageMessageList`):
   { "id": "c1e9...", "direction": "outbound", "sender": "human",
     "body": "Sua consulta foi remarcada para sexta às 14h.",
     "created_at": "2026-09-18T14:33:10Z", "interactive": null, "interactive_reply_id": null }
-] }
+], "has_more": false }
 ```
+
+**Which messages come back — newest page first (2026-10-02, TASK-028).** Without `since` — the
+first load, and every Portal poll, because the Portal never sends `since` and re-reads the thread
+each time (`Brain-Message-Frontend/lib/real/patient-access.ts::pollMessages`) — `data` is the
+**`limit` NEWEST messages** (query param `limit` of this internal leg, default 50, max 200) in ascending chronological
+order (`created_at`, then `id`), and the new top-level field **`has_more`** (bool, default
+`false`) says whether older messages exist. Before this change the same call returned the 50
+**oldest** rows, which froze any conversation past 50 messages: the clinic's replies existed in the
+database and never reached the screen (`secretarIA/docs/LACUNAS_PORTAL_2026-10-01.md` §L1).
+
+- **`before`** (optional ISO 8601 datetime, only without `since`) — only messages with `created_at`
+  **strictly before** it, with the same "newest `limit` of those, oldest first" shape, so a client
+  pages backwards by passing the oldest `created_at` it already holds. It is an **opaque cursor**:
+  pass back exactly the `created_at` string that was received. Re-formatting it (for example
+  through a JavaScript `Date`) truncates microseconds to milliseconds and can skip older rows
+  created in that same millisecond. The internal product route accepts a naive datetime;
+  the Portal-facing brain-api route requires an explicit offset. `since` and `before`
+  together answer **422**. TASK-039 forwards `before` and the Portal uses it when scrolling up.
+- **Ties — a page may exceed `limit`.** A page never ends *inside* a group of messages with the
+  same `created_at` (one transaction stamps every row it writes with the same `now()`, and the
+  `before` cursor is strict). If the cut falls inside such a group, the page is extended with the
+  rest of the group and `has_more` is recomputed after the extension, so `len(data)` can exceed
+  `limit` by the size of that group. A consumer must not assume `len(data) <= limit`.
+- **`since` is unchanged** — the rows CHANGED since the cursor, ordered by `updated_at` (§8.5);
+  `has_more` is always `false` there. Scope (`tenant_id` + `external_id` + channel
+  `brain_message`) is unchanged, and so is the unknown-patient answer above.
+- **brain-api relays the body untouched.** `message_switchboard.list_messages` returns the
+  product's body through `_project_attachments`, which rewrites only `data[].attachment`, and
+  `RelayOut` is a permissive envelope — so `has_more` reaches the browser inside `payload`
+  (`payload.has_more`). TASK-039 changes only parameter forwarding and validation on this leg.
+- **Consumer status (2026-10-07).** TASK-031 replaced count-based scrolling with `scrollKey`
+  and prunes confirmed local copies with `afterSecretariaPoll`/`unconfirmedLocal`. TASK-039
+  retains older pages independently from the polled window, merges by ID (recent values win),
+  preserves the visible reading position and loads older rows with an IntersectionObserver.
+  A reader above the end is not pulled down by arrivals or typing. Leaving a clinic/product,
+  signing out or reloading discards retained history; it is never written to browser storage.
+  A disjoint recent window after suspension moves the lazy backfill cursor to that window's
+  beginning so intervening rows remain reachable. See frontend
+  `docs/CHECKPOINT_portal_historico_completo.md` for local proof and limits.
+- **State and deploy (2026-10-02).** Committed on secretarIA's `task/TASK-028-portal-recentes`
+  (`8c68831`, `api/internal.py::list_brain_message_messages`, `schemas/internal.py::
+  BrainMessageMessageList`); not merged, **not deployed**, not proven in production. The deploy
+  unit is the merged `main` HEAD: deploy `secretaria_api` AND `secretaria-worker` together
+  (secretarIA README, "Deploy both services, or neither"; its
+  `docs/superpowers/plans/2026-10-01-INDEX-execucao.md`, "Ordem de merge e de deploy"), no
+  migration, and `GET /build` must read `deploy_parity: match`. This change's own code lives only
+  in the API route, but `main` also carries the TASK-023 workers split, so the worker has to be
+  redeployed to keep parity; `divergent` is not something to wave away. Details:
+  `secretarIA/docs/CHECKPOINT_portal_mensagens_recentes.md`.
 
 ### 4.2 PreCheck
 
@@ -679,7 +764,7 @@ there: staff↔patient real accounts on the "Chrysostomo For Eyes" tenant, ticks
 12 interactive bubbles at 340px; only the WhatsApp-thread read-mark exclusion stayed proven
 against the stub, not production, since that tenant has no WhatsApp patient). Status is mapped
 1:1, read marks fire once per cursor move on both screens, never on a WhatsApp thread, never from
-a hidden tab; neither client uses a `since` cursor — both re-read the whole thread, which is the
+a hidden tab; neither client uses a `since` cursor — both re-read the thread (since 2026-10-02 its newest page, not the whole of it — secretarIA `8c68831`, committed, not yet deployed — see §4.1), which is the
 upsert by `id`. **Same day, still uncommitted:** the owner asked for two follow-ups after the
 production proof — the read tick's green got a contrast bump (`--tick-read`) and the interactive-
 bubble width dropped the `min(…, 100%)` percentage entirely for a fixed `340px` (a stale, never-
@@ -774,6 +859,35 @@ Both are gated on the **resolved product being secretarIA** — the link's `prod
   being **PreCheck** — never on a two-product clinic whose link names secretarIA or nothing: the
   portal polls the PreCheck thread in the background there and switches the patient to it as soon
   as it has messages (the hand-off reveal), so opening it would pull a patient away from booking.
+
+#### 8.6.1 Speak first on ENTRY — `POST /patient-access/threads/{product}/enter` (TASK-035, 2026-10-05)
+
+The triggers above only fire on a CREATED visit or a link opened with an account cookie, so a
+refresh, a clinic picked from the list or a returning account sat on an empty or stale thread
+until the patient typed. The owner's rule: the first message arrives **as soon as the patient
+enters**, chosen by context.
+
+```
+POST /patient-access/threads/{product}/enter      Authorization: Bearer <clinic or pending token>
+(optional body {"entry_context": {"source": "navigation|clinic_link|reminder_link", "reminder_id": uuid|null}} — null, {} or omitted is valid; any other field → 422. TASK-032: only `reminder_link` overrides the quiet-window/flow-in-progress silence; the context is untrusted intent, authorization is re-checked in secretarIA)
+→ 200 {"product": "secretaria", "payload": {"scheduled": true}, "at": "..."}
+→ 200 {"product": "precheck",   "payload": {"scheduled": false}, ...}   nothing is sent
+→ 401 no/invalid session · 403 product not offered
+```
+
+- The Portal calls it once per thread shown (`PortalConversation.tsx` entry effect →
+  `lib/real/patient-access.ts::enterThread`, decoration: failures are silent).
+- brain-api forwards **every** call (background task) to secretarIA's `/open` above, with the
+  identity's name; it keeps no state. Unlike `/pending`, a reload IS forwarded on purpose.
+- secretarIA decides. On an empty thread `/open` greets as before. On a thread with history
+  `/open` still answers `200 exists` **but now also queues `process_brain_message_enter`**, which
+  sends the context-aware opening (upcoming appointment / first visit after a consult / the menu
+  with [🗓️ Agendar, Outro]) unless it would talk over something: a human handling the thread,
+  consent not given yet, a last message younger than 30 min, or a flow mid-way. Details in
+  secretarIA `docs/CHECKPOINT_portal_primeira_mensagem.md`.
+- Deploy order (TASK-032, `entry_context`): **secretarIA (migration `c2d5f8a1e4b6` first, then worker and API) →
+  brain-api → frontend**. A brain-api forwarding `entry_context` to an old secretarIA gets 422 (`extra=forbid`);
+  an old frontend never sends it. Without the context the behaviour is the previous one.
 
 ### 8.7 `email_masked` on `POST /internal/brain-message/pending-otp/request`
 
@@ -977,3 +1091,97 @@ e-mail address, a cookie, or a JWT from this channel.
   once and its first 200 replayed (`Idempotent-Replayed: true`) for 10 minutes; failures are not
   remembered; no header = today's behaviour. For the portal's automatic resend on mobile networks.
   In-process memory (`core/idempotency.py`), no migration, no change to any product's contract.
+- **2026-10-02** — TASK-028 (`secretarIA/docs/LACUNAS_PORTAL_2026-10-01.md` §L1). **§4.1** —
+  `GET /internal/brain-message/conversations/{external_id}/messages` without `since` returns the
+  NEWEST `limit` messages (oldest first) instead of the 50 oldest, so a Portal conversation past 50
+  messages no longer freezes; the body gains `has_more`, and an optional `before` cursor (opaque,
+  not combinable with `since`) pages backwards. A page may exceed `limit` by a group of rows with
+  an equal `created_at`. brain-api relays the body untouched — no code change here, and it does not
+  send `before` or `limit`, so paging back is not reachable from the Portal yet. **§8.5** —
+  "re-read the whole thread" corrected. secretarIA `8c68831` on `task/TASK-028-portal-recentes`:
+  committed, not merged, not deployed; the deploy unit is the merged `main` HEAD, `secretaria_api`
+  AND `secretaria-worker` together, no migration, `GET /build` → `deploy_parity: match`. The Portal
+  front still needs a scroll fix (keyed on the last message id, not the count) for a new reply to
+  come into view in a conversation past 50 messages (§4.1, consumer note).
+
+## Typing — o contrato de digitação, qualquer produto
+
+Campos aditivos na listagem de mensagens de qualquer produto, preservados pelo relay dentro
+ de `RelayOut.payload`:
+
+| Campo | Default | Significado para o paciente |
+| --- | --- | --- |
+| `typing` | `false` | Há alguém digitando para este paciente agora. |
+| `typing_by` | `null` | `automation` ou `staff`; nunca `patient`, a própria digitação. |
+| `accepts_typing` | `false` | O cliente deve emitir batimentos enquanto o paciente digita. |
+
+`POST /patient-access/threads/{product}/typing` aceita sem corpo, `null` ou `{}`. Qualquer
+campo no corpo é rejeitado com 422, inclusive `tenant_id`, `external_id`, `patient_ref` e `by`.
+Exige o bearer de clínica autenticado (conta) ou da visita pendente; usa exclusivamente
+`patient.tenant_id` e `patient.id` da sessão. Produto/canal são autorizados antes de rede;
+a conexão de banco é liberada antes do relay. Resposta:
+
+```json
+{"product": "secretaria", "payload": {"applied": true}, "at": "2026-10-04T12:00:00Z"}
+```
+
+O cliente envia no máximo um batimento a cada aproximadamente 3 s, apenas enquanto digita e
+se `accepts_typing` for verdadeiro. Batimento é idempotente; não há limitador próprio.
+
+Hoje secretarIA recebe `POST /internal/brain-message/typing`, autenticado por
+`X-Internal-Api-Key`, com corpo fechado `{"tenant_id": "<uuid>", "external_id": "<patient.id>"}`,
+e responde `{"applied": bool}`. Só registra o paciente quando `handover_state == HUMAN_ACTIVE`.
+Com automação conduzindo ou paciente inexistente, responde `applied: false` sem escrever Redis.
+PreCheck não tem rota registrada: o brain-api responde `applied: false` sem qualquer rede.
+O PreCheck preenche `typing`/`typing_by` na listagem (`GET /internal/brain-message/sessions/{ref}/messages`)
+**derivando do histórico**, sem estado: `typing=true` e `typing_by="automation"` quando a última linha da
+sessão é do paciente e tem menos de 90 s; a primeira linha do assistente apaga o indicador, e se o n8n nunca
+responder ele some em 90 s. `accepts_typing` fica sempre `false` (ninguém humano conduz o PreCheck). Limite
+aceito: a abertura (`/open`) não grava linha de paciente, então não há indicador nela.
+Uma falha no upstream mantém o tratamento de erros do mesh (502/503), sem expor seu corpo.
+
+Na secretarIA a chave é `brain_message:typing:<conversation_id>:<by>`, separada por conversa
+ e por quem digita: automação 90 s, equipe/paciente 6 s. Redis ausente ou indisponível falha
+aberto. O paciente vê `automation` antes de `staff`; o console vê `automation` antes de
+`patient`, nunca `staff` (a própria equipe). O turno limpa a marca da automação no `finally`;
+a equipe limpa sua marca ao enviar uma mensagem. Morte do worker é coberta pelo TTL.
+
+Para integrar um produto novo:
+
+1. Implementar os três campos na listagem, com os defaults acima e sem mostrar a própria digitação.
+2. Implementar sua rota interna autenticada de batimento com corpo fechado, escopo de tenant/paciente
+   e resposta `{"applied": bool}`; registrar o paciente somente quando um humano conduz.
+3. Adicionar o caminho em `services/message_switchboard.py::TYPING_PRODUCTS`. O cliente do Portal
+   mantém o mesmo contrato, sem condição específica de produto.
+
+Estado local e provas: `docs/CHECKPOINT_digitando_backend.md`. Ordem de deploy autorizado:
+`secretaria_api` + `secretaria-worker` → brain-api. Sem migração.
+# Visita fundida na conta (TASK-034)
+
+Ao completar uma visita cujo e-mail já tinha identidade na clínica, o brain-api chama
+`POST {secretarIA}/internal/brain-message/visits/merge` em background. O corpo contém
+`tenant_id`, `visit_external_id` e `into_external_id`. A secretarIA descarta a conversa
+da visita e mostra o menu na conversa da conta; primeira visita mantém sua identidade
+e não dispara este aviso. Falha ou rota ausente não interrompe o login.
+Estado, validação e ordem de deploy em `secretarIA/docs/CHECKPOINT_portal_visita_fundida.md`.
+
+# Retenção de visitas vazias (TASK-042)
+
+Uma visita que só abriu o link (sem e-mail digitado, sem código, sem verificação, já expirada)
+é apagada depois de `VISIT_RETENTION_HOURS` (24 h) pelo job `services/portal/visit_retention.py`.
+Antes de apagar o próprio lado, o brain-api chama, de forma **síncrona**:
+
+`POST {secretarIA}/internal/brain-message/visits/discard` — `X-Internal-Api-Key`, corpo fechado
+(`extra="forbid"`) `{"tenant_id": UUID, "external_id": str(1..64)}`.
+
+| Resposta | Significado | O que o brain-api faz |
+|---|---|---|
+| `200 {"status":"discarded"}` | a secretarIA apagou a ficha, a conversa e as mensagens do bot | apaga a visita e a identidade |
+| `200 {"status":"absent"}` | a secretarIA não tem a visita | 1ª pergunta: mantém e marca `retention_kept_at`; visita já perguntada numa rodada anterior (`retention_discard_requested_at`): apaga — a secretarIA já fez a parte dela |
+| `409 {"detail":"visit_not_empty"}` | o paciente escreveu, marcou ou segura um horário | mantém e marca `retention_kept_at` |
+| outro (inclui 404 durante o rollout) | falha | não apaga nada; tenta na próxima rodada |
+
+Visita com e-mail digitado nunca entra na lista (decisão do dono). Visita em que o paciente mandou qualquer coisa (texto, toque ou arquivo, para qualquer produto) nunca entra: o relay grava `message_patients.patient_wrote_at`; a saudação automática do PreCheck não grava. Em clínica com PreCheck, visitas anteriores à marca (`activity_tracked = false`) ficam. Desligado por padrão
+(`VISIT_RETENTION_ENABLED`), com `VISIT_RETENTION_DRY_RUN` ligado para a primeira rodada. Ordem de
+deploy: migrações `0027` e `0028` → `secretaria_api` (rota nova) → brain-api. Estado e provas em
+`docs/CHECKPOINT_retencao_visitas_portal.md`.

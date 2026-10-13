@@ -111,7 +111,7 @@ from brain_api.schemas.portal.patient_access import (
     ThreadListOut,
     ThreadOut,
 )
-from brain_api.services import message_switchboard, secretaria_provisioning
+from brain_api.services import mailer, message_switchboard
 from brain_api.services.entitlements import resolve_entitlement
 from brain_api.services.portal import patient_access
 
@@ -161,7 +161,7 @@ _pending_attachment_limiter = SlidingWindowLimiter(
     lambda: get_settings().PATIENT_PENDING_ATTACHMENT_RATE_LIMIT_PER_MIN,
 )
 
-# The e-mail template secretarIA renders; brain-api owns no SMTP of its own.
+# The e-mail template services/mailer.py renders (brain-api's own SMTP since TASK-056).
 _OTP_EMAIL_TEMPLATE = "patient_access_otp"
 # The ONE answer `request-otp` ever gives: true whether or not the address, the clinic or
 # the channel exist, so the route cannot be used to discover any of them.
@@ -520,7 +520,7 @@ async def request_otp(
 
     code = await patient_access.issue_account_otp(session, address)
     # Fail-soft, like every transactional e-mail in this repo.
-    await secretaria_provisioning.send_notification_email(
+    await mailer.send_email(
         address,
         _OTP_EMAIL_TEMPLATE,
         {"code": code, "ttl_minutes": get_settings().PATIENT_OTP_EXPIRE_MINUTES},
@@ -1996,7 +1996,7 @@ async def request_pending_otp(
     if code is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, _OTP_INVALID)
     # Fail-soft, like every transactional e-mail in this repo.
-    await secretaria_provisioning.send_notification_email(
+    await mailer.send_email(
         address,
         _OTP_EMAIL_TEMPLATE,
         {"code": code, "ttl_minutes": get_settings().PATIENT_OTP_EXPIRE_MINUTES},

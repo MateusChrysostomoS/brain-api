@@ -14,7 +14,7 @@ from brain_api.config import get_settings
 from brain_api.core.security import hash_password
 from brain_api.models import RefreshToken, Tenant, User
 from brain_api.schemas.team import TeamInviteInput, TeamInviteResult, TeamMember
-from brain_api.services import onboarding_sync, secretaria_provisioning
+from brain_api.services import mailer, onboarding_sync, secretaria_provisioning
 from brain_api.services.staff_first_access import generate_temporary_password
 
 
@@ -110,24 +110,23 @@ async def deliver_first_access(
 ) -> TeamInviteResult:
     version = user.credential_version
     try:
-        queued = await secretaria_provisioning.send_notification_email(
+        sent = await mailer.send_email(
             user.email,
             "staff_temporary_password",
             {
                 "name": user.name,
                 "clinic_name": tenant.clinic_name,
+                "email": user.email,
                 "temporary_password": password,
                 "login_url": url,
-                "tenant_id": str(tenant.id),
-                "user_id": str(user.id),
-                "credential_version": version,
-                "expires_at": user.temporary_password_expires_at.isoformat(),
             },
         )
     except Exception:
         # A dependency failure must not expose request bodies or the generated password.
-        queued = False
-    status = "queued" if queued else "failed"
+        sent = False
+    # brain-api delivers directly since TASK-056: the outcome is known here, so the
+    # status is final. "queued" remains a valid value only for rows written before.
+    status = "sent" if sent else "failed"
     await session.execute(
         update(User)
         .where(

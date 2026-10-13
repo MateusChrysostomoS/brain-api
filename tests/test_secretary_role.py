@@ -209,20 +209,15 @@ async def test_secretary_can_pause_onboarding_but_a_plain_doctor_still_cannot(cl
 # --- REACHES: team management ----------------------------------------------
 
 
-async def test_owner_invites_a_secretary_without_creating_a_professional(client, monkeypatch):
+async def test_owner_invites_a_secretary_without_creating_a_professional(
+    client, monkeypatch, mail_spy
+):
     """The invite mirrors the professional one EXCEPT for the secretaria round-trip: no
     `professionals` row, no `professional_id`, and the reused `professional_invite`
     template."""
-    emails: list[dict] = []
-
-    async def fake_email(to, template, variables):
-        emails.append({"to": to, "template": template, "variables": variables})
-        return True
-
     async def must_not_be_called(*args, **kwargs):
         raise AssertionError("create_professional must NOT be called for a secretary")
 
-    monkeypatch.setattr(secretaria_provisioning, "send_notification_email", fake_email)
     monkeypatch.setattr(secretaria_provisioning, "create_professional", must_not_be_called)
 
     token = await _token(client, OWNER_EMAIL, OWNER_PASSWORD)
@@ -245,11 +240,12 @@ async def test_owner_invites_a_secretary_without_creating_a_professional(client,
     assert invited.tenant_id == client.tenant_id
     assert invited.invite_token_hash is not None
 
-    assert len(emails) == 1
-    assert emails[0]["to"] == "nova@clinic.com"
-    # Reused on purpose: an unknown template id is a SILENT no-send in secretaria.
-    assert emails[0]["template"] == "professional_invite"
-    assert emails[0]["variables"]["clinic_name"] == CLINIC
+    # Sent by brain-api's own mailer since TASK-056 (services/mailer.py).
+    assert len(mail_spy.calls) == 1
+    to, template, variables = mail_spy.last
+    assert to == "nova@clinic.com"
+    assert template == "professional_invite"
+    assert variables["clinic_name"] == CLINIC
 
     # Duplicate email is a clean 409, same contract as the professional invite.
     dup = await client.post(

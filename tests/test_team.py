@@ -8,12 +8,12 @@ import pytest_asyncio
 from brain_api.config import get_settings
 from brain_api.core.security import verify_password
 from brain_api.models import Tenant, User
-from brain_api.services import secretaria_provisioning
+from brain_api.services import mailer, secretaria_provisioning
 from tests.test_staff_first_access import pending_client, temp_login  # noqa: F401
 
 
 @pytest_asyncio.fixture
-async def team_client(pending_client, monkeypatch):
+async def team_client(pending_client, monkeypatch, mail_spy):
     c, owner, db = pending_client
     owner.requires_password_change = False
     owner.temporary_password_expires_at = None
@@ -25,14 +25,22 @@ async def team_client(pending_client, monkeypatch):
     )
     captured = []
 
+    # brain-api sends the first-access e-mail itself (TASK-056): record what the mailer
+    # got, and let `mail_spy.result` decide whether the send "worked".
     async def send(to, template, variables):
         captured.append({"to": to, "template": template, "variables": variables})
-        return True
+        return await mail_spy(to, template, variables)
+
+    async def not_through_secretaria(*args, **kwargs):
+        raise AssertionError("first-access e-mail must not go through secretarIA")
 
     async def create(tenant_id, *, name, specialty, about, **kwargs):
         return {"professional_id": str(uuid4()), "created": True}
 
-    monkeypatch.setattr(secretaria_provisioning, "send_notification_email", send)
+    monkeypatch.setattr(mailer, "send_email", send)
+    monkeypatch.setattr(
+        secretaria_provisioning, "send_notification_email", not_through_secretaria
+    )
     monkeypatch.setattr(secretaria_provisioning, "create_professional", create)
     token = (await temp_login(c)).json()["access_token"]
     yield c, owner, db, {"Authorization": f"Bearer {token}"}, captured
@@ -134,13 +142,10 @@ async def test_resend_changes_generation_and_old_password_is_invalid(team_client
     ).status_code == 200
 
 
-async def test_mail_failure_does_not_claim_sent_or_duplicate_user(team_client, monkeypatch):
+async def test_mail_failure_does_not_claim_sent_or_duplicate_user(team_client, mail_spy):
     c, owner, db, headers, emails = team_client
 
-    async def fail(*args, **kwargs):
-        return False
-
-    monkeypatch.setattr(secretaria_provisioning, "send_notification_email", fail)
+    mail_spy.result = False
     data = {"name": "Desk", "email": "desk@example.com", "role": "secretary"}
     response = await c.post("/doctor/team/invites", headers=headers, json=data)
     assert response.status_code == 201
@@ -165,3 +170,18 @@ async def test_doctor_can_be_manager_without_losing_professional_link(team_clien
     assert updated.json()["is_manager"] is True
     assert updated.json()["professional_id"] == member["professional_id"]
     assert updated.json()["role"] == "doctor"
+
+
+async def test_first_access_mail_goes_through_brain_api_mailer(team_client, mail_spy):
+    c, owner, db, headers, emails = team_client
+    response = await c.post(
+        "/doctor/team/invites",
+        headers=headers,
+        json={"name": "Desk", "email": "desk@example.com", "role": "secretary"},
+    )
+    assert response.status_code == 201
+    assert response.json()["delivery_status"] == "sent"
+    ((to, _template, variables),) = mail_spy.of("staff_temporary_password")
+    assert to == "desk@example.com"
+    assert set(variables) == {"name", "clinic_name", "email", "temporary_password", "login_url"}
+    # The fixture's secretarIA stub raises if anything is routed there.

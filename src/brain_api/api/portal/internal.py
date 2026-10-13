@@ -35,7 +35,7 @@ from brain_api.schemas.portal.internal import (
     PendingOtpVerifyIn,
     PendingOtpVerifyOut,
 )
-from brain_api.services import secretaria_provisioning
+from brain_api.services import mailer
 from brain_api.services.portal import patient_access
 
 logger = get_logger(__name__)
@@ -209,7 +209,7 @@ async def request_pending_otp_internal(
     code = await patient_access.issue_pending_otp(session, pending)
     if code is None:  # state changed between lookup and issue
         raise HTTPException(status.HTTP_404_NOT_FOUND, "pending_session_not_found")
-    queued = await secretaria_provisioning.send_notification_email(
+    queued = await mailer.send_email(
         pending.email,
         _OTP_EMAIL_TEMPLATE,
         {"code": code, "ttl_minutes": get_settings().PATIENT_OTP_EXPIRE_MINUTES},

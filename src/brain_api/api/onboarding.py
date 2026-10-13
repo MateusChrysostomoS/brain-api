@@ -47,7 +47,6 @@ from brain_api.core.logging import get_logger
 from brain_api.core.security import hash_password, hash_refresh_token
 from brain_api.models import Entitlement, SignupAttempt, Tenant, User
 from brain_api.models.user import ROLE_DOCTOR, ROLE_SECRETARY
-from brain_api.services.team import lock_clinic
 from brain_api.schemas.onboarding import (
     AttemptIn,
     AttemptOut,
@@ -73,12 +72,14 @@ from brain_api.schemas.signup import IntakeIn
 from brain_api.services import (
     billing,
     catalog,
+    mailer,
     meta_graph,
     onboarding,
     onboarding_sync,
     secretaria_provisioning,
     signup as signup_service,
 )
+from brain_api.services.team import lock_clinic
 
 logger = get_logger(__name__)
 
@@ -498,10 +499,10 @@ async def invite_professional(
     await session.refresh(user)
 
     invite_link = f"{get_settings().FRONTEND_BASE_URL}/convite?token={raw_token}"
-    await secretaria_provisioning.send_notification_email(
+    await mailer.send_email(
         email,
         "professional_invite",
-        # secretaria's professional_invite template renders `{link}` (services/email.py).
+        # services/mailer.py's professional_invite renders {name}, {clinic_name}, {link}.
         {"name": payload.name, "clinic_name": tenant.clinic_name, "link": invite_link},
     )
 
@@ -659,7 +660,7 @@ async def invite_secretary(
     await session.refresh(user)
 
     invite_link = f"{get_settings().FRONTEND_BASE_URL}/convite?token={raw_token}"
-    await secretaria_provisioning.send_notification_email(
+    await mailer.send_email(
         email,
         "professional_invite",
         {"name": payload.name, "clinic_name": tenant.clinic_name, "link": invite_link},

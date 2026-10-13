@@ -1,5 +1,7 @@
 # CHECKPOINT — reset de senha nativo do brain-api
 
+> **Superado pela TASK-056 (2026-10-13):** o link virou código de 6 dígitos enviado pelo próprio brain-api — ver `docs/CHECKPOINT_emails_autenticacao.md`. O texto abaixo é histórico.
+
 **Rodada:** 2026-08-14 · **Estado:** BUILT + validado (454 testes pytest verdes, 13 deles
 novos e específicos deste fluxo) · **NÃO commitado, NÃO deployado, migração `0014` NÃO
 rodada em produção.**

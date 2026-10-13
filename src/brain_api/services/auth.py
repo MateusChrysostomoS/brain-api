@@ -9,13 +9,16 @@ on every use. A presented token that was already rotated (revoked) is treated as
 — the whole active family for that user is revoked. Raw token values are never logged.
 """
 
+import hashlib
+import hmac
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
@@ -26,7 +29,7 @@ from brain_api.core.security import (
     hash_refresh_token,
     verify_password,
 )
-from brain_api.models import RefreshToken, Tenant, User
+from brain_api.models import RefreshToken, StaffPasswordResetCode, Tenant, User
 
 logger = get_logger(__name__)
 
@@ -104,9 +107,11 @@ async def set_password(session: AsyncSession, user_id: UUID, new_password: str) 
 
 # --- Password reset ---------------------------------------------------------
 #
-# Deliberately the SAME single-use, hashed-at-rest scheme as the professional invite
-# (`exchange_invite_token` above): `secrets.token_urlsafe(32)` handed out once, only
-# its sha256 persisted, burned by nulling the hash + expiry on redemption.
+# TASK-056: the person proves the mailbox with a 6-digit e-mailed code
+# (`issue_password_reset_code` / `verify_password_reset_code`); a correct code is
+# exchanged for the reset token — the SAME single-use, hashed-at-rest scheme as the
+# professional invite (`exchange_invite_token` above): `secrets.token_urlsafe(32)` handed
+# out once, only its sha256 persisted, burned by nulling the hash + expiry on redemption.
 #
 # NOTE ON ENUMERATION: none of these helpers raise or log differently for an unknown
 # email/token — they return `None`, and it is the ROUTER's job to answer identically
@@ -116,12 +121,7 @@ async def set_password(session: AsyncSession, user_id: UUID, new_password: str) 
 async def issue_password_reset_token(
     session: AsyncSession, email: str
 ) -> tuple[User, str] | None:
-    """Mint a reset token for `email`, persisting only its hash.
-
-    Returns `(user, raw_token)` so the caller can build the emailed link, or `None`
-    when no user matches that email. Issuing OVERWRITES any pending reset for the
-    same user, which invalidates the previous link — one live link at a time.
-    """
+    """Legacy link flow — removed together with its route in the next commit (TASK-056)."""
     user = await session.scalar(select(User).where(User.email == email.lower().strip()))
     if user is None:
         return None
@@ -132,6 +132,119 @@ async def issue_password_reset_token(
     )
     await session.commit()
     return user, raw_token
+
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def _hash_reset_code(code: str) -> str:
+    """HMAC-SHA256 keyed by SECRET_KEY. A 6-digit code is reversible from a bare hash in
+    a millisecond; keyed, a database leak alone reveals nothing. Rotating SECRET_KEY only
+    invalidates the codes still in flight (10 minutes)."""
+    return hmac.new(
+        get_settings().SECRET_KEY.encode(), code.encode(), hashlib.sha256
+    ).hexdigest()
+
+
+async def issue_password_reset_code(
+    session: AsyncSession, email: str
+) -> tuple[User, str] | None:
+    """Mint a 6-digit code for `email`, persisting only its keyed hash.
+
+    `None` — and the router answers exactly as for a match — when no user has the
+    address, when access is revoked, or when the per-user hourly cap is reached. Issuing
+    overwrites the previous code (one live code per user) and zeroes `attempts`.
+    """
+    settings = get_settings()
+    user = await session.scalar(select(User).where(User.email == _normalize_email(email)))
+    if user is None or user.access_revoked_at is not None:
+        logger.info("password_reset_code_requested_no_match")
+        return None
+    now = datetime.now(UTC)
+    row = await session.get(StaffPasswordResetCode, user.id)
+    if row is not None and _as_utc(row.window_started_at) > now - timedelta(hours=1):
+        if row.issued_in_window >= settings.PASSWORD_RESET_CODE_MAX_PER_HOUR:
+            logger.info("password_reset_code_throttled", user_id=str(user.id))
+            return None
+        window_started_at, issued = row.window_started_at, row.issued_in_window + 1
+    else:
+        window_started_at, issued = now, 1
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    values = {
+        "code_hash": _hash_reset_code(code),
+        "expires_at": now + timedelta(minutes=settings.PASSWORD_RESET_CODE_EXPIRE_MINUTES),
+        "attempts": 0,
+        "window_started_at": window_started_at,
+        "issued_in_window": issued,
+    }
+    if row is None:
+        session.add(StaffPasswordResetCode(user_id=user.id, **values))
+    else:
+        for key, value in values.items():
+            setattr(row, key, value)
+    try:
+        await session.commit()
+    except IntegrityError:
+        # Two first-ever requests raced on the primary key; the other one won and its
+        # e-mail is on its way. Same answer to the caller either way.
+        await session.rollback()
+        return None
+    return user, code
+
+
+async def verify_password_reset_code(
+    session: AsyncSession, email: str, code: str
+) -> str | None:
+    """Exchange a correct code for a fresh single-use reset token; `None` otherwise.
+
+    Same race-safe shape as `services/portal/patient_access.py::verify_account_otp`: the
+    attempt is SPENT by a conditional UPDATE before comparing, so concurrent guesses get
+    at most PASSWORD_RESET_CODE_MAX_ATTEMPTS comparisons between them, and naming the
+    hash that was read refuses a code re-issued mid-request. A correct code is deleted
+    and the reset token written in the same commit.
+    """
+    settings = get_settings()
+    ceiling = settings.PASSWORD_RESET_CODE_MAX_ATTEMPTS
+    now = datetime.now(UTC)
+    user = await session.scalar(select(User).where(User.email == _normalize_email(email)))
+    if user is None or user.access_revoked_at is not None:
+        return None
+    row = await session.get(StaffPasswordResetCode, user.id)
+    if row is None or _as_utc(row.expires_at) <= now or row.attempts >= ceiling:
+        return None
+    # Read once, before the UPDATE below: `synchronize_session=False` leaves `row` stale.
+    expected = row.code_hash
+    spent = await session.execute(
+        update(StaffPasswordResetCode)
+        .where(
+            StaffPasswordResetCode.user_id == user.id,
+            StaffPasswordResetCode.code_hash == expected,
+            StaffPasswordResetCode.attempts < ceiling,
+        )
+        .values(attempts=StaffPasswordResetCode.attempts + 1)
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+    if spent.rowcount != 1 or not hmac.compare_digest(expected, _hash_reset_code(code)):
+        return None
+    burned = await session.execute(
+        delete(StaffPasswordResetCode).where(
+            StaffPasswordResetCode.user_id == user.id,
+            StaffPasswordResetCode.code_hash == expected,
+        )
+    )
+    if burned.rowcount != 1:
+        await session.rollback()
+        return None
+    raw_token = secrets.token_urlsafe(32)
+    user.reset_token_hash = hash_refresh_token(raw_token)
+    user.reset_token_expires_at = now + timedelta(
+        minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES
+    )
+    await session.commit()
+    logger.info("password_reset_code_verified", user_id=str(user.id))
+    return raw_token
 
 
 async def find_password_reset_user(session: AsyncSession, raw_token: str) -> User | None:

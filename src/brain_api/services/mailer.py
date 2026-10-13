@@ -10,12 +10,14 @@ server. Rendering is STRICT — a missing variable is a code defect and refuses 
 instead of mailing a literal `{placeholder}`. Logs carry the template id and the outcome
 only: never the recipient, the body, a code, a password or a link.
 
-Same transport as secretarIA's proven sender (stdlib `smtplib` in a worker thread,
-STARTTLS, 15 s timeout), so a slow mail server never blocks the event loop.
+Same transport as secretarIA's sender (stdlib `smtplib` in a worker thread, 15 s timeout),
+so a slow mail server never blocks the event loop — but STARTTLS here VERIFIES the server
+certificate, and credentials are refused on a connection without TLS.
 """
 
 import asyncio
 import smtplib
+import ssl
 from collections.abc import Mapping
 from dataclasses import dataclass
 from email.message import EmailMessage
@@ -115,10 +117,18 @@ def _smtp_send(to: str, subject: str, body: str) -> None:
     )
     message["To"] = to
     message.set_content(body)
+    credentials = bool(settings.SMTP_USERNAME and settings.SMTP_PASSWORD)
+    if credentials and not settings.SMTP_USE_TLS:
+        # Never put the mail account's password (or the codes and temporary passwords
+        # in the body) on a cleartext connection. Without credentials — a local sink —
+        # plain SMTP stays possible.
+        raise RuntimeError("smtp_credentials_require_tls")
     with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as smtp:
         if settings.SMTP_USE_TLS:
-            smtp.starttls()
-        if settings.SMTP_USERNAME and settings.SMTP_PASSWORD:
+            # `starttls()` without a context does NOT verify the certificate or the
+            # hostname; the default context does both (TASK-056 review F1).
+            smtp.starttls(context=ssl.create_default_context())
+        if credentials:
             smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
         smtp.send_message(message)
 

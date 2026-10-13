@@ -110,3 +110,67 @@ async def test_smtp_failure_returns_false(monkeypatch, smtp_on):
     assert any(
         e["event"] == "email_send_failed" and e["error_type"] == "SMTPException" for e in logs
     )
+
+
+class _FakeSMTP:
+    """Records what `_smtp_send` does on the wire, without a network."""
+
+    instances: list["_FakeSMTP"] = []
+
+    def __init__(self, host, port, timeout):
+        self.starttls_context = None
+        self.logged_in = False
+        self.sent = False
+        _FakeSMTP.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def starttls(self, context=None):
+        self.starttls_context = context
+
+    def login(self, user, password):
+        self.logged_in = True
+
+    def send_message(self, message):
+        self.sent = True
+
+
+@pytest.fixture
+def fake_smtp(monkeypatch):
+    _FakeSMTP.instances = []
+    monkeypatch.setattr(mailer.smtplib, "SMTP", _FakeSMTP)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "SMTP_HOST", "smtp.example.com")
+    monkeypatch.setattr(settings, "SMTP_USERNAME", "mailer-user")
+    monkeypatch.setattr(settings, "SMTP_PASSWORD", "mailer-pass")
+    monkeypatch.setattr(settings, "EMAIL_FROM_ADDRESS", "no-reply@example.com")
+    return settings
+
+
+async def test_starttls_verifies_the_server_certificate(fake_smtp):
+    import ssl
+
+    ok = await real_send_email(
+        "ana@example.com", "patient_access_otp", CALLER_VARIABLES["patient_access_otp"]
+    )
+    assert ok is True
+    (conn,) = _FakeSMTP.instances
+    context = conn.starttls_context
+    assert context is not None
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
+async def test_credentials_are_never_sent_without_tls(fake_smtp, monkeypatch):
+    monkeypatch.setattr(fake_smtp, "SMTP_USE_TLS", False)
+    with capture_logs() as logs:
+        ok = await real_send_email(
+            "ana@example.com", "patient_access_otp", CALLER_VARIABLES["patient_access_otp"]
+        )
+    assert ok is False
+    assert all(not conn.logged_in and not conn.sent for conn in _FakeSMTP.instances)
+    assert any(e["event"] == "email_send_failed" for e in logs)

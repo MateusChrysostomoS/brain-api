@@ -499,6 +499,7 @@ async def _account_body(
 async def request_otp(
     payload: OtpRequestIn,
     request: Request,
+    background: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ) -> MessageOut:
     """Begin the login of the ACCOUNT.
@@ -519,8 +520,10 @@ async def request_otp(
         return MessageOut(detail=_OTP_REQUEST_MESSAGE)
 
     code = await patient_access.issue_account_otp(session, address)
-    # Fail-soft, like every transactional e-mail in this repo.
-    await mailer.send_email(
+    # Fail-soft and AFTER the response (TASK-056): brain-api's own SMTP takes seconds, and
+    # an in-request send would let timing tell which branch mailed.
+    background.add_task(
+        mailer.send_email,
         address,
         _OTP_EMAIL_TEMPLATE,
         {"code": code, "ttl_minutes": get_settings().PATIENT_OTP_EXPIRE_MINUTES},
@@ -1971,6 +1974,7 @@ async def complete_pending(
 )
 async def request_pending_otp(
     request: Request,
+    background: BackgroundTasks,
     visit: tuple[MessagePatient, MessagePendingSession] = Depends(get_current_pending),
     session: AsyncSession = Depends(get_session),
 ) -> MessageOut:
@@ -1995,8 +1999,9 @@ async def request_pending_otp(
     code = await patient_access.issue_pending_otp(session, pending)
     if code is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, _OTP_INVALID)
-    # Fail-soft, like every transactional e-mail in this repo.
-    await mailer.send_email(
+    # Fail-soft and AFTER the response (TASK-056), like request_otp above.
+    background.add_task(
+        mailer.send_email,
         address,
         _OTP_EMAIL_TEMPLATE,
         {"code": code, "ttl_minutes": get_settings().PATIENT_OTP_EXPIRE_MINUTES},

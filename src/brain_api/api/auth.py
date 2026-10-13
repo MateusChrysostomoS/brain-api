@@ -19,7 +19,7 @@ this round purely additive for a client that has not moved yet.
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.api.deps import Principal, get_current_principal
@@ -43,28 +43,29 @@ from brain_api.schemas.auth import (
     LogoutRequest,
     MeResponse,
     MessageOut,
+    PasswordResetCodeVerifyIn,
     PasswordResetConfirmIn,
     PasswordResetRequestIn,
-    PasswordResetVerifyIn,
+    PasswordResetTokenOut,
     RefreshRequest,
     SetPasswordIn,
     TenantOut,
     TokenResponse,
     UserOut,
 )
-from brain_api.services import secretaria_provisioning, signup as signup_service
+from brain_api.services import mailer, signup as signup_service
 from brain_api.services.auth import (
     authenticate,
     complete_password_reset as _complete_password_reset,
     exchange_invite_token as _exchange_invite_token,
-    find_password_reset_user,
     get_tenant,
     get_user,
-    issue_password_reset_token,
+    issue_password_reset_code,
     issue_refresh_token,
     revoke_refresh_token,
     rotate_refresh_token,
     set_password as _set_password,
+    verify_password_reset_code,
 )
 
 logger = get_logger(__name__)
@@ -414,102 +415,105 @@ async def set_password(
 # --- Password reset (CONTRACTS.md §2.6) -------------------------------------
 #
 # The UNAUTHENTICATED recovery path, as opposed to /set-password above which requires a
-# live session. Three steps mirroring PreCheck's contract exactly (request -> verify ->
-# confirm) so brain-frontend's existing screens work against either backend unchanged.
+# live session: request (e-mails a code) -> verify-code (code -> reset token) -> confirm.
 #
 # Before this existed, brain-frontend's "Esqueci a senha" called PreCheck's API — so for
 # any user that exists only in brain-api (every self-serve signup) the reset silently did
 # nothing: PreCheck found no such email and, correctly, returned its generic success.
+# TASK-056 (2026-10-13): the link became a 6-digit e-mailed code, sent by brain-api itself.
 
-# The ONE response the request endpoint ever gives. Deliberately worded so it is true
-# whether or not the email matched — the user is told what will happen IF the account
-# exists, never whether it does.
-_RESET_REQUEST_MESSAGE = (
-    "Se houver uma conta com esse e-mail, enviamos um link para redefinir a senha."
-)
+# The ONE answer the request endpoint ever gives — true whether or not the address
+# belongs to an account.
+_RESET_REQUEST_MESSAGE = "Se houver uma conta com esse e-mail, enviamos um código para ele."
+# Same answer for unknown e-mail and for wrong / expired / exhausted code —
+# distinguishing them would reveal which addresses have accounts.
+_RESET_CODE_INVALID = "Código inválido ou expirado"
 # Same message for unknown, expired and already-used tokens — distinguishing them would
 # reveal whether a token ever existed.
 _RESET_TOKEN_INVALID = "Token inválido ou expirado"
+
+# Per-ADDRESS bucket on top of the per-IP auth bucket: protects one inbox from a
+# distributed flood. It applies to every address alike, so a 429 reveals nothing.
+_reset_email_limiter = SlidingWindowLimiter(
+    "password_reset_email", lambda: get_settings().PASSWORD_RESET_EMAIL_RATE_LIMIT_PER_MIN
+)
+
+
+def _no_store(response: Response) -> None:
+    # A code exchange or reset answer must never sit in a browser or proxy cache.
+    response.headers["Cache-Control"] = "no-store"
 
 
 @router.post(
     "/password-reset/request",
     response_model=MessageOut,
-    summary="Request a password reset link",
+    summary="E-mail a password reset code",
     description=(
-        "Emails a single-use reset link. ALWAYS returns the same 200 body, whether or "
-        "not the address belongs to an account, to prevent account enumeration."
+        "E-mails a 6-digit code (10 min, 5 attempts). ALWAYS returns the same 200 body, "
+        "whether or not the address belongs to an account, to prevent enumeration."
     ),
-    responses={429: {"description": "Rate limited (per-IP auth budget)."}},
+    responses={429: {"description": "Rate limited (per IP or per address)."}},
 )
 async def password_reset_request(
     payload: PasswordResetRequestIn,
     request: Request,
+    response: Response,
+    background: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ) -> MessageOut:
     """Begin the reset flow.
 
-    ENUMERATION: there is exactly one `return` for both branches, so the status, body and
-    headers are identical for a registered and an unregistered address. The unmatched
-    branch does less WORK (no token write, no email dispatch), so the timing is not
-    perfectly constant — matching PreCheck's own posture. Closing that side channel would
-    need a dummy write plus a padded delay; it is recorded as a known limitation rather
-    than papered over, because a half-done constant-time claim is worse than none.
-
-    Shares the per-IP auth bucket with /token and /refresh on purpose: this route sends
-    email to an address the caller chose, which is the more abusable of the two surfaces.
+    ENUMERATION: one `return` for every branch. The e-mail goes out AFTER the response
+    (BackgroundTasks), so SMTP latency does not mark the matching branch; what remains is
+    one extra database write — a documented, accepted limitation.
     """
+    _no_store(response)
     _check_auth_rate_limit(request)
-    issued = await issue_password_reset_token(session, payload.email)
+    if not _reset_email_limiter.allow(str(payload.email).strip().lower()):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many attempts. Try again in a minute.",
+        )
+    issued = await issue_password_reset_code(session, str(payload.email))
     if issued is not None:
-        user, raw_token = issued
-        settings = get_settings()
-        # Same link mechanism as the professional invite (api/onboarding.py) — one
-        # FRONTEND_BASE_URL for every emailed deep link. WHICH frontend that should be
-        # now that secretarIA-frontend also serves these routes is an open deploy
-        # decision, tracked with the invite link; do not fork a second setting for it.
-        link = f"{settings.FRONTEND_BASE_URL}/esqueci_senha/token?token={raw_token}"
-        # Fail-soft, like every other transactional email here: a bounced send must not
-        # turn into a 500 that tells the caller this address exists.
-        await secretaria_provisioning.send_notification_email(
+        user, code = issued
+        background.add_task(
+            mailer.send_email,
             user.email,
-            "password_reset",
+            "password_reset_code",
             {
                 "name": user.name,
-                "link": link,
-                "ttl_minutes": settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES,
+                "code": code,
+                "ttl_minutes": get_settings().PASSWORD_RESET_CODE_EXPIRE_MINUTES,
             },
         )
-        # Stable reference only — never the email or the token.
-        logger.info("password_reset_requested", user_id=str(user.id))
-    else:
-        logger.info("password_reset_requested_no_match")
+        logger.info("password_reset_code_requested", user_id=str(user.id))
     return MessageOut(detail=_RESET_REQUEST_MESSAGE)
 
 
 @router.post(
-    "/password-reset/verify",
-    response_model=MessageOut,
-    summary="Check a reset token",
-    description=(
-        "Read-only pre-flight so the UI can reject a broken link before the user types "
-        "a new password. Does NOT consume the token."
-    ),
+    "/password-reset/verify-code",
+    response_model=PasswordResetTokenOut,
+    summary="Exchange a reset code for a reset token",
+    description="Burns a correct code and returns a single-use token for /confirm (15 min).",
     responses={
-        400: {"description": "Unknown, expired or already-used token."},
+        400: {"description": "Unknown e-mail, wrong, expired or exhausted code."},
         429: {"description": "Rate limited (per-IP auth budget)."},
     },
 )
-async def password_reset_verify(
-    payload: PasswordResetVerifyIn,
+async def password_reset_verify_code(
+    payload: PasswordResetCodeVerifyIn,
     request: Request,
+    response: Response,
     session: AsyncSession = Depends(get_session),
-) -> MessageOut:
-    """Validate without burning — the token must survive for the confirm step."""
+) -> PasswordResetTokenOut:
+    _no_store(response)
     _check_auth_rate_limit(request)
-    if await find_password_reset_user(session, payload.token) is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, _RESET_TOKEN_INVALID)
-    return MessageOut(detail="Token válido")
+    token = await verify_password_reset_code(session, str(payload.email), payload.code)
+    if token is None:
+        logger.info("password_reset_code_rejected")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _RESET_CODE_INVALID)
+    return PasswordResetTokenOut(reset_token=token)
 
 
 @router.post(
@@ -517,8 +521,8 @@ async def password_reset_verify(
     response_model=MessageOut,
     summary="Set a new password with a reset token",
     description=(
-        "Consumes the token and sets the new password. Afterwards the user logs in "
-        "through POST /auth/token normally."
+        "Consumes the token from /verify-code and sets the new password; every existing "
+        "session of the user is revoked. Afterwards the user logs in through POST /auth/token."
     ),
     responses={
         400: {"description": "Unknown, expired or already-used token."},
@@ -529,15 +533,10 @@ async def password_reset_verify(
 async def password_reset_confirm(
     payload: PasswordResetConfirmIn,
     request: Request,
+    response: Response,
     session: AsyncSession = Depends(get_session),
 ) -> MessageOut:
-    """Consume the token and set the new password.
-
-    NOT done here, deliberately: revoking the user's existing refresh tokens. It would be
-    a defensible hardening (a reset is often triggered BY a compromise), but there is no
-    revoke-all-for-user helper today and silently expanding the blast radius of this round
-    into session invalidation is the kind of change that deserves its own review.
-    """
+    _no_store(response)
     _check_auth_rate_limit(request)
     user = await _complete_password_reset(session, payload.token, payload.new_password)
     if user is None:

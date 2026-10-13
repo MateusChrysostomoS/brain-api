@@ -118,22 +118,6 @@ async def set_password(session: AsyncSession, user_id: UUID, new_password: str) 
 # either way. Do not "improve" them by raising a specific error here.
 
 
-async def issue_password_reset_token(
-    session: AsyncSession, email: str
-) -> tuple[User, str] | None:
-    """Legacy link flow — removed together with its route in the next commit (TASK-056)."""
-    user = await session.scalar(select(User).where(User.email == email.lower().strip()))
-    if user is None:
-        return None
-    raw_token = secrets.token_urlsafe(32)
-    user.reset_token_hash = hash_refresh_token(raw_token)
-    user.reset_token_expires_at = datetime.now(UTC) + timedelta(
-        minutes=get_settings().PASSWORD_RESET_TOKEN_EXPIRE_MINUTES
-    )
-    await session.commit()
-    return user, raw_token
-
-
 def _normalize_email(email: str) -> str:
     return email.strip().lower()
 

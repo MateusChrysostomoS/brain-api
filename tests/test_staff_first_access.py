@@ -151,13 +151,14 @@ async def test_first_access_rejects_password_over_bcrypt_byte_limit(pending_clie
 
 async def test_recovery_concludes_setup_and_burns_legacy_invite(pending_client):
     from brain_api.core.security import hash_refresh_token
-    from brain_api.services.auth import issue_password_reset_token
+    from brain_api.services.auth import issue_password_reset_code, verify_password_reset_code
 
     c, user, db = pending_client
     user.invite_token_hash = hash_refresh_token("legacy-fixture-token")
     user.invite_token_expires_at = datetime.now(UTC) + timedelta(hours=72)
     await db.commit()
-    _, reset = await issue_password_reset_token(db, user.email)
+    _, code = await issue_password_reset_code(db, user.email)
+    reset = await verify_password_reset_code(db, user.email, code)
     response = await c.post(
         "/auth/password-reset/confirm", json={"token": reset, "new_password": "PersonalTest9"}
     )
@@ -173,10 +174,11 @@ async def test_recovery_concludes_setup_and_burns_legacy_invite(pending_client):
 
 @pytest.mark.parametrize("password", ["TemporaryTest7", "é" * 40 + "9"])
 async def test_recovery_obeys_first_access_password_policy(pending_client, password):
-    from brain_api.services.auth import issue_password_reset_token
+    from brain_api.services.auth import issue_password_reset_code, verify_password_reset_code
 
     c, user, db = pending_client
-    _, reset = await issue_password_reset_token(db, user.email)
+    _, code = await issue_password_reset_code(db, user.email)
+    reset = await verify_password_reset_code(db, user.email, code)
     response = await c.post(
         "/auth/password-reset/confirm", json={"token": reset, "new_password": password}
     )

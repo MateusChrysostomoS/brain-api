@@ -305,10 +305,31 @@ class Settings(BaseSettings):
     # Lifetime of a password-reset token (POST /auth/password-reset/request ->
     # /confirm). Expressed in MINUTES, not hours like the invite above: a reset link is
     # a credential-recovery secret sitting in an inbox, so it is deliberately the
-    # shortest-lived token in the service. 30 minutes matches what PreCheck's own reset
-    # flow has used since it shipped (app/services/password_reset.py), so a user who has
-    # accounts in both products sees the same window.
-    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
+    # shortest-lived token in the service. 15 minutes: since TASK-056 it is minted only
+    # AFTER a correct e-mailed code, so it covers just the new-password screen.
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 15
+
+    # --- Password reset by e-mailed code (POST /auth/password-reset/request ->
+    # /verify-code -> /confirm). A 6-digit code IS guessable: what protects it is the
+    # per-code attempt ceiling, the per-user hourly issue cap and the short expiry —
+    # together at most 25 guesses per hour against 10^6 values.
+    PASSWORD_RESET_CODE_EXPIRE_MINUTES: int = 10
+    PASSWORD_RESET_CODE_MAX_ATTEMPTS: int = 5
+    PASSWORD_RESET_CODE_MAX_PER_HOUR: int = 5
+    # Per-ADDRESS request bucket (per minute), on top of the per-IP auth bucket.
+    PASSWORD_RESET_EMAIL_RATE_LIMIT_PER_MIN: int = 3
+
+    # --- Outbound authentication e-mail (services/mailer.py) ---
+    # brain-api's own SMTP. Empty SMTP_HOST = mail OFF: every send returns False and
+    # logs `email_not_configured`; startup logs `email_smtp_not_configured` once.
+    # Values live ONLY in the deployed service settings (EasyPanel), never in the repo.
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_USE_TLS: bool = True
+    EMAIL_FROM_ADDRESS: str = ""
+    EMAIL_FROM_NAME: str = "Brain"
 
     # --- Brain-Message patient access (OTP by e-mail + the patient session) ---
     # The patient's end of the second channel. A patient is NOT a `users` row: they prove

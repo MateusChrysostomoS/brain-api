@@ -2,6 +2,8 @@
 
 TASK-055: bases públicas únicas e rotas derivadas; configuração por serviço em [URLs públicas](docs/CHECKPOINT_urls_publicas.md). Commit e push para origin/main autorizados; sem deploy manual.
 
+Continuação TASK-055: convite médico preserva recusas de plano que viravam 502; teste reproduziu o defeito, correção revisada. A causa da tentativa real ainda depende de logs: [checkpoint](docs/CHECKPOINT_convite_medico_502.md).
+
 TASK-054: equipe e primeiro acesso com senha temporária; implementação local, sem publicação: [checkpoint](docs/CHECKPOINT_equipe_primeiro_acesso.md).
 
 Plano preparado (2026-10-08): [avisos ao médico, entrada por lembrete e QA R6](../z_prompts/PROMPT_CORRECAO_EMAIL_MEDICO_ENTRADA_LEMBRETE_R6.md). Participação condicional do gateway na propagação do contexto/autenticação; nenhuma correção aplicada nesta rodada.

@@ -51,6 +51,7 @@ async def _request(
     *,
     json: dict[str, Any] | None = None,
     params: dict[str, Any] | None = None,
+    preserve_professional_refusals: bool = False,
 ) -> httpx.Response | None:
     """Call `method path` on secretaria's internal surface with the shared pair key.
 
@@ -60,7 +61,8 @@ async def _request(
     is unreachable (network error/timeout), secretaria answers 403 (ITS OWN key is
     unconfigured — the same "unconfigured on either side" fold `secretaria_internal.py`
     uses), or 401 (a key MISMATCH — both sides set but different). Every case is logged
-    at WARNING with the path only, never the key or the request body.
+    at WARNING with the path only, never the key or the request body. Interactive
+    professional creation may preserve allowlisted plan refusals for its caller.
     """
     settings = get_settings()
     base, key = settings.SECRETARIA_BASE_URL, settings.SECRETARIA_API_KEY
@@ -84,6 +86,14 @@ async def _request(
         return None
 
     if resp.status_code == 403:
+        if preserve_professional_refusals:
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            detail = body.get("detail") if isinstance(body, dict) else None
+            if detail in ("multi_professional_not_entitled", "professional_limit_reached"):
+                return resp
         logger.warning("secretaria_provisioning_unconfigured_upstream", path=path)
         return None
     if resp.status_code == 401:
@@ -192,6 +202,7 @@ async def create_professional(
             "about": about,
             **({"interactive": True} if interactive else {}),
         },
+        preserve_professional_refusals=interactive,
     )
     if interactive and resp is not None and resp.status_code in (403, 409):
         from fastapi import HTTPException
@@ -199,7 +210,10 @@ async def create_professional(
         detail = resp.json().get("detail")
         if detail in ("multi_professional_not_entitled", "professional_limit_reached"):
             raise HTTPException(resp.status_code, detail)
-    if resp is None or resp.status_code >= 400:
+    if resp is None:
+        return None
+    if resp.status_code >= 400:
+        logger.warning("secretaria_create_professional_failed", upstream_status=resp.status_code)
         return None
     return resp.json()
 

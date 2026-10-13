@@ -2074,8 +2074,8 @@ old bootstrap calls remain unchanged. All interactive linkage checks existing ow
 
 New `staff_temporary_password` mail template uses encrypted Redis job envelopes and
 versioned internal delivery callbacks under the mesh key. Queue acceptance is not
-delivery. New configuration `BRAIN_MESSAGE_STAFF_LOGIN_URL` must point to the staff
-portal root, never the patient portal. Missing/invalid configuration refuses creation.
+delivery. Configuration `BRAIN_MESSAGE_PUBLIC_URL` points to the unified portal root;
+the staff login path `/login` is appended in code. Missing/invalid configuration refuses creation.
 
 Implementation, validation, publication order and limits:
 `docs/CHECKPOINT_equipe_primeiro_acesso.md`. Local only; no deployment authorized.

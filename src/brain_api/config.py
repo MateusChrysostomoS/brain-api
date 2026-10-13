@@ -176,16 +176,7 @@ class Settings(BaseSettings):
     # Stripe price ids, e.g. {"secretaria_basico": "price_123", "ehr": "price_456"}.
     # Per-environment (test vs live prices); the catalog itself never hardcodes one.
     STRIPE_PRICE_MAP: str = "{}"
-    # Where Stripe Checkout / the Billing Portal send the browser back to.
-    STRIPE_CHECKOUT_SUCCESS_URL: str = "http://localhost:3000/app?checkout=success"
-    STRIPE_CHECKOUT_CANCEL_URL: str = "http://localhost:3000/app?checkout=cancelled"
-    # Cold-signup checkouts land on a PUBLIC onboarding page (the buyer has no session
-    # yet, so /app would bounce them to /login). Empty = fall back to the shared URLs
-    # above. The success URL should carry Stripe's {CHECKOUT_SESSION_ID} template so the
-    # page can poll GET /public/onboarding-status.
-    STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL: str = ""
-    STRIPE_SIGNUP_CHECKOUT_CANCEL_URL: str = ""
-    STRIPE_PORTAL_RETURN_URL: str = "http://localhost:3000/app"
+    # Payment return routes are derived from FRONTEND_BASE_URL below.
     # Stripe API base + client timeout (base overridable only for local stubs).
     STRIPE_API_BASE: str = "https://api.stripe.com"
     STRIPE_TIMEOUT_SECONDS: float = 15.0
@@ -291,11 +282,11 @@ class Settings(BaseSettings):
     # portal. Not a secret (Meta's JS SDK takes the same string client-side) — unlike
     # META_APP_SECRET, safe to echo back.
     META_ES_COEXISTENCE_FEATURE_TYPE: str = "whatsapp_business_app_onboarding"
-    # Base URL of the brain-frontend portal — used to build the professional-invite link
-    # (POST /doctor/professionals/invites -> "{FRONTEND_BASE_URL}/convite?token=...").
+    # Public base of brain-frontend: payment returns, legacy invites and password reset.
     FRONTEND_BASE_URL: str = "http://localhost:3000"
-    # Staff invitations never use the patient portal URL or a browser-supplied Origin.
-    BRAIN_MESSAGE_STAFF_LOGIN_URL: str = ""
+    # Public origin of the unified portal: staff /login and patient /clinicas/.
+    # Never inferred from a browser-supplied Origin. Empty disables invite links.
+    BRAIN_MESSAGE_PUBLIC_URL: str = ""
     # Fallback for the ativo transition when secretaria's Coexistence "mode resolved"
     # signal (history/smb_app_state_sync webhook fields, secretaria-side) never arrives:
     # a tenant whose WhatsApp `connected_at` is older than this many hours is treated as
@@ -443,10 +434,27 @@ class Settings(BaseSettings):
     # Longer than SECRETARIA_TIMEOUT_SECONDS because the product stores the bytes before it
     # answers; httpx applies it per network operation, not to the whole transfer.
     ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS: float = 60.0
-    # Public base URL of the Brain-Message patient portal (e.g. `https://portal.example`),
-    # used ONLY to build the invite link a clinic reads (`core/invite_codes.py::invite_link`).
-    # Not a secret. Empty = no link; the short code alone still works.
-    BRAIN_MESSAGE_PORTAL_URL: str = ""
+
+    @property
+    def STRIPE_CHECKOUT_SUCCESS_URL(self) -> str:
+        return f"{self.FRONTEND_BASE_URL.strip().rstrip('/')}/app?checkout=success"
+
+    @property
+    def STRIPE_CHECKOUT_CANCEL_URL(self) -> str:
+        return f"{self.FRONTEND_BASE_URL.strip().rstrip('/')}/app?checkout=cancelled"
+
+    @property
+    def STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL(self) -> str:
+        base = self.FRONTEND_BASE_URL.strip().rstrip("/")
+        return f"{base}/checkout/sucesso/?session_id={{CHECKOUT_SESSION_ID}}"
+
+    @property
+    def STRIPE_SIGNUP_CHECKOUT_CANCEL_URL(self) -> str:
+        return f"{self.FRONTEND_BASE_URL.strip().rstrip('/')}/checkout/cancelado/"
+
+    @property
+    def STRIPE_PORTAL_RETURN_URL(self) -> str:
+        return f"{self.FRONTEND_BASE_URL.strip().rstrip('/')}/app"
 
     @property
     def cors_origins(self) -> list[str]:

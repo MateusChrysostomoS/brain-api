@@ -79,8 +79,8 @@ def parse_invite(raw: str) -> UUID | str | None:
 
 
 def invite_link(code: str | None) -> str | None:
-    """The link a clinic hands out, or `None` while `BRAIN_MESSAGE_PORTAL_URL` is unset."""
-    base = get_settings().BRAIN_MESSAGE_PORTAL_URL.strip().rstrip("/")
+    """The link a clinic hands out, or `None` while `BRAIN_MESSAGE_PUBLIC_URL` is unset."""
+    base = get_settings().BRAIN_MESSAGE_PUBLIC_URL.strip().rstrip("/")
     if not base or not code:
         return None
     return f"{base}/clinicas/?convite={code}"

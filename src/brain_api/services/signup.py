@@ -289,12 +289,9 @@ async def create_checkout_session_for_intent(session: AsyncSession, intent_id: U
     selection = billing.validate_selection(plan_id, addon_ids)
 
     settings = get_settings()
-    # Signup checkouts get their own return URLs (public onboarding page — the buyer has
-    # no session yet), falling back to the shared tenant ones when unset.
-    success_url = (
-        settings.STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL or settings.STRIPE_CHECKOUT_SUCCESS_URL
-    )
-    cancel_url = settings.STRIPE_SIGNUP_CHECKOUT_CANCEL_URL or settings.STRIPE_CHECKOUT_CANCEL_URL
+    # Public return routes are derived from the single frontend base URL.
+    success_url = settings.STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL
+    cancel_url = settings.STRIPE_SIGNUP_CHECKOUT_CANCEL_URL
     data: dict[str, str] = {
         "mode": "setup",
         # Required in setup mode and ONLY there: with no line items there is no price for

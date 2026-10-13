@@ -137,6 +137,9 @@ def _install_fake_stripe_httpx(
         STRIPE_TIMEOUT_SECONDS=15.0,
         STRIPE_PRICE_MAP=PRICE_MAP_JSON,
         STRIPE_CHECKOUT_SUCCESS_URL="http://localhost:3000/app?checkout=success",
+        STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL=(
+            "http://localhost:3000/checkout/sucesso/?session_id={CHECKOUT_SESSION_ID}"
+        ),
         STRIPE_CHECKOUT_CANCEL_URL="http://localhost:3000/app?checkout=cancelled",
         STRIPE_PORTAL_RETURN_URL="http://localhost:3000/app",
         # Onboarding round (CONTRACT_onboarding_v1.md §9): create_checkout_session /

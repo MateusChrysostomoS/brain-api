@@ -49,7 +49,7 @@ def member_out(user: User) -> TeamMember:
 
 def staff_login_url() -> str:
     settings = get_settings()
-    url = settings.BRAIN_MESSAGE_STAFF_LOGIN_URL.strip()
+    url = settings.BRAIN_MESSAGE_PUBLIC_URL.strip()
     parsed = urlsplit(url)
     if (
         not parsed.hostname
@@ -62,7 +62,7 @@ def staff_login_url() -> str:
         or (settings.APP_ENV not in ("dev", "test") and parsed.scheme != "https")
     ):
         raise HTTPException(503, "staff_login_url_not_configured")
-    return url
+    return f"{url.rstrip('/')}/login"
 
 
 async def lock_clinic(session: AsyncSession, principal: Principal) -> Tenant:

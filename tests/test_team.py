@@ -21,7 +21,7 @@ async def team_client(pending_client, monkeypatch):
     owner.is_manager = True
     await db.commit()
     monkeypatch.setattr(
-        get_settings(), "BRAIN_MESSAGE_STAFF_LOGIN_URL", "https://portal.example.com/"
+        get_settings(), "BRAIN_MESSAGE_PUBLIC_URL", "https://portal.example.com/"
     )
     captured = []
 
@@ -66,7 +66,7 @@ async def test_invite_roles_receive_private_temporary_password(team_client, role
     assert password != "TemporaryTest7"
     assert password not in response.text
     assert "password_hash" not in response.text
-    assert emails[0]["variables"]["login_url"] == "https://portal.example.com/"
+    assert emails[0]["variables"]["login_url"] == "https://portal.example.com/login"
     logged = await c.post("/auth/token", json={"email": "new@example.com", "password": password})
     assert logged.status_code == 200 and logged.json()["requires_password_change"] is True
 

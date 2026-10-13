@@ -582,7 +582,7 @@ async def test_an_email_only_login_keeps_the_clinic_it_was_pinned_to(pclient):
 
 async def test_the_staff_reads_its_own_invite(pclient, monkeypatch):
     client, sessionmaker, seed = pclient
-    monkeypatch.setattr(get_settings(), "BRAIN_MESSAGE_PORTAL_URL", "https://portal.exemplo/")
+    monkeypatch.setattr(get_settings(), "BRAIN_MESSAGE_PUBLIC_URL", "https://portal.exemplo/")
     async with sessionmaker() as session, session.begin():
         user = User(
             tenant_id=seed.both,

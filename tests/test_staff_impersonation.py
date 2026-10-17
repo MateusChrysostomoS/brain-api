@@ -1,11 +1,12 @@
 """Platform support cannot bypass setup/revocation or mint an obsolete credential."""
 
-import pytest
 from datetime import UTC, datetime
 
+import pytest
 from fastapi import HTTPException
-from brain_api.models import Tenant, User
+
 from brain_api.core.security import decode_token
+from brain_api.models import Tenant, User
 from brain_api.services.admin import issue_impersonation_token
 
 

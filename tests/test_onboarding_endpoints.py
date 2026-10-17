@@ -1222,6 +1222,7 @@ async def test_invite_professional_denies_staff_without_management(client, monke
 
 async def test_self_bind_cannot_take_another_accounts_professional(client, monkeypatch):
     from sqlalchemy import select
+
     from brain_api.core.database import get_session
     from brain_api.main import app
     from brain_api.models import User

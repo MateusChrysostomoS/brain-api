@@ -6,7 +6,7 @@ default-resolution paths), and demo-request capture (happy path, validation,
 honeypot). Asserts the never-leak rule (no password_hash in /auth/me).
 """
 
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient

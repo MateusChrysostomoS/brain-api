@@ -560,7 +560,7 @@ async def bind_self_professional(
     defined not to be (models/user.ROLE_SECRETARY).
     """
     deny_secretary(principal, "secretary_cannot_be_professional")
-    tenant = await lock_clinic(session, principal)
+    tenant = await lock_clinic(session, principal, require_manager=False)
     user = await session.get(User, UUID(principal.user_id), populate_existing=True)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")

@@ -67,7 +67,9 @@ def staff_login_url() -> str:
     return f"{url.rstrip('/')}/login"
 
 
-async def lock_clinic(session: AsyncSession, principal: Principal) -> Tenant:
+async def lock_clinic(
+    session: AsyncSession, principal: Principal, *, require_manager: bool = True
+) -> Tenant:
     tenant = await session.scalar(
         select(Tenant).where(Tenant.id == principal.tenant_id).with_for_update()
     )
@@ -83,7 +85,7 @@ async def lock_clinic(session: AsyncSession, principal: Principal) -> Tenant:
         or actor.credential_version != principal.credential_version
     ):
         raise HTTPException(401, "Invalid or expired token")
-    if not can_manage_team(actor):
+    if require_manager and not can_manage_team(actor):
         raise HTTPException(403, "team_manager_required")
     return tenant
 

@@ -139,3 +139,10 @@ def mail_spy(monkeypatch):
     spy = MailSpy()
     monkeypatch.setattr(mailer, "send_email", spy)
     return spy
+
+
+@pytest.fixture
+def staff_accounts_enabled(monkeypatch):
+    from brain_api.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "STAFF_ACCOUNT_CREDENTIALS_ENABLED", True)

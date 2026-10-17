@@ -53,6 +53,9 @@ class TokenResponse(BaseModel):
     email: str | None = None
     professional_id: UUID | None = None
     requires_password_change: bool = False
+    user_id: UUID | None = None
+    tenant_id: UUID | None = None
+    role: str | None = None
 
 
 class RefreshRequest(BaseModel):

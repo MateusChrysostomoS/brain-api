@@ -27,6 +27,7 @@ from brain_api.api import (
     public_signup,
     public_waitlist,
     sso,
+    staff_account,
     staff_first_access,
     team,
     tenant_patient_cleanup,
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router, tags=["health"])
     app.include_router(auth.router, tags=["auth"])
     app.include_router(staff_first_access.router)
+    app.include_router(staff_account.router)
     app.include_router(team.router)
     app.include_router(entitlements.router, tags=["entitlements"])
     app.include_router(sso.router, tags=["sso"])

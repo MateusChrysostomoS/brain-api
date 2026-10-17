@@ -103,8 +103,9 @@ async def register_signup(session: AsyncSession, payload: SignupIntentCreate) ->
     these rows.
     """
     email = payload.email.lower()
-    existing = await session.scalar(select(User).where(User.email == email))
-    if existing is not None:
+    from brain_api.services.staff_accounts import adopt_new_user, email_registered
+
+    if await email_registered(session, email):
         raise HTTPException(status.HTTP_409_CONFLICT, "email_already_registered")
 
     tenant = Tenant(clinic_name=payload.clinic_name)
@@ -148,6 +149,8 @@ async def register_signup(session: AsyncSession, payload: SignupIntentCreate) ->
     )
     session.add(intent)
     try:
+        await session.flush()
+        await adopt_new_user(session, user)
         await session.commit()
     except IntegrityError:
         # Raced: another registration inserted this email between the check above and this

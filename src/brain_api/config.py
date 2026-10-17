@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # --- Application ---
     APP_ENV: str = "dev"
     LOG_LEVEL: str = "INFO"
+    # Enable only after account-aware writers/readers and compatible consumers are live.
+    STAFF_MULTI_CLINIC_ENABLED: bool = False
+    STAFF_ACCOUNT_CREDENTIALS_ENABLED: bool = False
 
     # --- Database (asyncpg driver) — brain's own database ---
     DATABASE_URL: str = "postgresql+asyncpg://brain:brain@localhost:5432/brain"

@@ -25,7 +25,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from brain_api.api.deps import Principal, get_current_principal
 from brain_api.config import get_settings
 from brain_api.core.cookies import (
+    STAFF_ACCOUNT_COOKIE_NAME,
     clear_refresh_cookie,
+    clear_staff_account_cookie,
     clear_staff_setup_cookie,
     read_refresh_cookie,
     require_client_header,
@@ -86,7 +88,9 @@ def _check_auth_rate_limit(request: Request) -> None:
         )
 
 
-def build_session_response(user: User, refresh_token: str) -> TokenResponse:
+def build_session_response(
+    user: User, refresh_token: str | None, *, account_session_id: str | None = None
+) -> TokenResponse:
     """Assemble the access+refresh response for a (re)authenticated user.
 
     The single place the session pair (access JWT + opaque refresh) is built, reused by
@@ -108,12 +112,16 @@ def build_session_response(user: User, refresh_token: str) -> TokenResponse:
             is_owner=user.is_owner,
             is_manager=user.is_manager,
             credential_version=user.credential_version,
+            account_session_id=account_session_id,
         ),
         refresh_token=refresh_token,
         expires_in=get_settings().ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         name=user.name,
         email=user.email,
         professional_id=user.professional_id,
+        user_id=user.id,
+        tenant_id=user.tenant_id,
+        role=user.role,
     )
 
 
@@ -132,9 +140,14 @@ def issue_session(response: Response, user: User, refresh_token: str) -> TokenRe
     browser is. The frontend marks that session non-refreshable for the same
     reason.
     """
-    if user.requires_password_change or user.access_revoked_at is not None:
+    if (
+        user.requires_password_change
+        or user.access_revoked_at is not None
+        or user.membership_pending
+    ):
         raise HTTPException(401, "Invalid or expired token")
     clear_staff_setup_cookie(response)
+    clear_staff_account_cookie(response)
     set_refresh_cookie(response, refresh_token)
     return build_session_response(user, refresh_token)
 
@@ -184,7 +197,7 @@ async def login(
         from brain_api.api.staff_first_access import setup_response
 
         return setup_response(response, user)
-    refresh = await issue_refresh_token(session, user.id)
+    refresh = await issue_refresh_token(session, user.id, expected_version=user.credential_version)
     # Stable reference only — never log the email, password or either token.
     logger.info("login", user_id=str(user.id))
     return issue_session(response, user, refresh)
@@ -283,9 +296,14 @@ async def logout(
     }
     for token in presented:
         await revoke_refresh_token(session, token)
+    from brain_api.services.staff_accounts import end_cookie_account
+
+    await end_cookie_account(session, request.cookies.get(STAFF_ACCOUNT_COOKIE_NAME, ""))
+    await session.commit()
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     clear_refresh_cookie(response)
     clear_staff_setup_cookie(response)
+    clear_staff_account_cookie(response)
     return response
 
 
@@ -344,7 +362,9 @@ async def exchange_onboarding_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid_onboarding_token",
         )
-    refresh = await issue_refresh_token(session, result.user.id)
+    refresh = await issue_refresh_token(
+        session, result.user.id, expected_version=result.user.credential_version
+    )
     # Stable references only — never the token.
     logger.info(
         "onboarding_token_exchanged",
@@ -381,7 +401,7 @@ async def exchange_invite_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid_invite_token",
         )
-    refresh = await issue_refresh_token(session, user.id)
+    refresh = await issue_refresh_token(session, user.id, expected_version=user.credential_version)
     # Stable references only — never the token.
     logger.info(
         "invite_token_exchanged",
@@ -407,7 +427,12 @@ async def set_password(
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """The caller sets THEIR OWN password (never someone else's — scoped by the token)."""
-    await _set_password(session, UUID(principal.user_id), payload.new_password)
+    await _set_password(
+        session,
+        UUID(principal.user_id),
+        payload.new_password,
+        expected_version=principal.credential_version,
+    )
     logger.info("password_set", user_id=principal.user_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -487,7 +512,7 @@ async def password_reset_request(
                 "ttl_minutes": get_settings().PASSWORD_RESET_CODE_EXPIRE_MINUTES,
             },
         )
-        logger.info("password_reset_code_requested", user_id=str(user.id))
+        logger.info("password_reset_code_requested")
     return MessageOut(detail=_RESET_REQUEST_MESSAGE)
 
 
@@ -541,5 +566,5 @@ async def password_reset_confirm(
     user = await _complete_password_reset(session, payload.token, payload.new_password)
     if user is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, _RESET_TOKEN_INVALID)
-    logger.info("password_reset_completed", user_id=str(user.id))
+    logger.info("password_reset_completed")
     return MessageOut(detail="Senha redefinida com sucesso")

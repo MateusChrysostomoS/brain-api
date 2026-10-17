@@ -27,10 +27,10 @@ router = APIRouter(prefix="/auth/first-access", tags=["auth"])
 
 
 def setup_response(response: Response, user: User, token: str | None = None) -> TokenResponse:
-    from brain_api.core.security import decode_token
+    from brain_api.core.security import decode_staff_token
 
     token = token or create_staff_setup_token(user)
-    claims = decode_token(token)
+    claims = decode_staff_token(token, "staff_password_setup", allow_legacy=True)
     expires = max(0, int(claims["exp"] - datetime.now(UTC).timestamp()))
     clear_refresh_cookie(response)
     set_staff_setup_cookie(response, token, expires)
@@ -84,6 +84,6 @@ async def complete(
     from brain_api.api.auth import issue_session
     from brain_api.services.auth import issue_refresh_token
 
-    refresh = await issue_refresh_token(session, user.id)
+    refresh = await issue_refresh_token(session, user.id, expected_version=user.credential_version)
     clear_staff_setup_cookie(response)
     return issue_session(response, user, refresh)

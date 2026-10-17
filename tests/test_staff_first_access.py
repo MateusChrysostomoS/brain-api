@@ -7,7 +7,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from brain_api.core.database import get_session
-from brain_api.core.security import decode_token, hash_password
+from brain_api.core.security import decode_staff_token, hash_password
 from brain_api.main import create_app
 from brain_api.models import Tenant, User
 
@@ -52,7 +52,7 @@ async def test_temporary_login_is_restricted_until_password_change(pending_clien
     assert response.status_code == 200
     assert response.json().get("requires_password_change") is True
     restricted = response.json()["access_token"]
-    assert decode_token(restricted)["scope"] == "staff_password_setup"
+    assert decode_staff_token(restricted, "staff_password_setup")["scope"] == "staff_password_setup"
     assert not response.json().get("refresh_token")
     assert c.cookies.get("__Host-staff_setup")
     assert not c.cookies.get("__Host-refresh_token")
@@ -91,7 +91,10 @@ async def test_resume_requires_csrf_and_keeps_restricted_scope(pending_client):
     assert (await c.post("/auth/first-access/resume")).status_code == 403
     resumed = await c.post("/auth/first-access/resume", headers={"X-Brain-Client": "web"})
     assert resumed.status_code == 200
-    assert decode_token(resumed.json()["access_token"])["scope"] == "staff_password_setup"
+    assert (
+        decode_staff_token(resumed.json()["access_token"], "staff_password_setup")["scope"]
+        == "staff_password_setup"
+    )
 
 
 async def test_resume_without_setup_cookie_is_not_an_authentication_failure(pending_client):

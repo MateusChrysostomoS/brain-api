@@ -11,6 +11,11 @@ from brain_api.services.mailer import render, send_email as real_send_email
 
 # The variables each CALLER really passes (keep in sync with the call sites).
 CALLER_VARIABLES = {
+    "staff_membership_invite": {
+        "name": "Ana",
+        "clinic_name": "Clínica X",
+        "link": "https://portal.example.com/login?invite=one-use",
+    },
     "password_reset_code": {"name": "Ana", "code": "012345", "ttl_minutes": 10},
     "staff_temporary_password": {
         "name": "Ana",

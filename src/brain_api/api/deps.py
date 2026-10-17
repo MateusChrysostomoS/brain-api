@@ -44,6 +44,7 @@ class Principal:
     is_owner: bool = False
     is_manager: bool = False
     credential_version: int = 0
+    account_session_id: str | None = None
 
 
 def get_token_principal(authorization: str | None = Header(default=None)) -> Principal:
@@ -80,6 +81,7 @@ def get_token_principal(authorization: str | None = Header(default=None)) -> Pri
         is_owner=bool(claims.get("is_owner", False)),
         is_manager=bool(claims.get("is_manager", False)),
         credential_version=version,
+        account_session_id=claims.get("account_sid"),
     )
 
 
@@ -93,14 +95,30 @@ async def get_current_principal(
     except (ValueError, TypeError):
         raise HTTPException(401, "Invalid or expired token") from None
     user = await session.get(User, uid, populate_existing=True)
+    if token.account_session_id:
+        from brain_api.services.staff_accounts import live_session
+
+        try:
+            account, _ = await live_session(session, UUID(token.account_session_id))
+        except (ValueError, TypeError):
+            raise HTTPException(401, "Invalid or expired token") from None
+        if not user or user.account_id != account.id:
+            raise HTTPException(401, "Invalid or expired token")
     if (
         user is None
         or user.tenant_id != token.tenant_id
         or user.access_revoked_at is not None
         or user.requires_password_change
+        or user.membership_pending
         or user.credential_version != token.credential_version
     ):
         raise HTTPException(401, "Invalid or expired token")
+    if user.account_id:
+        from brain_api.models import StaffAccount
+
+        account = await session.get(StaffAccount, user.account_id, populate_existing=True)
+        if not account or account.disabled_at or account.requires_password_change:
+            raise HTTPException(401, "Invalid or expired token")
     return Principal(
         str(user.id),
         user.tenant_id,
@@ -109,6 +127,7 @@ async def get_current_principal(
         user.is_owner,
         user.is_manager,
         user.credential_version,
+        token.account_session_id,
     )
 
 

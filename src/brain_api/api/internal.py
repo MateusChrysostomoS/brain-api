@@ -34,7 +34,6 @@ from brain_api.models import Entitlement, Tenant, User
 from brain_api.schemas.internal import (
     HubTokenVerifyIn,
     HubTokenVerifyOut,
-    StaffDeliveryUpdate,
     InternalEntitlementOut,
     InternalOnboardingEventIn,
     InternalOnboardingEventOut,
@@ -44,6 +43,7 @@ from brain_api.schemas.internal import (
     InternalProfessionalEmailsOut,
     PrecheckHandoffIn,
     PrecheckHandoffOut,
+    StaffDeliveryUpdate,
     UsageEventIn,
     UsageEventOut,
 )
@@ -51,8 +51,8 @@ from brain_api.services import onboarding_sync
 from brain_api.services.entitlements import ACTIVE_STATUSES, resolve_entitlement
 from brain_api.services.hub_scope import AGENDA_SCOPE_OWN, resolve_agenda_scope
 from brain_api.services.precheck_handoff import request_handoff, request_portal_handoff
-from brain_api.services.usage import record_usage
 from brain_api.services.staff_first_access import aware
+from brain_api.services.usage import record_usage
 
 logger = get_logger(__name__)
 
@@ -151,10 +151,26 @@ async def verify_hub_token(
         or actor.tenant_id != tenant_id
         or actor.access_revoked_at is not None
         or actor.requires_password_change
+        or actor.membership_pending
         or type(version) is not int
         or version != actor.credential_version
     ):
         return HubTokenVerifyOut(active=False)
+    if claims.get("account_sid"):
+        from brain_api.services.staff_accounts import live_session
+
+        try:
+            account, _ = await live_session(session, UUID(str(claims["account_sid"])))
+            if actor.account_id != account.id:
+                return HubTokenVerifyOut(active=False)
+        except (ValueError, TypeError, HTTPException):
+            return HubTokenVerifyOut(active=False)
+    if actor.account_id:
+        from brain_api.models import StaffAccount
+
+        account = await session.get(StaffAccount, actor.account_id, populate_existing=True)
+        if not account or account.disabled_at or account.requires_password_change:
+            return HubTokenVerifyOut(active=False)
     professional_id = actor.professional_id
     if not active:
         logger.info("hub_token_refused", tenant_id=str(tenant_id), status=ent.status)

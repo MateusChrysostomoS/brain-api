@@ -14,6 +14,7 @@ from brain_api.schemas.team import (
     TeamInviteResult,
     TeamManagementInput,
     TeamMember,
+    TeamRestoreInput,
 )
 from brain_api.services import team
 
@@ -66,3 +67,13 @@ async def revoke(
     session: AsyncSession = Depends(get_session),
 ):
     return await team.revoke_member_access(session, principal, user_id)
+
+
+@router.post("/{user_id}/restore", response_model=TeamMember)
+async def restore(
+    user_id: UUID,
+    payload: TeamRestoreInput,
+    principal: Principal = Depends(require_team_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    return await team.restore_member_access(session, principal, user_id, payload.expected_version)

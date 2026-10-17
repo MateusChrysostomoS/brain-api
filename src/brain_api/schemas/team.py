@@ -41,6 +41,7 @@ class TeamMember(BaseModel):
     professional_id: UUID | None
     access_status: Literal["pending_first_access", "active", "revoked"]
     delivery_status: DeliveryStatus
+    access_version: int
 
 
 class TeamInviteResult(BaseModel):
@@ -51,3 +52,8 @@ class TeamInviteResult(BaseModel):
 class TeamManagementInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     is_manager: bool
+
+
+class TeamRestoreInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=0, strict=True)

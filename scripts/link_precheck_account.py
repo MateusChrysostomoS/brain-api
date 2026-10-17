@@ -48,7 +48,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 async def _resolve_user(session, args: argparse.Namespace) -> User | None:
     if args.brain_email:
-        return await session.scalar(select(User).where(User.email == args.brain_email.lower()))
+        users = list(
+            await session.scalars(
+                select(User).where(User.email == args.brain_email.strip().lower())
+            )
+        )
+        if len(users) > 1:
+            print("[error] ambiguous clinical identity; use --brain-user-id", file=sys.stderr)
+        return users[0] if len(users) == 1 else None
     try:
         uid = UUID(args.brain_user_id)
     except ValueError:

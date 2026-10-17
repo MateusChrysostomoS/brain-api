@@ -35,6 +35,15 @@ class EmailTemplate:
 
 
 TEMPLATES: dict[str, EmailTemplate] = {
+    "staff_membership_invite": EmailTemplate(
+        subject="Convite para a equipe da {clinic_name} — Brain",
+        body=(
+            "Olá, {name}!\n\nA clínica {clinic_name} convidou você para sua equipe.\n"
+            "Entre com sua conta pessoal e aceite o convite: {link}\n\n"
+            "Sua senha pessoal continua a mesma. Este convite expira em 72 horas "
+            "e só pode ser aceito pela sua conta.\n\n— Equipe Brain"
+        ),
+    ),
     # Staff password reset — api/auth.py::password_reset_request.
     "password_reset_code": EmailTemplate(
         subject="Seu código para redefinir a senha — Brain",

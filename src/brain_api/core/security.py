@@ -12,6 +12,7 @@ Follows the auth-jwt-multitenant skill:
 """
 
 import hashlib
+import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -20,6 +21,36 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 
 from brain_api.config import get_settings
+
+
+def staff_token_key(scope: str, secret: str) -> str:
+    """Purpose-separated keys: permissive shared-key consumers cannot accept staff proof."""
+    salts = {
+        "staff_account": b"brain-api/staff-account/v1",
+        "staff_password_setup": b"brain-api/staff-password-setup/v1",
+    }
+    if not secret or scope not in salts:
+        raise ValueError("staff_auth_not_configured")
+    return hmac.new(secret.encode(), salts[scope], hashlib.sha256).hexdigest()
+
+
+def decode_staff_token(token: str, scope: str, *, allow_legacy: bool = False) -> dict | None:
+    settings = get_settings()
+    for secret in (settings.SECRET_KEY, settings.SECRET_KEY_PREVIOUS):
+        if not secret:
+            continue
+        try:
+            claims = jwt.decode(token, staff_token_key(scope, secret), algorithms=[ALGORITHM])
+        except JWTError:
+            continue
+        if claims.get("scope") == scope:
+            return claims
+    if allow_legacy:
+        claims = decode_token(token)
+        if claims and claims.get("scope") == scope:
+            return claims
+    return None
+
 
 ALGORITHM = "HS256"
 
@@ -54,6 +85,7 @@ def create_access_token(
     is_owner: bool = False,
     is_manager: bool = False,
     credential_version: int = 0,
+    account_session_id: str | None = None,
 ) -> str:
     """Mint a short-lived access token. `sub` is the brain user id (UUID string).
 
@@ -80,6 +112,8 @@ def create_access_token(
     }
     if professional_id:
         claims["professional_id"] = professional_id
+    if account_session_id:
+        claims["account_sid"] = account_session_id
     return jwt.encode(claims, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -138,6 +172,7 @@ def create_hub_token(
     actor_user_id: str,
     professional_id: str | None = None,
     credential_version: int = 0,
+    account_session_id: str | None = None,
 ) -> str:
     """Mint the tenant-scoped token the doctor portal presents to secretarIA's hub.
 
@@ -164,6 +199,8 @@ def create_hub_token(
     }
     if professional_id:
         claims["professional_id"] = professional_id
+    if account_session_id:
+        claims["account_sid"] = account_session_id
     return jwt.encode(claims, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -308,6 +345,8 @@ def decode_patient_account_token(token: str) -> dict[str, Any] | None:
     if not all(claims.get(key) for key in ("sub", "sid")):
         return None
     return claims
+
+
 # --- Patient PENDING token (a visitor who has proven nothing yet) -----------------------
 
 # The owner's 2026-09-16 flow: a new patient reaches the chat with no login at all, gives an

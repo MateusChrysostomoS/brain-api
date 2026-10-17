@@ -469,8 +469,29 @@ async def invite_professional(
     """
     tenant = await lock_clinic(session, principal)
     email = payload.email.lower()
+    if get_settings().STAFF_ACCOUNT_CREDENTIALS_ENABLED:
+        from brain_api.schemas.team import TeamInviteInput
+        from brain_api.services import team
 
-    if await session.scalar(select(User).where(User.email == email)) is not None:
+        result = await team.invite_team_member(
+            session,
+            principal,
+            TeamInviteInput(
+                name=payload.name,
+                email=email,
+                role="doctor",
+                specialty=payload.specialty,
+            ),
+        )
+        return ProfessionalInviteOut(
+            professional_id=result.member.professional_id,
+            user_id=result.member.user_id,
+            invite_link=team.staff_login_url(),
+        )
+
+    from brain_api.services.staff_accounts import adopt_new_user, email_registered
+
+    if await email_registered(session, email):
         raise HTTPException(status.HTTP_409_CONFLICT, "email_already_registered")
 
     professional = await secretaria_provisioning.create_professional(
@@ -495,6 +516,8 @@ async def invite_professional(
         + timedelta(hours=get_settings().INVITE_TOKEN_EXPIRE_HOURS),
     )
     session.add(user)
+    await session.flush()
+    await adopt_new_user(session, user)
     await session.commit()
     await session.refresh(user)
 
@@ -638,8 +661,24 @@ async def invite_secretary(
     """
     tenant = await _load_tenant(session, principal.tenant_id)
     email = payload.email.lower()
+    if get_settings().STAFF_ACCOUNT_CREDENTIALS_ENABLED:
+        from brain_api.schemas.team import TeamInviteInput
+        from brain_api.services import team
 
-    if await session.scalar(select(User).where(User.email == email)) is not None:
+        result = await team.invite_team_member(
+            session,
+            principal,
+            TeamInviteInput(
+                name=payload.name,
+                email=email,
+                role="secretary",
+            ),
+        )
+        return SecretaryInviteOut(user_id=result.member.user_id, invite_link=team.staff_login_url())
+
+    from brain_api.services.staff_accounts import adopt_new_user, email_registered
+
+    if await email_registered(session, email):
         raise HTTPException(status.HTTP_409_CONFLICT, "email_already_registered")
 
     raw_token = secrets.token_urlsafe(32)
@@ -656,6 +695,8 @@ async def invite_secretary(
         + timedelta(hours=get_settings().INVITE_TOKEN_EXPIRE_HOURS),
     )
     session.add(user)
+    await session.flush()
+    await adopt_new_user(session, user)
     await session.commit()
     await session.refresh(user)
 

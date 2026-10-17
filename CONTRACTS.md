@@ -249,6 +249,8 @@ no entitlements (`tenant-secrets-encryption` never-leak rule; whitelisted `*Out`
 
 ### 2.6 `POST /auth/password-reset/*` — forgotten-password recovery (public, rate-limited)
 
+TASK-057 local: após adoção segura, recuperação acompanha a conta pessoal sem restaurar vínculos. Sessão pessoal/seleção/convites, campos operacionais aditivos e matriz de rollout: [STAFF_ACCOUNT_CONTRACT.md](docs/STAFF_ACCOUNT_CONTRACT.md). Não publicado; contrato legado abaixo continua durante expansão.
+
 The **unauthenticated** recovery path for clinic staff, as opposed to `/auth/set-password`
 (§15.1), which requires a live session. Three steps, all sharing the per-IP auth bucket with
 §2.1/§2.1a. **Since TASK-056 (2026-10-13) the person proves the mailbox with a 6-digit

@@ -1,24 +1,24 @@
 # Graph Report - brain-api  (2026-10-13)
 
 ## Corpus Check
-- 272 files · ~325,116 words
+- 291 files · ~338,042 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 4595 nodes · 10622 edges · 233 communities (219 shown, 14 thin omitted)
-- Extraction: 87% EXTRACTED · 13% INFERRED · 0% AMBIGUOUS · INFERRED: 1414 edges (avg confidence: 0.77)
+- 4778 nodes · 11365 edges · 247 communities (231 shown, 16 thin omitted)
+- Extraction: 84% EXTRACTED · 16% INFERRED · 0% AMBIGUOUS · INFERRED: 1818 edges (avg confidence: 0.77)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `65bc755c`
+- Built from commit: `176c541a`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - [[_COMMUNITY_CheckoutSelection|CheckoutSelection]]
 - [[_COMMUNITY_Tenant|Tenant]]
-- [[_COMMUNITY_test_message_channels.py|test_message_channels.py]]
-- [[_COMMUNITY__token|_token]]
+- [[_COMMUNITY_User|User]]
+- [[_COMMUNITY__bearer|_bearer]]
 - [[_COMMUNITY_test_admin_tenant_create.py|test_admin_tenant_create.py]]
 - [[_COMMUNITY_test_precheck_handoff.py|test_precheck_handoff.py]]
 - [[_COMMUNITY_test_privacy.py|test_privacy.py]]
@@ -27,73 +27,73 @@
 - [[_COMMUNITY_internal.py|internal.py]]
 - [[_COMMUNITY_onboarding_sync.py|onboarding_sync.py]]
 - [[_COMMUNITY_billing.py|billing.py]]
-- [[_COMMUNITY_decode_token|decode_token]]
+- [[_COMMUNITY_test_patient_account_invites.py|test_patient_account_invites.py]]
 - [[_COMMUNITY_test_billing_phase1.py|test_billing_phase1.py]]
 - [[_COMMUNITY_test_catalog_entitlements.py|test_catalog_entitlements.py]]
-- [[_COMMUNITY_User|User]]
+- [[_COMMUNITY_async_sessionmaker|async_sessionmaker]]
 - [[_COMMUNITY_test_patient_account_name.py|test_patient_account_name.py]]
 - [[_COMMUNITY_test_refresh_cookie.py|test_refresh_cookie.py]]
-- [[_COMMUNITY_BaseModel|BaseModel]]
+- [[_COMMUNITY_onboarding.py|onboarding.py]]
 - [[_COMMUNITY__bearer|_bearer]]
 - [[_COMMUNITY_test_test_window.py|test_test_window.py]]
 - [[_COMMUNITY_apply_subscription_state|apply_subscription_state]]
-- [[_COMMUNITY_SignupIntent|SignupIntent]]
-- [[_COMMUNITY_test_portal_auto_greeting.py|test_portal_auto_greeting.py]]
+- [[_COMMUNITY_signup.py|signup.py]]
+- [[_COMMUNITY__spy_transport|_spy_transport]]
 - [[_COMMUNITY_MessagePatient|MessagePatient]]
-- [[_COMMUNITY__trial_will_end_obj|_trial_will_end_obj]]
-- [[_COMMUNITY_admin.py|admin.py]]
-- [[_COMMUNITY_TokenResponse|TokenResponse]]
-- [[_COMMUNITY__tenant_ids|_tenant_ids]]
-- [[_COMMUNITY_test_password_reset.py|test_password_reset.py]]
 - [[_COMMUNITY_Entitlement|Entitlement]]
+- [[_COMMUNITY_admin.py|admin.py]]
+- [[_COMMUNITY_auth.py|auth.py]]
+- [[_COMMUNITY__tenant_ids|_tenant_ids]]
+- [[_COMMUNITY_SlidingWindowLimiter|SlidingWindowLimiter]]
+- [[_COMMUNITY_test_precheck_billing.py|test_precheck_billing.py]]
 - [[_COMMUNITY_test_secretary_role.py|test_secretary_role.py]]
 - [[_COMMUNITY__FakeResponse|_FakeResponse]]
 - [[_COMMUNITY_create_demo_request_endpoint|create_demo_request_endpoint]]
 - [[_COMMUNITY_make_clinic|make_clinic]]
 - [[_COMMUNITY_internal.py|internal.py]]
 - [[_COMMUNITY_make_sub|make_sub]]
-- [[_COMMUNITY_get_settings|get_settings]]
-- [[_COMMUNITY_patient_access.py|patient_access.py]]
+- [[_COMMUNITY_precheck_client.py|precheck_client.py]]
+- [[_COMMUNITY_BaseModel|BaseModel]]
 - [[_COMMUNITY__families_from_subscription|_families_from_subscription]]
-- [[_COMMUNITY__stripe_post_or_raise|_stripe_post_or_raise]]
-- [[_COMMUNITY_auth.py|auth.py]]
+- [[_COMMUNITY_install_fake_settings|install_fake_settings]]
+- [[_COMMUNITY_StaffAccount|StaffAccount]]
 - [[_COMMUNITY_create_precheck_usage_event|create_precheck_usage_event]]
 - [[_COMMUNITY_admin.py|admin.py]]
 - [[_COMMUNITY_test_patient_pending_account_shortcut.py|test_patient_pending_account_shortcut.py]]
-- [[_COMMUNITY_signup.py|signup.py]]
-- [[_COMMUNITY_parse_preview_charge|parse_preview_charge]]
-- [[_COMMUNITY_available_products|available_products]]
+- [[_COMMUNITY_public_signup.py|public_signup.py]]
+- [[_COMMUNITY_Any|Any]]
+- [[_COMMUNITY_onboarding.py|onboarding.py]]
 - [[_COMMUNITY_catalog.py|catalog.py]]
 - [[_COMMUNITY_test_doctor_secretaria.py|test_doctor_secretaria.py]]
 - [[_COMMUNITY_test_patient_pending_session.py|test_patient_pending_session.py]]
 - [[_COMMUNITY_onboarding.py|onboarding.py]]
 - [[_COMMUNITY__request|_request]]
 - [[_COMMUNITY_attachments.py|attachments.py]]
-- [[_COMMUNITY_hash_refresh_token|hash_refresh_token]]
-- [[_COMMUNITY_HTTPException|HTTPException]]
+- [[_COMMUNITY_auth.py|auth.py]]
+- [[_COMMUNITY_Principal|Principal]]
 - [[_COMMUNITY__tenant_com_precheck|_tenant_com_precheck]]
 - [[_COMMUNITY__configure_mesh|_configure_mesh]]
 - [[_COMMUNITY_issue_password_reset_code|issue_password_reset_code]]
 - [[_COMMUNITY__mesh|_mesh]]
-- [[_COMMUNITY_timedelta|timedelta]]
+- [[_COMMUNITY_test_visit_retention.py|test_visit_retention.py]]
 - [[_COMMUNITY_test_smoke.py|test_smoke.py]]
-- [[_COMMUNITY_test_staff_first_access.py|test_staff_first_access.py]]
+- [[_COMMUNITY_config.py|config.py]]
 - [[_COMMUNITY_test_auth_hardening.py|test_auth_hardening.py]]
-- [[_COMMUNITY_complete|complete]]
+- [[_COMMUNITY_cookies.py|cookies.py]]
 - [[_COMMUNITY_secretaria_client.py|secretaria_client.py]]
 - [[_COMMUNITY_test_professional_emails.py|test_professional_emails.py]]
-- [[_COMMUNITY_test_billing_checkout_guard.py|test_billing_checkout_guard.py]]
-- [[_COMMUNITY__bearer|_bearer]]
-- [[_COMMUNITY_team.py|team.py]]
+- [[_COMMUNITY_visit_retention.py|visit_retention.py]]
+- [[_COMMUNITY_test_mailer.py|test_mailer.py]]
+- [[_COMMUNITY_invite_team_member|invite_team_member]]
 - [[_COMMUNITY_Portal Messaging API — the Brain-Message channel|Portal Messaging API — the Brain-Message channel]]
 - [[_COMMUNITY_CHECKPOINT — sessão pendente o paciente conversa e agenda antes de provar o e-mail (2026-09-16)|CHECKPOINT — sessão pendente: o paciente conversa e agenda antes de provar o e-mail (2026-09-16)]]
 - [[_COMMUNITY_Guia Obtenção e Configuração das Credenciais Meta para Embedded Signup|Guia: Obtenção e Configuração das Credenciais Meta para Embedded Signup]]
 - [[_COMMUNITY_cleanup_patients|cleanup_patients]]
-- [[_COMMUNITY_message_switchboard.py|message_switchboard.py]]
-- [[_COMMUNITY_test_mailer.py|test_mailer.py]]
+- [[_COMMUNITY_internal.py|internal.py]]
+- [[_COMMUNITY_mailer.py|mailer.py]]
 - [[_COMMUNITY_test_patient_idempotency.py|test_patient_idempotency.py]]
 - [[_COMMUNITY_internal.py|internal.py]]
-- [[_COMMUNITY__admin_entitlements|_admin_entitlements]]
+- [[_COMMUNITY_FastAPI|FastAPI]]
 - [[_COMMUNITY_Settings|Settings]]
 - [[_COMMUNITY__request|_request]]
 - [[_COMMUNITY_FakeStripe|FakeStripe]]
@@ -104,7 +104,7 @@
 - [[_COMMUNITY_CHECKPOINT — Anexos no Portal (Brain-Message), parte 1 borda do brain-api|CHECKPOINT — Anexos no Portal (Brain-Message), parte 1: borda do brain-api]]
 - [[_COMMUNITY_0020_patient_accounts.py|0020_patient_accounts.py]]
 - [[_COMMUNITY_0013_secretary_role.py|0013_secretary_role.py]]
-- [[_COMMUNITY_SecretariaResetIn|SecretariaResetIn]]
+- [[_COMMUNITY_reset_secretaria|reset_secretaria]]
 - [[_COMMUNITY_billing.py|billing.py]]
 - [[_COMMUNITY_CHECKPOINT — portal do paciente login só por e-mail + clínica entra por convite (2026-09-15)|CHECKPOINT — portal do paciente: login só por e-mail + clínica entra por convite (2026-09-15)]]
 - [[_COMMUNITY__install_fake_stripe_httpx|_install_fake_stripe_httpx]]
@@ -114,21 +114,21 @@
 - [[_COMMUNITY_0015_precheck_provisioning.py|0015_precheck_provisioning.py]]
 - [[_COMMUNITY_CHECKPOINT — sessão de conta ativa pula pendentee-mailcódigo ao abrir clínica nova (2026-09-24)|CHECKPOINT — sessão de conta ativa pula pendente/e-mail/código ao abrir clínica nova (2026-09-24)]]
 - [[_COMMUNITY_CHECKPOINT — adicionar produto à assinatura (TASK C  TASK-015)|CHECKPOINT — adicionar produto à assinatura (TASK C / TASK-015)]]
-- [[_COMMUNITY_config.py|config.py]]
+- [[_COMMUNITY_issue_precheck_token|issue_precheck_token]]
 - [[_COMMUNITY_CHECKPOINT — PreCheck billing (plans, quota, top-up, tier upgrade)|CHECKPOINT — PreCheck billing (plans, quota, top-up, tier upgrade)]]
-- [[_COMMUNITY_cookies.py|cookies.py]]
+- [[_COMMUNITY_PendingIdentityIn|PendingIdentityIn]]
 - [[_COMMUNITY_CHECKPOINT — Test window (Task 2 reframe the free trial as a MetaWABA acceptance window)|CHECKPOINT — Test window (Task 2: reframe the free trial as a Meta/WABA acceptance window)]]
 - [[_COMMUNITY___init__.py|__init__.py]]
 - [[_COMMUNITY___init__.py|__init__.py]]
 - [[_COMMUNITY_CHECKPOINT — papel `secretary` (secretária humana da clínica)|CHECKPOINT — papel `secretary` (secretária humana da clínica)]]
-- [[_COMMUNITY_patient_access.py|patient_access.py]]
+- [[_COMMUNITY_HTTPException|HTTPException]]
 - [[_COMMUNITY_brain-api|brain-api]]
 - [[_COMMUNITY_test_portal_enter_thread.py|test_portal_enter_thread.py]]
 - [[_COMMUNITY_brain-api — API & Data Contracts (Phase 1)|brain-api — API & Data Contracts (Phase 1)]]
 - [[_COMMUNITY_6. Database tables (brain database)|6. Database tables (brain database)]]
 - [[_COMMUNITY_CHECKPOINT — Onboarding state machine, multi-professional & billing Phase 1|CHECKPOINT — Onboarding state machine, multi-professional & billing Phase 1]]
 - [[_COMMUNITY_test_billing_add_product.py|test_billing_add_product.py]]
-- [[_COMMUNITY_MessagePatientSession|MessagePatientSession]]
+- [[_COMMUNITY_select|select]]
 - [[_COMMUNITY_CHECKPOINT — conta única multi-clínica do paciente (Brain-Message) (2026-09-12)|CHECKPOINT — conta única multi-clínica do paciente (Brain-Message) (2026-09-12)]]
 - [[_COMMUNITY_CHECKPOINT — Launch waitlist (pre-launch buy gate, backend half)|CHECKPOINT — Launch waitlist (pre-launch buy gate, backend half)]]
 - [[_COMMUNITY_CHECKPOINT — Canal de entrega (whatsapp  brain_message) no modelo de dados|CHECKPOINT — Canal de entrega (whatsapp / brain_message) no modelo de dados]]
@@ -144,14 +144,14 @@
 - [[_COMMUNITY_2. Authentication|2. Authentication]]
 - [[_COMMUNITY_CHECKPOINT — WhatsApp Coexistence onboarding (brain-api slice)|CHECKPOINT — WhatsApp Coexistence onboarding (brain-api slice)]]
 - [[_COMMUNITY_CHECKPOINT — Refresh token em cookie httpOnly `__Host-` + guarda CSRF|CHECKPOINT — Refresh token em cookie httpOnly `__Host-` + guarda CSRF]]
-- [[_COMMUNITY_Limpeza administrativa de pacientes por clínica — TASK-029|Limpeza administrativa de pacientes por clínica — TASK-029]]
+- [[_COMMUNITY_brain-api|brain-api]]
 - [[_COMMUNITY_13. Billing — Stripe (billingauth round; `stripe-billing-entitlements`)|13. Billing — Stripe (billing/auth round; `stripe-billing-entitlements`)]]
 - [[_COMMUNITY_16. Onboarding state machine & multi-professional (onboarding round)|16. Onboarding state machine & multi-professional (onboarding round)]]
 - [[_COMMUNITY_Hub token — quem vê a agenda inteira (`agenda_scope`) Implementation Plan|Hub token — quem vê a agenda inteira (`agenda_scope`) Implementation Plan]]
 - [[_COMMUNITY_10. Cross-product SSO — PreCheck handoff (implemented)|10. Cross-product SSO — PreCheck handoff (implemented)]]
 - [[_COMMUNITY_CHECKPOINT — toque real no Portal o campo atravessa o switchboard (2026-09-12)|CHECKPOINT — toque real no Portal: o campo atravessa o switchboard (2026-09-12)]]
 - [[_COMMUNITY_Mesh secret rotation — zero-downtime procedures|Mesh secret rotation — zero-downtime procedures]]
-- [[_COMMUNITY__call|_call]]
+- [[_COMMUNITY_message_switchboard.py|message_switchboard.py]]
 - [[_COMMUNITY_TASK-055 — URLs públicas por serviço|TASK-055 — URLs públicas por serviço]]
 - [[_COMMUNITY_11. Platform-admin API (RBAC round) — role `admin`|11. Platform-admin API (RBAC round) — role `admin`]]
 - [[_COMMUNITY_12. Doctor (tenant) API (RBAC round) — roles `doctor`  `manager`  `secretary`|12. Doctor (tenant) API (RBAC round) — roles `doctor` / `manager` / `secretary`]]
@@ -167,213 +167,227 @@
 - [[_COMMUNITY_conftest.py|conftest.py]]
 - [[_COMMUNITY_CHECKPOINT — a automação fala primeiro no Portal (perna brain-api da TASK-003)|CHECKPOINT — a automação fala primeiro no Portal (perna brain-api da TASK-003)]]
 - [[_COMMUNITY_precheck_handoff|precheck_handoff]]
-- [[_COMMUNITY_MessagePatientAccount|MessagePatientAccount]]
-- [[_COMMUNITY_test_impersonation.py|test_impersonation.py]]
+- [[_COMMUNITY_MessagePatientSession|MessagePatientSession]]
+- [[_COMMUNITY_upsert_waitlist_lead|upsert_waitlist_lead]]
 - [[_COMMUNITY_IdempotencyCache|IdempotencyCache]]
-- [[_COMMUNITY_UsageEventIn|UsageEventIn]]
-- [[_COMMUNITY_usage_summary|usage_summary]]
-- [[_COMMUNITY__upstream|_upstream]]
-- [[_COMMUNITY_test_test_window_add_product.py|test_test_window_add_product.py]]
+- [[_COMMUNITY_ensure_precheck_provisioned|ensure_precheck_provisioned]]
+- [[_COMMUNITY_test_config.py|test_config.py]]
+- [[_COMMUNITY_get_settings|get_settings]]
+- [[_COMMUNITY_SignupIntent|SignupIntent]]
 - [[_COMMUNITY_7. Attachments  media — built end to end (2026-09-18; all three parts uncommitted, not deployed together)|7. Attachments / media — built end to end (2026-09-18; all three parts uncommitted, not deployed together)]]
 - [[_COMMUNITY_0023_brain_message_default_on.py|0023_brain_message_default_on.py]]
-- [[_COMMUNITY_test_doctor_profile.py|test_doctor_profile.py]]
-- [[_COMMUNITY_Any|Any]]
-- [[_COMMUNITY_UUID|UUID]]
+- [[_COMMUNITY_secretaria_internal.py|secretaria_internal.py]]
+- [[_COMMUNITY_ProcessedStripeEvent|ProcessedStripeEvent]]
+- [[_COMMUNITY_apply_stripe_event|apply_stripe_event]]
 - [[_COMMUNITY_PrivacyRequestIn|PrivacyRequestIn]]
 - [[_COMMUNITY___init__.py|__init__.py]]
 - [[_COMMUNITY___init__.py|__init__.py]]
 - [[_COMMUNITY___init__.py|__init__.py]]
 - [[_COMMUNITY_test_catalog_compose.py|test_catalog_compose.py]]
 - [[_COMMUNITY_CHECKPOINT clínica de teste criada pelo admin, sem Stripe (`POST admintenants`)|CHECKPOINT: clínica de teste criada pelo admin, sem Stripe (`POST /admin/tenants`)]]
-- [[_COMMUNITY__send_precheck_attachment|_send_precheck_attachment]]
+- [[_COMMUNITY_get_current_principal|get_current_principal]]
 - [[_COMMUNITY_CHECKPOINT — cobertura das pontes de provisionamento (secretarIA  PreCheck)|CHECKPOINT — cobertura das pontes de provisionamento (secretarIA / PreCheck)]]
 - [[_COMMUNITY_CONTRACT_doctor_anamneses|CONTRACT_doctor_anamneses.md]]
-- [[_COMMUNITY_SlidingWindowLimiter|SlidingWindowLimiter]]
+- [[_COMMUNITY_test_rate_limit_trips|test_rate_limit_trips]]
 - [[_COMMUNITY_1. Authentication|1. Authentication]]
 - [[_COMMUNITY_test_hub_agenda_scope.py|test_hub_agenda_scope.py]]
 - [[_COMMUNITY_PrecheckAccountLink|PrecheckAccountLink]]
 - [[_COMMUNITY__peek_code|_peek_code]]
-- [[_COMMUNITY_DemoRequest|DemoRequest]]
-- [[_COMMUNITY_DoctorMeUpdateIn|DoctorMeUpdateIn]]
+- [[_COMMUNITY_demo_request.py|demo_request.py]]
+- [[_COMMUNITY_update_doctor_me|update_doctor_me]]
 - [[_COMMUNITY_SignupIntentCreate|SignupIntentCreate]]
-- [[_COMMUNITY_brain-api — instruções para Codex|brain-api — instruções para Codex]]
+- [[_COMMUNITY_CLAUDE|CLAUDE.md]]
 - [[_COMMUNITY_redeem|redeem]]
 - [[_COMMUNITY_test_stripe_proof_guard.py|test_stripe_proof_guard.py]]
-- [[_COMMUNITY_test_patient_visit_merge.py|test_patient_visit_merge.py]]
+- [[_COMMUNITY_decode_token|decode_token]]
 - [[_COMMUNITY_test_migration_0026_entitlement_product_state.py|test_migration_0026_entitlement_product_state.py]]
-- [[_COMMUNITY_test_billing_upgrade_dual.py|test_billing_upgrade_dual.py]]
-- [[_COMMUNITY_install_fake_settings|install_fake_settings]]
-- [[_COMMUNITY_entitlement.py|entitlement.py]]
-- [[_COMMUNITY_AttachmentRefused|AttachmentRefused]]
-- [[_COMMUNITY__tenant_b_id|_tenant_b_id]]
+- [[_COMMUNITY_test_auth_email_after_response.py|test_auth_email_after_response.py]]
+- [[_COMMUNITY_test_entitlement_dual_readers.py|test_entitlement_dual_readers.py]]
+- [[_COMMUNITY_resolve_entitlement|resolve_entitlement]]
+- [[_COMMUNITY_CHECKPOINT — e-mails de autenticação no brain-api + esqueci a senha por código (TASK-056)|CHECKPOINT — e-mails de autenticação no brain-api + "esqueci a senha" por código (TASK-056)]]
+- [[_COMMUNITY_join_launch_waitlist|join_launch_waitlist]]
 - [[_COMMUNITY_test_billing_stripe_fixtures.py|test_billing_stripe_fixtures.py]]
-- [[_COMMUNITY_demo.py|demo.py]]
+- [[_COMMUNITY_complete_staff_first_access|complete_staff_first_access]]
 - [[_COMMUNITY_stripe_proof_guard.py|stripe_proof_guard.py]]
-- [[_COMMUNITY__BodyTooLarge|_BodyTooLarge]]
+- [[_COMMUNITY_get_patient_invite|get_patient_invite]]
 - [[_COMMUNITY_record_usage|record_usage]]
-- [[_COMMUNITY_get_thread_media|get_thread_media]]
+- [[_COMMUNITY_invite_codes.py|invite_codes.py]]
 - [[_COMMUNITY_Checkpoint — digitando backend (TASK-033)|Checkpoint — digitando backend (TASK-033)]]
-- [[_COMMUNITY_test_billing_checkout_trial_policy.py|test_billing_checkout_trial_policy.py]]
-- [[_COMMUNITY_erase_subject|erase_subject]]
+- [[_COMMUNITY_Conta pessoal de equipe — contrato congelado TASK-057|Conta pessoal de equipe — contrato congelado TASK-057]]
+- [[_COMMUNITY_staff_local_server.py|staff_local_server.py]]
 - [[_COMMUNITY_database.py|database.py]]
-- [[_COMMUNITY_list_onboarding_tenants|list_onboarding_tenants]]
+- [[_COMMUNITY_EntitlementPatchIn|EntitlementPatchIn]]
 - [[_COMMUNITY_PrecheckHandoffIn|PrecheckHandoffIn]]
 - [[_COMMUNITY_require_internal_api_key|require_internal_api_key]]
 - [[_COMMUNITY_test_a_visit_with_no_address_still_409s_rather_than_masking_nothing|test_a_visit_with_no_address_still_409s_rather_than_masking_nothing]]
 - [[_COMMUNITY_PrivacyRequest|PrivacyRequest]]
+- [[_COMMUNITY_create_demo_request|create_demo_request]]
+- [[_COMMUNITY_test_staff_account_sessions.py|test_staff_account_sessions.py]]
+- [[_COMMUNITY_Convite médico recusa de plano mascarada como 502|Convite médico: recusa de plano mascarada como 502]]
+- [[_COMMUNITY_Limpeza administrativa de pacientes por clínica — TASK-029|Limpeza administrativa de pacientes por clínica — TASK-029]]
+- [[_COMMUNITY_claim_pending_email|claim_pending_email]]
+- [[_COMMUNITY_WaitlistLeadCreate|WaitlistLeadCreate]]
+- [[_COMMUNITY_brain-api|brain-api]]
+- [[_COMMUNITY_0031_staff_accounts.py|0031_staff_accounts.py]]
+- [[_COMMUNITY_0032_staff_membership_email.py|0032_staff_membership_email.py]]
+- [[_COMMUNITY_TASK-057 — conta pessoal de equipe e vínculos clínicos|TASK-057 — conta pessoal de equipe e vínculos clínicos]]
+- [[_COMMUNITY_test_capture_creates_no_tenant_or_entitlement|test_capture_creates_no_tenant_or_entitlement]]
+- [[_COMMUNITY_14. LGPD privacy orchestration — role `admin`|14. LGPD privacy orchestration — role `admin`]]
+- [[_COMMUNITY_3. Entitlements|3. Entitlements]]
+- [[_COMMUNITY_RefreshResult|RefreshResult]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `_bearer()` - 215 edges
 2. `_token()` - 202 edges
-3. `Tenant` - 147 edges
-4. `get_settings()` - 140 edges
-5. `MessagePatient` - 124 edges
-6. `Entitlement` - 105 edges
-7. `_configure_mesh()` - 102 edges
-8. `_bearer()` - 92 edges
-9. `make_sub()` - 79 edges
-10. `Principal` - 76 edges
+3. `get_settings()` - 158 edges
+4. `Tenant` - 156 edges
+5. `select()` - 151 edges
+6. `MessagePatient` - 124 edges
+7. `Entitlement` - 105 edges
+8. `User` - 102 edges
+9. `_configure_mesh()` - 102 edges
+10. `_bearer()` - 94 edges
 
 ## Surprising Connections (you probably didn't know these)
+- `staff_accounts_enabled()` --calls--> `get_settings()`  [INFERRED]
+  tests/conftest.py → src/brain_api/config.py
+- `test_login_returns_refresh_and_expiry()` --calls--> `get_settings()`  [INFERRED]
+  tests/test_auth_hardening.py → src/brain_api/config.py
 - `smtp_on()` --calls--> `get_settings()`  [INFERRED]
   tests/test_mailer.py → src/brain_api/config.py
+- `test_legacy_invite_writer_uses_restricted_first_access_when_enabled()` --calls--> `get_settings()`  [INFERRED]
+  tests/test_staff_account_sessions.py → src/brain_api/config.py
 - `test_delivery_status_uses_generation_and_active_access()` --calls--> `get_settings()`  [INFERRED]
   tests/test_team_delivery.py → src/brain_api/config.py
-- `test_discard_client_unconfigured()` --calls--> `get_settings()`  [INFERRED]
-  tests/test_visit_retention.py → src/brain_api/config.py
-- `test_per_address_request_limit()` --calls--> `SlidingWindowLimiter`  [INFERRED]
-  tests/test_password_reset.py → src/brain_api/core/ratelimit.py
-- `seed_admin()` --calls--> `get_settings()`  [INFERRED]
-  scripts/seed_admin.py → src/brain_api/config.py
 
 ## Import Cycles
 - None detected.
 
-## Communities (233 total, 14 thin omitted)
+## Communities (247 total, 16 thin omitted)
 
 ### Community 0 - "CheckoutSelection"
-Cohesion: 0.11
-Nodes (24): _append_checkout_line_items(), _append_subscription_items(), _append_subscription_selections(), _apply_setup_custom_text(), _apply_trial(), CheckoutSelection, create_checkout_session(), paid_selections_for_entitlement() (+16 more)
+Cohesion: 0.10
+Nodes (28): _append_checkout_line_items(), _append_subscription_items(), _append_subscription_selections(), _apply_setup_custom_text(), _apply_signup_intent_checkout(), _apply_trial(), CheckoutSelection, create_checkout_session() (+20 more)
 
 ### Community 1 - "Tenant"
 Cohesion: 0.04
-Nodes (46): Tenant model — one clinic / organization on the Brain platform.  Non-sensitive, A clinic/organization. Owns users and a single entitlements row., Tenant, test_harden_charge_noop_when_no_entitlement_row(), The default-resolution branch still tells the truth about the channel.      Ch, A clinic sold Brain-Message with no WhatsApp at all — the point of the round., A tenant created through the ORM gets the unified Portal by default (0023);, A raw INSERT that never mentions the columns still lands `false`/`true` (0023). (+38 more)
+Nodes (47): Tenant model — one clinic / organization on the Brain platform.  Non-sensitive, A clinic/organization. Owns users and a single entitlements row., Tenant, Re-enter `aquecimento` from a manual blocker, clearing it (CONTRACT §8)., resolve_blocker(), _mode_resolved_or_fallback_due(), A tenant created through the ORM gets the unified Portal by default (0023);, A raw INSERT that never mentions the columns still lands `false`/`true` (0023). (+39 more)
 
-### Community 2 - "test_message_channels.py"
-Cohesion: 0.33
-Nodes (5): Delivery-channel columns on `tenants` + their `EntitlementOut` projection.  Th, Should not happen for a valid token; if it does, fail closed instead of crashing, `GET /entitlements` carries `channels` for both the entitled tenant (A) and the, test_get_entitlements_serializes_channels(), test_missing_tenant_row_degrades_to_both_channels_off()
+### Community 2 - "User"
+Cohesion: 0.06
+Nodes (45): create_admin(), _parse_args(), Namespace, Create (or promote) a platform-admin user — full access to the /admin/* surface., ensure_demo_link(), main(), Seed a development tenant + owner user + entitlement.  Idempotent: re-running, Optionally link the demo user to a PreCheck user for a full local SSO E2E. (+37 more)
 
-### Community 3 - "_token"
+### Community 3 - "_bearer"
 Cohesion: 0.03
-Nodes (79): Controle: a trava só pega `is_test`. Uma clínica real segue o caminho normal (aq, test_clinica_real_nao_e_barrada_pela_trava(), Tenant cascade-delete tests (DELETE /admin/tenants/{id}).  Two layers: - Endp, The delete route is behind the same admin gate as the rest of /admin/*., A deleted clinic vanishes from every admin view and its owner can no longer log, test_delete_tenant_removes_clinic_everywhere(), test_delete_tenant_requires_admin(), test_delete_tenant_unknown_is_404() (+71 more)
+Nodes (153): Controle: a trava só pega `is_test`. Uma clínica real segue o caminho normal (aq, test_clinica_real_nao_e_barrada_pela_trava(), Tenant cascade-delete tests (DELETE /admin/tenants/{id}).  Two layers: - Endp, The delete route is behind the same admin gate as the rest of /admin/*., A deleted clinic vanishes from every admin view and its owner can no longer log, test_delete_tenant_removes_clinic_everywhere(), test_delete_tenant_requires_admin(), test_delete_tenant_unknown_is_404() (+145 more)
 
 ### Community 4 - "test_admin_tenant_create.py"
 Cohesion: 0.05
-Nodes (85): BoundLogger, _descreve(), main(), Cria (ou atualiza) um cupom de cortesia — acesso liberado sem passar pelo Stripe, get_logger(), Structured logging setup using structlog.  JSON output in non-dev environments, Blank any value whose key ends in `_encrypted` or looks secret-bearing., Configure structlog + stdlib logging. Safe to call more than once. (+77 more)
+Nodes (84): BoundLogger, _descreve(), main(), Cria (ou atualiza) um cupom de cortesia — acesso liberado sem passar pelo Stripe, get_logger(), Structured logging setup using structlog.  JSON output in non-dev environments, Blank any value whose key ends in `_encrypted` or looks secret-bearing., Configure structlog + stdlib logging. Safe to call more than once. (+76 more)
 
 ### Community 5 - "test_precheck_handoff.py"
 Cohesion: 0.07
 Nodes (81): _body(), _body_ctx(), _body_portal(), _entitled_tenant(), _FakeResponse, _install_fake_httpx(), _patch_entitlement(), Exception (+73 more)
 
 ### Community 6 - "test_privacy.py"
-Cohesion: 0.19
-Nodes (24): _admin_token(), _FakeResponse, _install_fake_httpx(), _privacy_requests(), Exception, MonkeyPatch, LGPD cross-database privacy orchestration tests (CONTRACTS.md §14).  Ground tr, Point services/privacy at a configured mesh + a fake httpx routed by base_url. (+16 more)
+Cohesion: 0.21
+Nodes (22): _admin_token(), _FakeResponse, _install_fake_httpx(), _privacy_requests(), Exception, MonkeyPatch, LGPD cross-database privacy orchestration tests (CONTRACTS.md §14).  Ground tr, Point services/privacy at a configured mesh + a fake httpx routed by base_url. (+14 more)
 
 ### Community 7 - "test_launch_waitlist.py"
-Cohesion: 0.05
-Nodes (42): join_launch_waitlist(), AsyncSession, Request, Public launch-waitlist endpoint (CONTRACTS.md §4 + §5): the PRE-LAUNCH buy gate., Capture a waitlist lead: honeypot + rate-limit guard, then upsert + confirm., WaitlistLead model — "avise-me quando lançar" capture for the pre-launch gate., A visitor who asked to be notified when the product goes on sale., WaitlistLead (+34 more)
+Cohesion: 0.16
+Nodes (15): POST /public/launch-waitlist — the pre-launch buy gate's lead capture.  Covers, A later hint-less click must not erase the plan we already know they wanted., A filled honeypot returns 201 but persists nothing., Every captured lead, oldest first., The whole point: three plan clicks by one visitor leave ONE row, same id., `created_at` means FIRST asked — a repeat submission must not rewrite it., _rows(), test_blank_plan_hint_stores_null() (+7 more)
 
 ### Community 8 - "test_signup.py"
 Cohesion: 0.05
-Nodes (66): _force_intent_pending(), _install_setup_mode_stripe_fakes(), _intent_row(), Cold-signup vertical tests: register-at-first-card, Checkout Session, onboarding, POST /doctor/onboarding/intake is gated by require_doctor (401 with no token)., The authenticated mid-wizard call attaches the intake to the caller's pending in, GET /public/checkout-config echoes the REAL deployed STRIPE_TRIAL_PERIOD_DAYS —, `addons` covers every `catalog.ADDON_IDS` id in stable alphabetical order; (+58 more)
+Nodes (80): _event(), The fully-metered shape (all three companion prices, no quantity on any of them), A plan that has BOTH a direct/anchor price item AND the three metered companion, test_signup_webhook_subscription_carries_all_three_metered_companions_and_trial(), test_subscription_with_anchor_and_companions_resolves_plan_no_bogus_addons(), _post_webhook(), test_webhook_provisioning_bridge_fires_and_stamps_secretaria_provisioned_at(), _force_intent_pending() (+72 more)
 
 ### Community 9 - "internal.py"
-Cohesion: 0.08
-Nodes (36): cancel_pending_otp_internal(), claim_pending_email(), pending_identity_status(), AsyncSession, brain-api's INBOUND service-to-service API for the Portal (Brain-Message channel, secretarIA -> brain-api: the visitor typed an address into the chat.      The, Tell secretarIA whether this exact clinic handle still needs an address., Service leg used by the post-booking hook; takes no address by design.      An (+28 more)
+Cohesion: 0.12
+Nodes (16): secretarIA -> brain-api: the patient answered "qual é o seu nome?" at this clini, record_patient_name(), PatientContactOut, PatientNameIn, PatientNameOut, PendingIdentityStatusOut, PendingOtpCancelOut, PendingOtpRequestOut (+8 more)
 
 ### Community 10 - "onboarding_sync.py"
-Cohesion: 0.10
-Nodes (33): apply_onboarding_event(), _ConfigStatusCacheEntry, ensure_precheck_provisioned(), ensure_products_provisioned(), ensure_secretaria_provisioned(), get_cached_config_status(), get_last_attempt(), get_owner() (+25 more)
+Cohesion: 0.14
+Nodes (19): _ConfigStatusCacheEntry, get_cached_config_status(), get_last_attempt(), invalidate_config_status(), mode_resolved_hint(), _precheck_identity(), Any, datetime (+11 more)
 
 ### Community 11 - "billing.py"
-Cohesion: 0.07
-Nodes (40): add_product(), checkout(), portal(), precheck_topup(), precheck_upgrade(), precheck_usage(), _precheck_usage_out(), AsyncSession (+32 more)
+Cohesion: 0.05
+Nodes (55): add_product(), checkout(), portal(), precheck_topup(), precheck_upgrade(), precheck_usage(), _precheck_usage_out(), AsyncSession (+47 more)
 
-### Community 12 - "decode_token"
-Cohesion: 0.09
-Nodes (55): create_access_token(), decode_token(), Return the claims, or None for any invalid/expired/forged token.      `algorit, Mint a short-lived access token. `sub` is the brain user id (UUID string)., PatientConsentEvent, LGPD consent/legal-basis audit trail for a Brain-Message patient.      Shaped, test_access_token_omits_professional_id_when_none(), test_access_token_round_trips_professional_id() (+47 more)
+### Community 12 - "test_patient_account_invites.py"
+Cohesion: 0.12
+Nodes (41): PatientConsentEvent, LGPD consent/legal-basis audit trail for a Brain-Message patient.      Shaped, `POST /refresh` as the portal sends it. With `cookie`, that exact value is sent, _refresh(), _threads(), _add(), _count(), _email_login() (+33 more)
 
 ### Community 13 - "test_billing_phase1.py"
-Cohesion: 0.09
-Nodes (45): _extended_fake_settings(), _link_stripe_customer(), SimpleNamespace, Billing Phase 1 / fully-metered vertical tests (CONTRACT_onboarding_v1.md §9): t, Same forwarding mechanics as billable_patients, dispatched to the DIFFERENT, Same forwarding mechanics as billable_patients/active_professionals, dispatched, The cold-signup checkout builder no longer carries ANY of the fully-metered shap, `_parse_price_map` must accept `{plan_id}_metered_patients`,     `{plan_id}_met (+37 more)
+Cohesion: 0.07
+Nodes (55): _extended_fake_settings(), _link_stripe_customer(), SimpleNamespace, Billing Phase 1 / fully-metered vertical tests (CONTRACT_onboarding_v1.md §9): t, Same forwarding mechanics as billable_patients, dispatched to the DIFFERENT, Same forwarding mechanics as billable_patients/active_professionals, dispatched, The cold-signup checkout builder no longer carries ANY of the fully-metered shap, `_parse_price_map` must accept `{plan_id}_metered_patients`,     `{plan_id}_met (+47 more)
 
 ### Community 14 - "test_catalog_entitlements.py"
 Cohesion: 0.06
 Nodes (33): Protocol, check_quota(), Decision, EntitlementLike, is_entitled(), UUID, Entitlement resolution service (stripe-billing-entitlements skill, CONTRACTS.md, Outcome of a pure, in-process quota check (mirrors the skill).      Scaffold f (+25 more)
 
-### Community 15 - "User"
-Cohesion: 0.06
-Nodes (50): async_sessionmaker, create_admin(), _parse_args(), Namespace, Create (or promote) a platform-admin user — full access to the /admin/* surface., AsyncSession, Create the platform admin if it does not already exist. Idempotent.      Crede, seed_admin() (+42 more)
+### Community 15 - "async_sessionmaker"
+Cohesion: 0.11
+Nodes (26): async_sessionmaker, AsyncClient, AsyncSession, Seed the single platform admin user (idempotent).  Reads ADMIN_EMAIL / ADMIN_P, Create the platform admin if it does not already exist. Idempotent.      Crede, seed_admin(), _alembic(), _guard() (+18 more)
 
 ### Community 16 - "test_patient_account_name.py"
-Cohesion: 0.16
-Nodes (31): _handle_at(), _name_of(), _opens(), UUID, The patient's NAME follows the account to its next clinic (2026-09-24).  A liv, Named at clinic A; clinic B's link with the account cookie -> `open` carries the, Nothing invented: secretarIA gets `null` and asks once., Regression: without the account cookie the `open` is today's, name-free. (+23 more)
+Cohesion: 0.17
+Nodes (29): _handle_at(), _name_of(), _opens(), UUID, The patient's NAME follows the account to its next clinic (2026-09-24).  A liv, Named at clinic A; clinic B's link with the account cookie -> `open` carries the, Nothing invented: secretarIA gets `null` and asks once., Regression: without the account cookie the `open` is today's, name-free. (+21 more)
 
 ### Community 17 - "test_refresh_cookie.py"
 Cohesion: 0.10
 Nodes (42): _cookie_value(), _login(), The HttpOnly refresh cookie: emission, the cookie-first refresh, the CSRF header, A client presenting both is one caught mid-deploy; the cookie holds the leg, The un-migrated portal must keep working, header-less, for the whole round., 401, not the 422 an unconditionally-required body would give: 'no credential', A cross-site form POST carries the cookie but cannot set a header. This check, The guard must fire BEFORE rotation — otherwise a forged request still burns (+34 more)
 
-### Community 18 - "BaseModel"
+### Community 18 - "onboarding.py"
 Cohesion: 0.05
-Nodes (79): BaseModel, _action_out(), attach_intake(), bind_self_professional(), _embedded_signup_out(), get_onboarding(), get_test_window(), invite_professional() (+71 more)
+Nodes (36): list_secretaries(), List this tenant's `secretary` users, invited or active.      Purely LOCAL, un, AttemptIn, AttemptOut, EmbeddedSignupOut, LastAttemptOut, OnboardingStateOut, PauseIn (+28 more)
 
 ### Community 19 - "_bearer"
 Cohesion: 0.05
-Nodes (97): _bearer(), _confirm(), _confirm_url(), _link_events(), _login(), UUID, Patient access by e-mail OTP + the product switchboard (Brain-Message, piece 7)., The address proven at BOTH open clinics, with the login at `both` LAST.      T (+89 more)
+Nodes (91): create_patient_token(), Mint the short-lived access token for one Brain-Message patient session., _bearer(), _confirm(), _confirm_url(), _link_events(), _login(), UUID (+83 more)
 
 ### Community 20 - "test_test_window.py"
 Cohesion: 0.14
-Nodes (33): _due_entitlement(), _due_tenant(), _noop_async(), SimpleNamespace, Task 2 — reframe the free trial as a Meta/WABA acceptance test-window (backend)., Task 2's core billing-semantics change: the billing cycle anchors at 'conectado', The pre-existing tenant A fixture (plan=precheck, status=active, no subscription, The core due condition deliberately does NOT require ent.status active/trialing (+25 more)
+Nodes (34): _set_pair_key(), test_internal_onboarding_events_unknown_tenant_404(), test_internal_onboarding_tenants_key_gate(), _due_entitlement(), _due_tenant(), _link_and_set_plan(), _noop_async(), SimpleNamespace (+26 more)
 
 ### Community 21 - "apply_subscription_state"
 Cohesion: 0.20
 Nodes (22): apply_subscription_state(), _manual_precheck_plan(), _manual_secretaria_plan(), Apply ONE subscription object (webhook event, or the update response of     `ad, _resolve_status(), _clinic(), apply_subscription_state: previous row x subscription event -> next row (TASK C,, test_a_family_removed_from_the_subscription_turns_off() (+14 more)
 
-### Community 22 - "SignupIntent"
-Cohesion: 0.09
-Nodes (39): SignupIntent model — cold-signup lead through Stripe Checkout to entitlement act, One cold-signup attempt: lead data + catalog selection through to provisioning., SignupIntent, IntakeIn, OnboardingStatusOut, `GET /public/onboarding-status` response.      `products`/`onboarding_token` a, Pre-checkout intake answers (CONTRACT_onboarding_v1.md §7).      Stored verbat, _as_utc() (+31 more)
+### Community 22 - "signup.py"
+Cohesion: 0.15
+Nodes (22): _as_utc(), attach_intake(), create_checkout_session_for_intent(), exchange_onboarding_token(), _normalize_catalog_ids(), OnboardingExchange, _plan_id_of(), provision_tenant_from_intent() (+14 more)
 
-### Community 23 - "test_portal_auto_greeting.py"
+### Community 23 - "_spy_transport"
 Cohesion: 0.06
-Nodes (50): _account_token(), _boom_on_open(), _invite(), _open(), _open_calls(), Exception, The automation speaks FIRST (TASK-003 §2) — `POST {SECRETARIA}/internal/brain-me, F5. The cookie resumes the visit, and a resumed visit is not a new patient. (+42 more)
+Nodes (63): An identity as a past verified login leaves it.      For the cases a live logi, Replace `httpx.AsyncClient.request` and record every outbound hop.      A spy, _seed_identity(), _spy_transport(), Completing a visit discards its chat only when the clinic already knows the acco, A twin identity exists at the clinic => the visit's chat is discarded upstream., test_a_secretaria_that_refuses_the_merge_never_breaks_the_login(), test_completing_a_first_time_visit_does_not_merge_anything() (+55 more)
 
 ### Community 24 - "MessagePatient"
-Cohesion: 0.12
-Nodes (48): pending_status(), The typed state the Portal uses for its composer; no copy matching required., MessagePatient, MessagePendingSession, One patient's stable identity on the Brain-Message channel of ONE clinic., A visitor who is TALKING but has proven nothing yet (2026-09-16).      THE PRO, _count(), _ids() (+40 more)
+Cohesion: 0.11
+Nodes (50): pending_status(), The typed state the Portal uses for its composer; no copy matching required., MessagePatient, MessagePendingSession, One patient's stable identity on the Brain-Message channel of ONE clinic., A visitor who is TALKING but has proven nothing yet (2026-09-16).      THE PRO, _count(), _ids() (+42 more)
 
-### Community 25 - "_trial_will_end_obj"
-Cohesion: 0.13
-Nodes (19): _live_subscription(), A fake `_stripe_get` returning a live subscription snapshot (FIX 1b)., Schedules using the LIVE trial_end (from `_stripe_get`), NOT the event's own --, FIX 1b: the LIVE subscription is the authority. Even though the cheap     short, The live trial_end must be more than an hour out; one ~now (about to end     an, The immediate-end firing (harden_charge's own trial_end=now) reports a     subs, FIX 4: a PreCheck-only (or any non-secretarIA) plan must NEVER be     auto-canc, Deliberately NO fail-soft here (unlike harden_charge): a failure must propagate (+11 more)
+### Community 25 - "Entitlement"
+Cohesion: 0.07
+Nodes (37): Entitlement, Entitlement model — one row per tenant (stripe-billing-entitlements skill).  T, Per-tenant entitlement state. Primary-keyed by tenant_id (one row per tenant)., Usage-event ledger — one row per recorded internal usage event (metering).  Pe, A single applied usage event. PK = the caller's idempotency key (natural dedupe), UsageEvent, delete_tenant removes every brain-owned child row; a privacy_requests audit row, test_delete_tenant_sweeps_children_but_keeps_audit() (+29 more)
 
 ### Community 26 - "admin.py"
-Cohesion: 0.07
-Nodes (39): create_tenant(), create_user(), delete_tenant(), get_admin_anamnesis(), get_admin_metrics(), get_secretaria_tenants(), get_tenant(), get_tenant_entitlements() (+31 more)
+Cohesion: 0.08
+Nodes (37): create_tenant(), create_user(), delete_tenant(), get_admin_anamnesis(), get_secretaria_tenants(), get_tenant(), get_tenant_entitlements(), impersonate_token() (+29 more)
 
-### Community 27 - "TokenResponse"
-Cohesion: 0.13
-Nodes (35): build_session_response(), _check_auth_rate_limit(), exchange_invite_token(), exchange_onboarding_token(), _expired_cookie_headers(), issue_session(), login(), logout() (+27 more)
+### Community 27 - "auth.py"
+Cohesion: 0.06
+Nodes (60): build_session_response(), _check_auth_rate_limit(), exchange_invite_token(), exchange_onboarding_token(), _expired_cookie_headers(), issue_session(), login(), logout() (+52 more)
 
 ### Community 28 - "_tenant_ids"
 Cohesion: 0.09
-Nodes (42): _event(), _FakeResponse, The fully-metered shape (all three companion prices, no quantity on any of them), A fully-metered secretaria_basico subscription has NO anchor/flat price item at, A plan that has BOTH a direct/anchor price item AND the three metered companion, test_signup_webhook_subscription_carries_all_three_metered_companions_and_trial(), test_subscription_updated_fully_metered_companions_only_resolves_plan(), test_subscription_with_anchor_and_companions_resolves_plan_no_bogus_addons() (+34 more)
+Nodes (50): (started_at, notified_at) as timezone-aware UTC (SQLite hands back naive values), read_window(), set_window(), _admin_entitlements(), _FakeResponse, A fully-metered secretaria_basico subscription has NO anchor/flat price item at, test_subscription_updated_fully_metered_companions_only_resolves_plan(), Stripe billing vertical tests (webhook apply + checkout/portal endpoints).  Gr (+42 more)
 
-### Community 29 - "test_password_reset.py"
-Cohesion: 0.24
-Nodes (8): _code(), Staff password reset by e-mailed code — the HTTP surface (TASK-056).  Ground tru, test_confirm_revokes_existing_sessions(), test_end_to_end_code_flow(), test_logs_never_carry_email_or_code(), test_per_address_request_limit(), test_wrong_code_and_unknown_email_get_the_same_400(), _token()
+### Community 29 - "SlidingWindowLimiter"
+Cohesion: 0.11
+Nodes (16): In-process sliding-window rate limiter (CONTRACTS.md §5).  Deliberately trivia, Per-key (client IP) sliding 60s window. `limit_getter` is read per call so a, True if `key` is under the limit (and records the hit), else False.          F, SlidingWindowLimiter, test_login_rate_limited(), _code(), Staff password reset by e-mailed code — the HTTP surface (TASK-056).  Ground t, test_confirm_revokes_existing_sessions() (+8 more)
 
-### Community 30 - "Entitlement"
-Cohesion: 0.06
-Nodes (43): Entitlement, Entitlement model — one row per tenant (stripe-billing-entitlements skill).  T, Per-tenant entitlement state. Primary-keyed by tenant_id (one row per tenant)., PrecheckTopupCredit, PreCheck top-up credit ledger — avulso consultations purchased on top of a PreCh, One granted PreCheck avulso purchase (`checkout.session.completed`,     `metada, Usage-event ledger — one row per recorded internal usage event (metering).  Pe, A single applied usage event. PK = the caller's idempotency key (natural dedupe) (+35 more)
+### Community 30 - "test_precheck_billing.py"
+Cohesion: 0.08
+Nodes (28): PrecheckTopupCredit, PreCheck top-up credit ledger — avulso consultations purchased on top of a PreCh, One granted PreCheck avulso purchase (`checkout.session.completed`,     `metada, PreCheck billing vertical tests (precheck-billing round).  Ground truth: servi, PRECHECK_API_KEY is unset by default (conftest never sets it) -> fail closed., precheck_consultations is flat+quota billing, never metered — record_usage must, The grant is EXACTLY the purchased quantity (12 here, deliberately not a round, Belt-and-braces guard: a DIFFERENT event.id completing the SAME Checkout Session (+20 more)
 
 ### Community 31 - "test_secretary_role.py"
 Cohesion: 0.11
@@ -385,63 +399,63 @@ Nodes (30): _FakeResponse, _install_fake_meta_httpx(), _install_fake_provisionin
 
 ### Community 33 - "create_demo_request_endpoint"
 Cohesion: 0.11
-Nodes (16): create_demo_request_endpoint(), AsyncSession, Request, Public demo-request endpoint (CONTRACTS.md §4 + §5): "Agendar demo" lead capture, Capture a demo request: honeypot + rate-limit guard, then persist + confirm., DemoRequestConfirmation, DemoRequestCreate, Body for `POST /demo-requests` (CONTRACTS.md §4.1).      Both enum fields are (+8 more)
+Nodes (18): create_demo_request_endpoint(), AsyncSession, Request, Public demo-request endpoint (CONTRACTS.md §4 + §5): "Agendar demo" lead capture, Capture a demo request: honeypot + rate-limit guard, then persist + confirm., DemoRequestConfirmation, DemoRequestCreate, ProductInterestEnum (+10 more)
 
 ### Community 34 - "make_clinic"
-Cohesion: 0.29
-Nodes (18): make_clinic(), A tenant + its entitlement, composed per product family (no HTTP, no bridges)., Preflight of add_product_to_subscription: every refusal happens BEFORE any write, Courtesy secretarIA + a paid PreCheck subscription: adding secretarIA to it is a, _refusal(), _req(), test_a_family_the_live_subscription_already_carries_is_already_present(), test_a_manual_product_may_be_bought_and_converted_to_paid() (+10 more)
+Cohesion: 0.18
+Nodes (26): make_clinic(), A tenant + its entitlement, composed per product family (no HTTP, no bridges)., Preflight of add_product_to_subscription: every refusal happens BEFORE any write, Courtesy secretarIA + a paid PreCheck subscription: adding secretarIA to it is a, _refusal(), _req(), test_a_family_the_live_subscription_already_carries_is_already_present(), test_a_manual_product_may_be_bought_and_converted_to_paid() (+18 more)
 
 ### Community 35 - "internal.py"
-Cohesion: 0.21
-Nodes (17): internal_entitlements(), internal_professional_emails(), post_onboarding_event(), AsyncSession, description, Path, Response, UUID (+9 more)
+Cohesion: 0.23
+Nodes (16): internal_entitlements(), internal_professional_emails(), post_onboarding_event(), AsyncSession, description, Path, Response, UUID (+8 more)
 
 ### Community 36 - "make_sub"
-Cohesion: 0.14
-Nodes (27): Families this subscription pays for (the combo pays for both)., make_sub(), A Stripe subscription object as the webhook / `GET /v1/subscriptions/{id}` deliv, invoice(), Final review regressions: financial consent, independent writers and manual fami, test_bad_quote_never_mutates_stripe(), test_changed_expected_charge_refuses_before_update(), test_complex_or_partial_invoice_fails_closed() (+19 more)
+Cohesion: 0.13
+Nodes (28): Families this subscription pays for (the combo pays for both)., make_sub(), A Stripe subscription object as the webhook / `GET /v1/subscriptions/{id}` deliv, invoice(), Final review regressions: financial consent, independent writers and manual fami, test_bad_quote_never_mutates_stripe(), test_changed_expected_charge_refuses_before_update(), test_complex_or_partial_invoice_fails_closed() (+20 more)
 
-### Community 37 - "get_settings"
-Cohesion: 0.08
-Nodes (40): get_settings(), Return a cached Settings instance (read once per process)., exchange_code_for_token(), Meta Graph API client — WhatsApp Embedded Signup token exchange + WABA webhook, `GET {META_GRAPH_BASE_URL}/oauth/access_token` — returns the access token, or, `POST {META_GRAPH_BASE_URL}/{waba_id}/subscribed_apps` — subscribes this app to, subscribe_app_to_waba(), _empty_page() (+32 more)
+### Community 37 - "precheck_client.py"
+Cohesion: 0.13
+Nodes (27): _empty_page(), get_admin_anamnesis(), get_admin_metrics(), get_anamnesis(), get_anamnesis_media_url(), list_admin_anamneses(), list_anamneses(), list_anamnesis_media() (+19 more)
 
-### Community 38 - "patient_access.py"
-Cohesion: 0.06
-Nodes (34): list_threads(), Exactly `EntitlementOut.products` intersected with `channels.brain_message`., ClinicInviteIn, ClinicLookupIn, ClinicPublicOut, ConfirmSiblingIn, OtpRequestIn, OtpVerifyIn (+26 more)
+### Community 38 - "BaseModel"
+Cohesion: 0.04
+Nodes (69): BaseModel, checkout_config(), No rate limit — deliberate. Unlike the routes above, this touches no DB and, The brain-api session pair. Shape mirrors PreCheck's `TokenResponse` and the, TokenResponse, ClinicInviteIn, ClinicLookupIn, ClinicPublicOut (+61 more)
 
 ### Community 39 - "_families_from_subscription"
-Cohesion: 0.12
-Nodes (16): catalog_id_for_price(), _compose_with_addons(), _families_from_subscription(), _parse_price_map(), _plan_id_from_metered_companion(), Parse STRIPE_PRICE_MAP (keyed by the raw string so a settings monkeypatch in, If `cid` is a `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` /, The product families ONE Stripe subscription carries, derived from its items. (+8 more)
+Cohesion: 0.11
+Nodes (18): catalog_id_for_price(), _compose_with_addons(), _families_from_subscription(), _parse_price_map(), _plan_id_from_metered_companion(), price_id_for(), Parse STRIPE_PRICE_MAP (keyed by the raw string so a settings monkeypatch in, If `cid` is a `{plan_id}_metered_patients` / `{plan_id}_metered_professionals` / (+10 more)
 
-### Community 40 - "_stripe_post_or_raise"
-Cohesion: 0.15
-Nodes (19): classify_add_product_error(), Response, Stripe's own `error.code` / `error.message` off a failed response, for the WARNI, A Stripe API refusal that KEEPS Stripe's own error fields (HTTP status, `error.c, `_stripe_post` that raises `StripeApiError` (with Stripe's error fields) on a >=, Map a Stripe refusal of the subscription update to `(http_status, detail)`., _stripe_error_fields(), _stripe_error_type() (+11 more)
+### Community 40 - "install_fake_settings"
+Cohesion: 0.11
+Nodes (27): classify_add_product_error(), A Stripe API refusal that KEEPS Stripe's own error fields (HTTP status, `error.c, `_stripe_post` that raises `StripeApiError` (with Stripe's error fields) on a >=, Map a Stripe refusal of the subscription update to `(http_status, detail)`., _stripe_post_or_raise(), StripeApiError, fake_settings(), install_fake_settings() (+19 more)
 
-### Community 41 - "auth.py"
-Cohesion: 0.08
-Nodes (23): ExchangeInviteTokenIn, ExchangeOnboardingTokenIn, LoginRequest, LogoutRequest, MeResponse, MessageOut, PasswordResetCodeVerifyIn, PasswordResetConfirmIn (+15 more)
+### Community 41 - "StaffAccount"
+Cohesion: 0.11
+Nodes (45): verify_password(), Personal staff credentials; clinical authority remains on User, never here., StaffAccount, StaffAccountResetCode, StaffAccountSession, _hash_reset_code(), HMAC-SHA256 keyed by SECRET_KEY. A 6-digit code is reversible from a bare hash i, Register a cold-signup lead at the FIRST card, atomically.      Creates, in on (+37 more)
 
 ### Community 42 - "create_precheck_usage_event"
 Cohesion: 0.11
 Nodes (20): _precheck_key_scheme, create_precheck_usage_event(), get_precheck_quota(), AsyncSession, description, Path, Security, UUID (+12 more)
 
 ### Community 43 - "admin.py"
-Cohesion: 0.06
-Nodes (58): AdminDemoRequestOut, AdminTenantCreateIn, AdminTenantCreateOut, AdminTenantDetailOut, AdminTenantOut, AdminUserCreateIn, AdminUserOut, _check_password_composition() (+50 more)
+Cohesion: 0.07
+Nodes (49): AdminDemoRequestOut, AdminTenantCreateIn, AdminTenantCreateOut, AdminTenantDetailOut, AdminTenantOut, AdminUserCreateIn, _check_password_composition(), EntitlementAdminOut (+41 more)
 
 ### Community 44 - "test_patient_pending_account_shortcut.py"
+Cohesion: 0.11
+Nodes (37): A named row with the same e-mail but NO account link is not read (attribute != l, test_an_unlinked_row_sharing_the_address_is_not_the_accounts(), _channel_consents(), _count(), _invite(), _logged_in_at(), _open(), A browser that already carries a live ACCOUNT opens a clinic's link (2026-09-24) (+29 more)
+
+### Community 45 - "public_signup.py"
+Cohesion: 0.19
+Nodes (18): _check_rate_limit(), create_checkout_session(), onboarding_status(), AsyncSession, CheckoutSessionOut, Request, Response, UUID (+10 more)
+
+### Community 46 - "Any"
+Cohesion: 0.12
+Nodes (25): AddProductCharge, _charge_from_update(), _is_timestamp(), _iso_date(), _line_is_proration(), parse_preview_charge(), _period_dt(), period_end_of() (+17 more)
+
+### Community 47 - "onboarding.py"
 Cohesion: 0.10
-Nodes (39): _channel_consents(), _count(), _invite(), _logged_in_at(), _open(), A browser that already carries a live ACCOUNT opens a clinic's link (2026-09-24), Count `add_clinic` calls while keeping the real one., The 2026-09-23 symptom, closed at the endpoint.      Account verified at clini (+31 more)
-
-### Community 45 - "signup.py"
-Cohesion: 0.07
-Nodes (39): _check_rate_limit(), checkout_config(), create_checkout_session(), onboarding_status(), AsyncSession, CheckoutSessionOut, Request, Response (+31 more)
-
-### Community 46 - "parse_preview_charge"
-Cohesion: 0.26
-Nodes (12): parse_preview_charge(), proration_for_items(), `proration_behavior` for a subscription update that ADDS these items (decision D, Price only supported complete invoices; unsupported adjustments fail closed., make_invoice(), Pure helpers of the add-product flow: proration choice, period end, preview pars, test_an_unparseable_preview_fails_closed(), test_flat_items_are_invoiced_now_and_metered_only_is_not() (+4 more)
-
-### Community 47 - "available_products"
-Cohesion: 0.33
-Nodes (6): available_products(), default_product(), 403 unless `product` is one this tenant may reach right now.      The SAME 403, The products this tenant may talk to on the Brain-Message channel, in tab order., The thread a link that names NO product opens on — the first one offered, or Non, require_product()
+Nodes (34): _action_out(), attach_intake(), bind_self_professional(), _embedded_signup_out(), get_onboarding(), get_test_window(), _last_attempt_out(), list_professionals() (+26 more)
 
 ### Community 48 - "catalog.py"
 Cohesion: 0.11
@@ -456,60 +470,60 @@ Cohesion: 0.05
 Nodes (73): _claim(), _count(), _invite(), _open(), _prove(), The PENDING visit (2026-09-16): the patient talks — and books — before proving a, secretarIA's leg: the address the patient typed into the chat., Today's answer, unchanged. Nobody is being recognised, so there is nothing to de (+65 more)
 
 ### Community 51 - "onboarding.py"
-Cohesion: 0.14
-Nodes (18): apply_config_status(), derive_initial_state(), initial_next_retry_at(), map_error_to_blocker(), provision_defaults(), AsyncSession, datetime, UUID (+10 more)
+Cohesion: 0.16
+Nodes (16): apply_config_status(), derive_initial_state(), initial_next_retry_at(), map_error_to_blocker(), provision_defaults(), AsyncSession, datetime, UUID (+8 more)
 
 ### Community 52 - "_request"
 Cohesion: 0.18
 Nodes (20): activate_tenant(), connect_whatsapp(), create_professional(), get_config_status(), get_professionals(), provision_tenant(), Any, Response (+12 more)
 
 ### Community 53 - "attachments.py"
-Cohesion: 0.18
-Nodes (17): AttachmentKind, check_attachment(), _clean(), extension_conflicts(), is_media_id(), Attachments on the Brain-Message channel — the ONE place their limits and checks, The kind the CONTENT says it is, from its magic bytes — or None.      Never th, The last path segment of `raw`, without what is unsafe in a header, a path or a (+9 more)
+Cohesion: 0.10
+Nodes (26): Exception, AttachmentKind, AttachmentRefused, check_attachment(), CheckedAttachment, _clean(), extension_conflicts(), is_media_id() (+18 more)
 
-### Community 54 - "hash_refresh_token"
-Cohesion: 0.11
-Nodes (31): hash_refresh_token(), SHA-256 hex for storage/lookup. Fast is fine: the input is 64 random bytes, verify_password(), _as_utc(), authenticate(), complete_password_reset(), exchange_invite_token(), find_password_reset_user() (+23 more)
+### Community 54 - "auth.py"
+Cohesion: 0.15
+Nodes (22): _as_utc(), authenticate(), complete_password_reset(), exchange_invite_token(), find_password_reset_user(), get_tenant(), get_user(), AsyncSession (+14 more)
 
-### Community 55 - "HTTPException"
-Cohesion: 0.04
-Nodes (77): HTTPException, Proxy secretaria's destructive data wipe (brain-api -> secretaria `/admin/reset`, reset_secretaria(), me(), Resolve the principal back to its user (and tenant) rows, identity only., `require_tenant`, plus: a test clinic (`Tenant.is_test`, created by `POST     /, `require_billable_tenant` (tenant in context + not a test clinic — that 403 come, require_billable_tenant() (+69 more)
+### Community 55 - "Principal"
+Cohesion: 0.08
+Nodes (34): get_admin_metrics(), Proxy PreCheck's admin metrics overview (brain-api -> precheck     `/api/v1/adm, `require_billable_tenant` (tenant in context + not a test clinic — that 403 come, require_billing_manager(), deny_secretary(), is_billing_manager(), Principal, Shared FastAPI auth dependencies (auth-jwt-multitenant skill).  The token is v (+26 more)
 
 ### Community 56 - "_tenant_com_precheck"
 Cohesion: 0.19
 Nodes (16): chamadas(), Tests de `onboarding_sync.ensure_precheck_provisioned` — o bridge que faz "pago, A frase é o que o paciente vê no QR impresso na recepção e o que digita     qua, Um nome que não sobrevive à normalização não pode virar "precheck " solto —, Captura as chamadas ao PreCheck e deixa o teste escolher a resposta., _tenant_com_precheck(), test_excecao_inesperada_e_engolida(), test_falha_do_precheck_nao_levanta_e_nao_carimba() (+8 more)
 
 ### Community 57 - "_configure_mesh"
-Cohesion: 0.11
-Nodes (29): create_patient_token(), Mint the short-lived access token for one Brain-Message patient session., _configure_mesh(), Point both upstreams somewhere and give each its OWN secret.      Two DIFFEREN, _marked(), Delivery state on the Brain-Message channel — the brain-api edge (2026-09-19)., The one key this repo rewrites (`attachment`) does not take the state with it., Part 1 §5's "poll with an old `since`" scenario, seen from this repo.      The (+21 more)
+Cohesion: 0.10
+Nodes (33): _configure_mesh(), Point both upstreams somewhere and give each its OWN secret.      Two DIFFEREN, The same greeting trigger `POST /clinics` fires — under the ACCOUNT's handle., test_the_account_branch_asks_secretaria_to_greet_the_account_handle(), The handle secretarIA receives as `external_id` IS the pending identity's id., test_the_relay_carries_the_pending_handle_to_the_product(), _marked(), Delivery state on the Brain-Message channel — the brain-api edge (2026-09-19). (+25 more)
 
 ### Community 58 - "issue_password_reset_code"
-Cohesion: 0.17
-Nodes (22): StaffPasswordResetCode — the pending e-mailed reset code for one staff user.  At, StaffPasswordResetCode, _hash_reset_code(), issue_password_reset_code(), _normalize_email(), HMAC-SHA256 keyed by SECRET_KEY. A 6-digit code is reversible from a bare hash i, Mint a 6-digit code for `email`, persisting only its keyed hash.      `None` — a, Exchange a correct code for a fresh single-use reset token; `None` otherwise. (+14 more)
+Cohesion: 0.12
+Nodes (30): get_token_principal(), Turn an `Authorization: Bearer <jwt>` header into a validated Principal., StaffPasswordResetCode — the pending e-mailed reset code for one staff user., StaffPasswordResetCode, issue_password_reset_code(), _normalize_email(), Mint a 6-digit code for `email`, persisting only its keyed hash.      `None` —, Exchange a correct code for a fresh single-use reset token; `None` otherwise. (+22 more)
 
 ### Community 59 - "_mesh"
 Cohesion: 0.08
 Nodes (61): _mesh(), _patient(), _png(), _precheck_turn(), _queued(), Attachments on the Brain-Message channel — the brain-api edge (2026-09-18).  P, The multipart body httpx put on the wire, split by RFC 7578 rules., Checklist 1: a REAL PNG, sent with the browser's wrong claims (`.jpg`, `image/jp (+53 more)
 
-### Community 60 - "timedelta"
-Cohesion: 0.05
-Nodes (85): MockTransport, create_patient_account_token(), create_patient_pending_token(), create_precheck_token(), decode_patient_account_token(), decode_patient_pending_token(), decode_patient_token(), Any (+77 more)
+### Community 60 - "test_visit_retention.py"
+Cohesion: 0.13
+Nodes (43): MockTransport, _count(), maker(), UUID, TASK-042: empty Portal visits are deleted after 24 h; a typed e-mail never is., secretarIA deleted but its answer was lost: the next `absent` is permission (I2), PreCheck's automatic greeting does not count: no patient message -> cleaned (own, Typed in PreCheck (or anywhere): kept, at any clinic, without even asking secret (+35 more)
 
 ### Community 61 - "test_smoke.py"
 Cohesion: 0.06
 Nodes (28): _admin_token(), _decode_like_precheck(), End-to-end smoke test of the full HTTP contract (CONTRACTS.md).  Runs the real, A valid tenant with no entitlement row gets coherent defaults, not a 404., A filled honeypot returns 201 but persists nothing., The real seeded administrator; signatures do not replace live user state., Validate the token EXACTLY as PreCheck does — not a mock.      Mirrors PreChec, Entitled + linked brain user -> a token PreCheck's own auth accepts. (+20 more)
 
-### Community 62 - "test_staff_first_access.py"
-Cohesion: 0.11
-Nodes (17): activate(), Existing bearer/refresh/hub credentials cannot survive revocation or reissue., test_hub_introspection_checks_actor_access_live(), test_new_version_invalidates_existing_access(), test_revocation_refuses_existing_access_and_refresh(), First access is an isolated credential, never an operational staff session., temp_login(), test_expired_temporary_password_cannot_login() (+9 more)
+### Community 62 - "config.py"
+Cohesion: 0.09
+Nodes (22): Application configuration loaded from environment variables / .env file., decode_staff_token(), activate(), Existing bearer/refresh/hub credentials cannot survive revocation or reissue., test_hub_introspection_checks_actor_access_live(), test_new_version_invalidates_existing_access(), test_revocation_refuses_existing_access_and_refresh(), pending_client() (+14 more)
 
 ### Community 63 - "test_auth_hardening.py"
-Cohesion: 0.11
-Nodes (21): create_hub_token(), decode_hub_token(), Mint the tenant-scoped token the doctor portal presents to secretarIA's hub., Validate a hub token: signature/expiry via `decode_token` + the exact scope., Auth-hardening round tests: refresh rotation/reuse, rate limiting, password poli, SECRETARIA_API_KEY is forced empty by conftest -> fail closed with 403., _tenant_ids(), test_auth_me_exposes_professional_id_when_present() (+13 more)
+Cohesion: 0.09
+Nodes (25): create_hub_token(), decode_hub_token(), Mint the tenant-scoped token the doctor portal presents to secretarIA's hub., Validate a hub token: signature/expiry via `decode_token` + the exact scope., Auth-hardening round tests: refresh rotation/reuse, rate limiting, password poli, SECRETARIA_API_KEY is forced empty by conftest -> fail closed with 403., _tenant_ids(), test_auth_me_exposes_professional_id_when_present() (+17 more)
 
-### Community 64 - "complete"
-Cohesion: 0.17
-Nodes (17): complete(), NoPendingFirstAccess, AsyncSession, Request, Response, Only this surface accepts the staff_password_setup scope., resume(), setup_response() (+9 more)
+### Community 64 - "cookies.py"
+Cohesion: 0.07
+Nodes (50): _expired_patient_cookie_headers(), The `Set-Cookie` that deletes the patient cookie, as raise-able headers., accept_invite(), clear_cookie(), complete_first_access(), current_account(), login(), logout() (+42 more)
 
 ### Community 65 - "secretaria_client.py"
 Cohesion: 0.21
@@ -519,17 +533,17 @@ Nodes (14): _admin_request(), delete_tenant(), list_tenants(), Any, Response, UU
 Cohesion: 0.22
 Nodes (14): Tests for `GET /internal/tenants/{tenant_id}/professional-emails`.  The read t, A tenant with nobody linked and a tenant that does not exist answer the     sam, Asking about tenant B never returns tenant A's address.      The isolation inv, SECRETARIA_API_KEY is forced empty by conftest -> fail closed with 403.      A, Tenant B's owner has no `professional_id`.      Absent, not present-with-null:, _set_pair_key(), _tenant_ids(), test_linked_professional_is_returned() (+6 more)
 
-### Community 67 - "test_billing_checkout_guard.py"
-Cohesion: 0.15
-Nodes (25): checkout_block_reason(), Why a NEW subscription checkout must not be opened for this tenant, or None., Write entitlement columns straight to the DB (no bridges, no webhook): the state, set_entitlement(), _checkout(), _ent(), Guard on POST /billing/checkout (TASK B introduced it; TASK C narrowed it — spec, TASK B's rule 2 is gone: a courtesy/admin secretarIA clinic may open a checkout. (+17 more)
+### Community 67 - "visit_retention.py"
+Cohesion: 0.20
+Nodes (20): _delete_brain_side(), _empty_visit_filter(), EmptyVisit, find_empty_visits(), _precheck_clinics(), AsyncSession, datetime, UUID (+12 more)
 
-### Community 68 - "_bearer"
-Cohesion: 0.10
-Nodes (53): _clear_config_status_cache(), _create_staff(), _noop_async(), Onboarding endpoints + integration vertical tests (ENDPOINTS + INTEGRATION + BIL, Corrections round (2026-07-22): invites are no longer owner-only — any doctor, Corrections round (2026-07-22): self-bind is no longer owner-only — any doctor, `services.onboarding_sync._config_status_cache` is a module-level (per-process), A tenant provisioned entirely via admin tooling never ran the webhook bridge, so (+45 more)
+### Community 68 - "test_mailer.py"
+Cohesion: 0.11
+Nodes (5): fake_smtp(), _FakeSMTP, services/mailer.py — brain-api's own authentication e-mail sender (TASK-056)., Records what `_smtp_send` does on the wire, without a network., smtp_on()
 
-### Community 69 - "team.py"
-Cohesion: 0.34
-Nodes (17): TeamInviteResult, TeamMember, generate_temporary_password(), can_manage_team(), deliver_first_access(), invite_team_member(), lock_clinic(), member_out() (+9 more)
+### Community 69 - "invite_team_member"
+Cohesion: 0.18
+Nodes (26): StaffMembershipInvite, Clinic team responses whitelist identity and status, never credentials., TeamInviteResult, TeamManagementInput, TeamMember, generate_temporary_password(), accept_invitation(), deliver_invitation() (+18 more)
 
 ### Community 70 - "Portal Messaging API — the Brain-Message channel"
 Cohesion: 0.10
@@ -544,40 +558,40 @@ Cohesion: 0.09
 Nodes (22): 1. App ID e App Secret, 1. Configuração do brain-api, 2. Configuration ID do Embedded Signup (caminho v4 — ver seção "Versão do Embedded Signup"), 3. Webhook fields e verify token (necessário para o fluxo de Coexistence), brain-frontend: Nenhuma Configuração Necessária, Coexistence — Task 0: grafia do feature type (pesquisa fechada, rodada "WhatsApp Coexistence onboarding"), Conclusão: são três eixos independentes, Critério 1: backend respondendo `configured=true` (+14 more)
 
 ### Community 73 - "cleanup_patients"
+Cohesion: 0.22
+Nodes (15): execute(), preview(), AsyncSession, UUID, Platform-admin-only preview and execution of patient cleanup for ONE clinic., CleanupRequest, CleanupResult, ProductResult (+7 more)
+
+### Community 74 - "internal.py"
+Cohesion: 0.19
+Nodes (14): cancel_pending_otp_internal(), pending_identity_status(), AsyncSession, brain-api's INBOUND service-to-service API for the Portal (Brain-Message channel, Tell secretarIA whether this exact clinic handle still needs an address., Service leg used by the post-booking hook; takes no address by design.      An, Called when the chat abandons the code wait to ask for a different address inste, Prove the address without attempting to mint a browser credential on this leg. (+6 more)
+
+### Community 75 - "mailer.py"
 Cohesion: 0.20
-Nodes (16): execute(), preview(), AsyncSession, UUID, Platform-admin-only preview and execution of patient cleanup for ONE clinic., CleanupRequest, CleanupResult, ProductResult (+8 more)
-
-### Community 74 - "message_switchboard.py"
-Cohesion: 0.18
-Nodes (15): _capped(), _declared_length(), _media_failure(), _media_not_found(), MediaStream, open_media(), Response, The switchboard — one patient session, two product backends, zero text classific (+7 more)
-
-### Community 75 - "test_mailer.py"
-Cohesion: 0.11
-Nodes (15): EmailTemplate, _header(), is_configured(), Outbound authentication e-mail — brain-api's own SMTP sender.  Until TASK-056 ev, (subject, body). Raises KeyError for an unknown template or a missing variable., Blocking send — always called through `asyncio.to_thread`., Render and send one authentication e-mail. NEVER raises., One line, no CR/LF: header values carry clinic-supplied text (clinic_name). (+7 more)
+Nodes (13): EmailTemplate, _header(), is_configured(), Outbound authentication e-mail — brain-api's own SMTP sender.  Until TASK-056, One line, no CR/LF: header values carry clinic-supplied text (clinic_name)., (subject, body). Raises KeyError for an unknown template or a missing variable., Blocking send — always called through `asyncio.to_thread`., Render and send one authentication e-mail. NEVER raises. (+5 more)
 
 ### Community 76 - "test_patient_idempotency.py"
 Cohesion: 0.21
 Nodes (16): _inbound(), Idempotent patient sends (2026-09-25) — `Idempotency-Key` on POST /threads/{prod, The same key from another patient, or on the other product's thread, is its own, The client timed out, the server did not: the retry gets the first attempt's ans, Today's front sends no key: nothing about it changes., A 502 means the message most likely never arrived: the retry must relay for real, _send(), test_a_failure_is_not_remembered() (+8 more)
 
 ### Community 77 - "internal.py"
-Cohesion: 0.12
-Nodes (15): HubTokenVerifyIn, HubTokenVerifyOut, InternalEntitlementOut, InternalOnboardingEventIn, InternalOnboardingEventOut, InternalProfessionalEmailOut, InternalProfessionalEmailsOut, Pydantic v2 schemas for brain-api's INBOUND /internal/* surface (secretarIA-faci (+7 more)
+Cohesion: 0.10
+Nodes (21): list_onboarding_tenants(), secretaria's `run_onboarding_nudges` cron pulls this hourly to decide who needs, HubTokenVerifyIn, HubTokenVerifyOut, InternalEntitlementOut, InternalOnboardingEventIn, InternalOnboardingEventOut, InternalOnboardingListOut (+13 more)
 
-### Community 78 - "_admin_entitlements"
-Cohesion: 0.30
-Nodes (16): Shared fakes for the TASK C billing tests (price map, settings, subscription obj, (started_at, notified_at) as timezone-aware UTC (SQLite hands back naive values), read_window(), set_window(), _admin_entitlements(), _deliver(), Webhook coherence after TASK C (spec §5.6): both products in one subscription, t, The minimal legacy shape (tests/test_billing.py, tests/test_test_window.py) has (+8 more)
+### Community 78 - "FastAPI"
+Cohesion: 0.18
+Nodes (11): FastAPI, health(), Health check endpoint., Liveness probe. Intentionally does not touch Postgres., create_app(), lifespan(), FastAPI application entrypoint.  Run with:     uvicorn brain_api.main:app --h, Build and configure the FastAPI application. (+3 more)
 
 ### Community 79 - "Settings"
-Cohesion: 0.07
-Nodes (33): BaseSettings, Strongly-typed settings. Values come from the environment or `.env`.      Real, Parse CORS_ALLOW_ORIGINS into a clean list of origins.          Accepts a JSON, Settings, generate_invite_code(), invite_link(), normalize_invite_code(), parse_invite() (+25 more)
+Cohesion: 0.12
+Nodes (11): BaseSettings, Strongly-typed settings. Values come from the environment or `.env`.      Real, Parse CORS_ALLOW_ORIGINS into a clean list of origins.          Accepts a JSON, Settings, invite_link(), The link a clinic hands out, or `None` while `BRAIN_MESSAGE_PUBLIC_URL` is unset, test_the_launch_gate_defaults_to_off(), Public links share one configured base per frontend. (+3 more)
 
 ### Community 80 - "_request"
 Cohesion: 0.31
 Nodes (8): provision_clinic(), Any, Response, UUID, Internal service-to-service PROVISIONING client into PreCheck (`X-Internal-Token, Call `method path` on PreCheck's internal surface with the shared pair key., `POST /internal/provision` — create (or idempotently confirm) the PreCheck clini, _request()
 
 ### Community 81 - "FakeStripe"
-Cohesion: 0.19
-Nodes (23): FakeStripe, Every billing-relevant column + the test window (what a wrong write would change, Records every Stripe call of the add-product flow and answers from canned object, snapshot(), _post(), _precheck_clinic(), POST /billing/add-product over HTTP (TASK C, spec §5.5): contract, gates, error, test_a_card_declined_is_402_and_leaves_the_row_untouched() (+15 more)
+Cohesion: 0.15
+Nodes (30): FakeStripe, Write entitlement columns straight to the DB (no bridges, no webhook): the state, Every billing-relevant column + the test window (what a wrong write would change, Records every Stripe call of the add-product flow and answers from canned object, set_entitlement(), snapshot(), _post(), _precheck_clinic() (+22 more)
 
 ### Community 82 - "mask_email"
 Cohesion: 0.12
@@ -607,21 +621,21 @@ Nodes (5): _backfill_accounts(), _backfill_invite_codes(), Connection, patient a
 Cohesion: 0.33
 Nodes (5): downgrade(), secretary role: add `secretary` to the tenant role taxonomy (NO-OP by design), Intentionally empty — see the module docstring., Intentionally empty.      Deliberately does NOT delete or rewrite `secretary`, upgrade()
 
-### Community 89 - "SecretariaResetIn"
-Cohesion: 0.50
-Nodes (3): Request schema for the brain-api -> secretaria admin proxy (CONTRACTS.md §11)., Body for `POST /admin/secretaria/reset` — a DESTRUCTIVE data wipe on secretaria., SecretariaResetIn
+### Community 89 - "reset_secretaria"
+Cohesion: 0.33
+Nodes (5): Proxy secretaria's destructive data wipe (brain-api -> secretaria `/admin/reset`, reset_secretaria(), Request schema for the brain-api -> secretaria admin proxy (CONTRACTS.md §11)., Body for `POST /admin/secretaria/reset` — a DESTRUCTIVE data wipe on secretaria., SecretariaResetIn
 
 ### Community 90 - "billing.py"
-Cohesion: 0.12
-Nodes (34): NoReturn, _add_product_preflight(), add_product_to_subscription(), AddProductCharge, AddProductPreflight, AddProductRequest, AddProductResult, AppliedSubscription (+26 more)
+Cohesion: 0.13
+Nodes (33): NoReturn, _add_product_preflight(), add_product_to_subscription(), AddProductPreflight, AddProductRequest, AddProductResult, AppliedSubscription, _finish_add_product() (+25 more)
 
 ### Community 91 - "CHECKPOINT — portal do paciente: login só por e-mail + clínica entra por convite (2026-09-15)"
 Cohesion: 0.11
 Nodes (17): §10 — Pendências, §1 — Causa raiz (reconfirmada no código antes de programar), §2 — Modelo escolhido: tabela de conta (opção a), §3 — O que entrou, §4 — Contrato HTTP novo (para o frontend), §5 — Compatibilidade na janela entre os deploys, §6 — Decisões tomadas sem consulta, §7 — Riscos aceitos (ditos, não escondidos) (+9 more)
 
 ### Community 92 - "_install_fake_stripe_httpx"
-Cohesion: 0.11
-Nodes (29): `None` or an allowlisted keyword; anything else is 422 `unknown_return_to`., The `origem=…[&produto=precheck]` query the brain-frontend reads at `/checkout/s, The Checkout `success_url`: the CONFIGURED base + `return_query_for(...)`., return_query_for(), success_url_for(), validate_return_to(), _install_fake_stripe_httpx(), Point services.billing at fake Stripe settings + a recording fake httpx client. (+21 more)
+Cohesion: 0.06
+Nodes (54): checkout_block_reason(), `None` or an allowlisted keyword; anything else is 422 `unknown_return_to`., The `origem=…[&produto=precheck]` query the brain-frontend reads at `/checkout/s, The Checkout `success_url`: the CONFIGURED base + `return_query_for(...)`., Why a NEW subscription checkout must not be opened for this tenant, or None., return_query_for(), success_url_for(), validate_return_to() (+46 more)
 
 ### Community 93 - "test_doctor_anamneses_parity.py"
 Cohesion: 0.20
@@ -635,17 +649,17 @@ Nodes (14): §1 — Causa raiz (reconfirmada no código antes de programar), §2
 Cohesion: 0.17
 Nodes (11): 10. Ações posteriores do dono, 1. Estado, 2. Modelo, 3. Contrato HTTP, 4. Decisões aprovadas, 5. Desvios e correções de coerência, 6. Prova Stripe e Postgres, 7. Ordem de implantação (+3 more)
 
-### Community 99 - "config.py"
-Cohesion: 0.06
-Nodes (37): FastAPI, Seed the single platform admin user (idempotent).  Reads ADMIN_EMAIL / ADMIN_P, health(), Health check endpoint., Liveness probe. Intentionally does not touch Postgres., precheck_sso_token(), AsyncSession, SSO endpoint (CONTRACTS.md §5, auth-jwt-multitenant skill).  `POST /sso/preche (+29 more)
+### Community 99 - "issue_precheck_token"
+Cohesion: 0.12
+Nodes (15): precheck_sso_token(), AsyncSession, SSO endpoint (CONTRACTS.md §5, auth-jwt-multitenant skill).  `POST /sso/preche, Mint a PreCheck session for the authenticated tenant's linked user.      `requ, create_precheck_token(), Mint a token that PreCheck's OWN auth will accept (the SSO handoff).      PreC, PrecheckSsoTokenResponse, SSO handoff schemas (CONTRACTS.md §5).  The response of POST /sso/precheck/tok (+7 more)
 
 ### Community 100 - "CHECKPOINT — PreCheck billing (plans, quota, top-up, tier upgrade)"
 Cohesion: 0.13
 Nodes (14): 1. Catalog (`services/catalog.py`), 2. Migration `0010_precheck_billing` (`down_revision = 0009_test_window`), 3. `services/precheck_billing.py` (new), 4. Internal PreCheck API (`api/internal_precheck.py`, `schemas/internal_precheck.py`, new), 5. Billing routes (`api/billing.py` + `services/billing.py`), 6. New settings (`config.py`, `.env.example`), At deploy, CHECKPOINT — PreCheck billing (plans, quota, top-up, tier upgrade) (+6 more)
 
-### Community 101 - "cookies.py"
-Cohesion: 0.16
-Nodes (14): clear_patient_pending_cookie(), clear_patient_session_cookie(), has_client_header(), Request, The HttpOnly refresh-token cookie, and the CSRF header that guards it.  WHY TH, Whether the caller proved it is our own same-origin JavaScript — without refusin, 403 unless the caller proved it is our own same-origin JavaScript.      Guards, Expire the patient cookie in the browser. Attributes MUST match the set. (+6 more)
+### Community 101 - "PendingIdentityIn"
+Cohesion: 0.30
+Nodes (11): patient_contact(), Return the booking contact for a handle belonging to the requested clinic., PendingIdentityIn, Common key for secretarIA's pending-identity service leg.      Both fields mus, _FakeSession, Patient booking contact for the internal Brain-Message service boundary., test_falls_back_when_linked_account_has_no_address(), test_other_tenant_cannot_read_linked_account_email() (+3 more)
 
 ### Community 116 - "CHECKPOINT — Test window (Task 2: reframe the free trial as a Meta/WABA acceptance window)"
 Cohesion: 0.13
@@ -655,17 +669,17 @@ Nodes (14): 1. `tenants` gains two columns (migration `0009_test_window`), 2. Wi
 Cohesion: 0.14
 Nodes (13): 1. O que é o papel, 2. Migração 0013 é um NO-OP deliberado, 3. Gates — o papel é uma AMPLIAÇÃO, então a fronteira é explícita, 4. Endpoints novos (`api/onboarding.py`), 5. Sweep de `ROLE_MANAGER` (lugares que tipam/listam papéis), 6. Testes, 7. brain-frontend, 8. secretarIA-frontend (+5 more)
 
-### Community 120 - "patient_access.py"
-Cohesion: 0.04
-Nodes (109): Receive, RequestValidationError, _account_body(), add_clinic_by_invite(), _authenticate_account(), _authenticate_patient(), _authenticate_pending(), _bearer_value() (+101 more)
+### Community 120 - "HTTPException"
+Cohesion: 0.05
+Nodes (99): HTTPException, RequestValidationError, _account_body(), add_clinic_by_invite(), _authenticate_account(), _authenticate_patient(), _authenticate_pending(), _bearer_value() (+91 more)
 
 ### Community 127 - "test_portal_enter_thread.py"
 Cohesion: 0.25
 Nodes (15): _logged_in(), `POST /patient-access/threads/{product}/enter` — the Portal speaks first on ENTR, F5 on a visit whose greeting never landed: the empty thread gets its greeting no, Record every mesh hop to the open route; answer the rest of the mesh with `{}`., Unlike `/pending`, a reload IS forwarded: whether to speak is secretarIA's call, _spy(), test_a_logged_in_patient_entering_asks_secretaria_to_speak(), test_a_pending_visitor_entering_is_forwarded_too() (+7 more)
 
 ### Community 128 - "brain-api — API & Data Contracts (Phase 1)"
-Cohesion: 0.11
-Nodes (18): 0. Cross-service boundaries & decisions (read first), 14.1 Upstream contract (fixed — the other two services implement the receiving side), 14.2 Audit trail, 14. LGPD privacy orchestration — role `admin`, 1. HTTP conventions, 3.1 `GET /entitlements` — resolved entitlement state (protected), 3.2 Catalog — plans, tiers & add-ons (`services/catalog.py`), 3. Entitlements (+10 more)
+Cohesion: 0.17
+Nodes (12): 0. Cross-service boundaries & decisions (read first), 1. HTTP conventions, 4.1 `POST /demo-requests` — public demo request, 4.2 `POST /public/launch-waitlist` — pre-launch waiting list (public), 4. Agendar demo (lead capture), 5. Anti-spam / rate limiting (basic), 7. Configuration / env vars (brain-api `.env`), 8. Frontend call sites (Phase 3) (+4 more)
 
 ### Community 129 - "6. Database tables (brain database)"
 Cohesion: 0.14
@@ -679,9 +693,9 @@ Nodes (12): Billing Phase 1 (confirmed in `services/billing.py`, `services/usage
 Cohesion: 0.30
 Nodes (16): _aware(), add_product_to_subscription end to end against a fake Stripe (TASK C, spec §5.5, The webhook `updated` and the endpoint derive from the SAME subscription object, _req(), _state(), _tenant(), test_a_confirm_without_the_idempotency_key_is_refused_before_stripe(), test_a_response_without_the_requested_family_is_not_reported_as_added() (+8 more)
 
-### Community 132 - "MessagePatientSession"
+### Community 132 - "select"
 Cohesion: 0.05
-Nodes (98): generate_refresh_token(), A high-entropy opaque token (the client-side value; only its hash is stored)., MessagePatientSession, The revocable long leg of a patient session — the sibling of `refresh_tokens`., account_clinics(), account_display_name(), account_name_for_proven_email(), add_clinic() (+90 more)
+Nodes (95): select(), generate_refresh_token(), hash_refresh_token(), JWT issuance/validation and password hashing (the identity-authority primitives), A high-entropy opaque token (the client-side value; only its hash is stored)., SHA-256 hex for storage/lookup. Fast is fine: the input is 64 random bytes, Exchange a refresh token: revoke the presented one, issue a fresh one.      Re, rotate_refresh_token() (+87 more)
 
 ### Community 133 - "CHECKPOINT — conta única multi-clínica do paciente (Brain-Message) (2026-09-12)"
 Cohesion: 0.17
@@ -743,9 +757,9 @@ Nodes (7): CHECKPOINT — WhatsApp Coexistence onboarding (brain-api slice), Dev
 Cohesion: 0.25
 Nodes (7): Armadilha: "Modo médico" trocaria de identidade em silêncio, CHECKPOINT — Refresh token em cookie httpOnly `__Host-` + guarda CSRF, Detalhe de FastAPI que custa uma sessão, Gates, O que entrou, Pendências, Três decisões que parecem detalhe e não são
 
-### Community 148 - "Limpeza administrativa de pacientes por clínica — TASK-029"
-Cohesion: 0.12
-Nodes (13): Contrato e falhas, Escopo e preservação, Limpeza administrativa de pacientes por clínica — TASK-029, Operação pelo Swagger, Pré-requisitos de publicação, Validação e limites, Retenção de visitas vazias (TASK-042), Visita fundida na conta (TASK-034) (+5 more)
+### Community 148 - "brain-api"
+Cohesion: 0.18
+Nodes (7): Retenção de visitas vazias (TASK-042), Visita fundida na conta (TASK-034), Architecture notes / boundaries, brain-api, Deploy (Easypanel), Endpoints, Local development
 
 ### Community 149 - "13. Billing — Stripe (billing/auth round; `stripe-billing-entitlements`)"
 Cohesion: 0.29
@@ -771,13 +785,13 @@ Nodes (5): §1 — O que mudou, §2 — Testes (em `tests/test_patient_access.py
 Cohesion: 0.33
 Nodes (5): 1. `SECRET_KEY` (brain-api ↔ PreCheck — JWTs + SSO handoff), 2. The brain ↔ secretaria pair key (`SECRETARIA_API_KEY` = `INTERNAL_API_KEY`), 3. `SECRETARIA_ADMIN_TOKEN` (brain-api → secretaria `/admin/*`, X-Admin-Token), Mesh secret rotation — zero-downtime procedures, Rules that apply to every rotation
 
-### Community 155 - "_call"
-Cohesion: 0.20
-Nodes (16): _attachment_ref(), _call(), list_messages(), mark_read(), _project_attachments(), Any, datetime, UUID (+8 more)
+### Community 155 - "message_switchboard.py"
+Cohesion: 0.10
+Nodes (38): BinaryIO, _attachment_ref(), _call(), _capped(), _declared_length(), _file_chunks(), list_messages(), mark_read() (+30 more)
 
 ### Community 156 - "TASK-055 — URLs públicas por serviço"
-Cohesion: 0.08
-Nodes (20): brain-api, Documentação, graphify, Plano preparado — TASK-036, Prompts pendentes, Convite médico: recusa de plano mascarada como 502, Correção, Defeito reproduzido no código (+12 more)
+Cohesion: 0.29
+Nodes (6): Configuração mínima, Migração para uma publicação futura, Revisão dos outros serviços, Rotas no código, TASK-055 — URLs públicas por serviço, Validação
 
 ### Community 157 - "11. Platform-admin API (RBAC round) — role `admin`"
 Cohesion: 0.40
@@ -788,8 +802,8 @@ Cohesion: 0.33
 Nodes (6): 12.1 brain-api → secretaria internal data connection (service-to-service), 12.2 secretarIA doctor-hub auth — hub token + introspection (billing/auth round), 12.3.1 Deploy order for the booking-context fields (FEAT 37–40), 12.3.2 `external_id` (a Portal patient) — the Portal leg, 12.3 secretarIA → PreCheck patient handoff (`POST /internal/precheck-handoff`), 12. Doctor (tenant) API (RBAC round) — roles `doctor` / `manager` / `secretary`
 
 ### Community 159 - "privacy.py"
-Cohesion: 0.23
-Nodes (16): _call_precheck(), _demo_request_dict(), _export_brain_patient(), _export_brain_user(), export_subject(), _leg_ok(), Any, AsyncSession (+8 more)
+Cohesion: 0.14
+Nodes (31): DemoRequest, A captured demo/lead request from the public marketing forms., _call_precheck(), _call_secretaria(), _demo_request_dict(), _erase_brain_patient(), _erase_brain_user(), erase_subject() (+23 more)
 
 ### Community 160 - "CHECKPOINT — Hub token: quem vê a agenda inteira (`agenda_scope`) (TASK-044)"
 Cohesion: 0.22
@@ -804,12 +818,12 @@ Cohesion: 0.50
 Nodes (4): 15.1 Endpoints, 15.1a Pre-checkout intake (`IntakeIn`), 15.2 Activation (webhook-driven; the sole entitlement-activation writer), 15. Cold signup — self-serve pay-and-provision (public, no human in the loop)
 
 ### Community 164 - "team.py"
-Cohesion: 0.23
-Nodes (11): invite(), list_team(), management(), AsyncSession, UUID, Managers administer only the clinic resolved from their live session., resend(), revoke() (+3 more)
+Cohesion: 0.42
+Nodes (8): invite(), list_team(), management(), AsyncSession, UUID, Managers administer only the clinic resolved from their live session., resend(), revoke()
 
 ### Community 165 - "_attachment_parts"
-Cohesion: 0.22
-Nodes (9): FormData, _attachment_parts(), _body_errors(), The ONE file part (`file`) and the text fields, the latter judged like the JSON, Pydantic's errors placed under `body`, as FastAPI reports those of a declared bo, PatientAttachmentForm, The text fields of `POST /patient-access/threads/{product}/messages` sent WITH a, UploadFile (+1 more)
+Cohesion: 0.50
+Nodes (4): FormData, _attachment_parts(), The ONE file part (`file`) and the text fields, the latter judged like the JSON, UploadFile
 
 ### Community 166 - "8. Errors and status codes"
 Cohesion: 0.18
@@ -820,8 +834,8 @@ Cohesion: 0.22
 Nodes (8): 1. O que o prompt supunha e o que o código mostrou, 2. O que mudou, 3. Contrato para o frontend (parte 3), 4. Decisões tomadas sem consulta, 5. Validação, 6. Deploy, 7. Pendências, CHECKPOINT — Estado da mensagem (enviado / entregue / lido / falhou), parte 2: brain-api
 
 ### Community 169 - "conftest.py"
-Cohesion: 0.18
-Nodes (7): db_session(), mail_spy(), Test configuration.  pytest imports conftest before any test module, so config, A bare `AsyncSession` over a FRESH in-memory SQLite DB (all tables created)., Replace the real SMTP sender for every test (see tests/mail_spy.py)., MailSpy, Test double for services/mailer.send_email — installed for EVERY test by conftes
+Cohesion: 0.16
+Nodes (8): db_session(), mail_spy(), Test configuration.  pytest imports conftest before any test module, so config, A bare `AsyncSession` over a FRESH in-memory SQLite DB (all tables created)., Replace the real SMTP sender for every test (see tests/mail_spy.py)., staff_accounts_enabled(), MailSpy, Test double for services/mailer.send_email — installed for EVERY test by conftes
 
 ### Community 170 - "CHECKPOINT — a automação fala primeiro no Portal (perna brain-api da TASK-003)"
 Cohesion: 0.25
@@ -831,53 +845,53 @@ Nodes (7): 1. O que entrou, 2. Decisões tomadas sem perguntar, 3. Ordem de depl
 Cohesion: 0.23
 Nodes (11): precheck_handoff(), secretarIA -> brain-api -> PreCheck (CONTRACTS.md §12.3): pre-seed a WhatsApp, PrecheckHandoffOut, `POST /internal/precheck-handoff` response — PreCheck's own 200 body passed, Any, UUID, secretarIA -> brain-api -> PreCheck patient handoff (CONTRACTS.md §12.3, one leg, The same hand-off for a patient who has no phone number.      A Portal patient (+3 more)
 
-### Community 172 - "MessagePatientAccount"
-Cohesion: 0.09
-Nodes (32): DeclarativeBase, patient_contact(), Return the booking contact for a handle belonging to the requested clinic., Base, Declarative base shared by every ORM model., MessagePatientAccount, MessagePatientAccountOtp, MessagePatientOtp (+24 more)
+### Community 172 - "MessagePatientSession"
+Cohesion: 0.06
+Nodes (45): DeclarativeBase, Message, MultiPartException, Receive, _BodyTooLarge, _CappedReceive, Raised from inside the body stream when a request outgrows its cap.      A `Mu, An ASGI `receive` that refuses to deliver more than `limit` body bytes.      C (+37 more)
 
-### Community 173 - "test_impersonation.py"
-Cohesion: 0.22
-Nodes (8): MonkeyPatch, Admin "Modo médico" impersonation (POST /admin/impersonate/token).  Reuses the, The mint is admin-only: 403 for a tenant token, 401 with no token., With the default demo email (not seeded in the test DB), an admin gets a clean 4, A configured target yields a real tenant-scoped doctor token (not the admin's)., test_impersonate_mints_working_doctor_token(), test_impersonate_requires_admin(), test_impersonate_target_unavailable_404()
+### Community 173 - "upsert_waitlist_lead"
+Cohesion: 0.18
+Nodes (11): WaitlistLead model — "avise-me quando lançar" capture for the pre-launch gate., A visitor who asked to be notified when the product goes on sale., WaitlistLead, check_rate_limit(), AsyncSession, Launch-waitlist service: in-process anti-spam + IDEMPOTENT persistence.  Same, Return True if `client_ip` is under the per-minute limit, else False.      All, Apply a repeat submission onto an existing row (never touches `created_at`). (+3 more)
 
 ### Community 174 - "IdempotencyCache"
 Cohesion: 0.20
 Nodes (6): _Entry, IdempotencyCache, Idempotent patient sends — a retried message is relayed ONCE (2026-09-25).  A, (scope, key) → the one outcome of that message, in flight or delivered., `(result, replayed)`: `send()` runs at most once per live key; errors are not ke, T
 
-### Community 175 - "UsageEventIn"
-Cohesion: 0.29
-Nodes (6): create_usage_event(), The inbound metering write path (stripe-billing-entitlements: METERING leg only, `POST /internal/usage-events` response. `recorded=False` means a duplicate, `POST /internal/usage-events` body — one billable/meterable action, already done, UsageEventIn, UsageEventOut
+### Community 175 - "ensure_precheck_provisioned"
+Cohesion: 0.21
+Nodes (13): apply_onboarding_event(), ensure_precheck_provisioned(), ensure_products_provisioned(), ensure_secretaria_provisioned(), get_owner(), list_onboarding_tenants(), AsyncSession, Best-effort `POST /internal/provision` bridge; idempotente e GARANTIDO NUNCA LEV (+5 more)
 
-### Community 176 - "usage_summary"
-Cohesion: 0.24
-Nodes (13): _as_utc(), _calendar_month_window(), PrecheckUsageSummary, AsyncSession, datetime, quota_window(), PreCheck billing: quota window resolution + usage/spend summary (precheck-billin, Normalize a DB datetime for comparison (SQLite returns naive; Postgres aware) — (+5 more)
+### Community 176 - "test_config.py"
+Cohesion: 0.28
+Nodes (12): _origins(), Unit tests for `Settings.cors_origins` (config.py) — the JSON-array/comma-separa, test_blank_and_whitespace_entries_dropped(), test_empty_string(), test_json_array(), test_json_array_single_entry(), test_legacy_comma_separated(), test_malformed_json_array_fails_closed_not_raising() (+4 more)
 
-### Community 177 - "_upstream"
-Cohesion: 0.17
-Nodes (12): discard_empty_visit(), merge_visit(), open_conversation(), open_precheck_session(), `(base_url, headers)` for `product`, or 503 when its leg of the mesh is unset., Ask secretarIA to open this patient's conversation and greet them — FIRE AND FOR, Tell secretarIA to throw a merged visit's conversation away — FIRE AND FORGET., Ask secretarIA to delete an EMPTY visit's conversation — and wait for the answer (+4 more)
+### Community 177 - "get_settings"
+Cohesion: 0.09
+Nodes (26): get_settings(), Return a cached Settings instance (read once per process)., create_patient_account_token(), create_patient_pending_token(), Mint the short-lived token of one patient ACCOUNT login.      `sub` is `messag, Mint the short-lived token of one PENDING visit.      `sub` is the `MessagePat, discard_empty_visit(), merge_visit() (+18 more)
 
-### Community 178 - "test_test_window_add_product.py"
-Cohesion: 0.31
-Nodes (13): _ent(), _fakes(), _plans(), restart_test_window after TASK C (spec §5.8): never freezes a paying subscriptio, _setup(), test_a_dual_clinic_pays_for_both_and_addons_ride_on_the_first(), test_a_manual_family_is_not_re_created_as_a_paid_item(), test_nothing_paid_means_nothing_to_re_create() (+5 more)
+### Community 178 - "SignupIntent"
+Cohesion: 0.20
+Nodes (11): SignupIntent model — cold-signup lead through Stripe Checkout to entitlement act, One cold-signup attempt: lead data + catalog selection through to provisioning., SignupIntent, OnboardingStatusOut, `GET /public/onboarding-status` response.      `products`/`onboarding_token` a, get_onboarding_status(), Resolve a Checkout Session id back to its signup intent's provisioning status., O `ready` de um intent já ativado: produtos liberados + token de onboarding. (+3 more)
 
 ### Community 179 - "7. Attachments / media — built end to end (2026-09-18; all three parts uncommitted, not deployed together)"
 Cohesion: 0.25
 Nodes (8): 7.1 Patient → brain-api: send a file, 7.2 brain-api → secretarIA (what part 2 must accept), 7.2a brain-api → PreCheck (2026-09-22), 7.3 Receive: the reference in the poll, the bytes in the media route, 7.4 Refusals — 4xx, never 5xx (permanent: resending the same file never passes), 7.5 secretarIA side (part 2) — built 2026-09-18, uncommitted, not deployed, 7.6 Frontend (part 3) — built 2026-09-18, uncommitted, not deployed, 7. Attachments / media — built end to end (2026-09-18; all three parts uncommitted, not deployed together)
 
-### Community 181 - "test_doctor_profile.py"
-Cohesion: 0.14
-Nodes (12): Doctor self-edit profile tests (`PATCH /doctor/me`, "Meu Perfil" foundation roun, Same router-level require_doctor gate as every other /doctor/* route: 403 for ad, Editing as Owner A never touches Owner B's row (tenant scoping via the token)., Happy path: name changes, everything else on the response is unchanged., Whitespace-only input min_length(1) would let through is still rejected (422)., The schema's extra="forbid" rejects email/role/tenant_id — not a manual filter., test_update_does_not_leak_across_tenants(), test_update_name_blank_rejected() (+4 more)
+### Community 181 - "secretaria_internal.py"
+Cohesion: 0.29
+Nodes (11): _empty_page(), _get_list(), list_appointments(), list_patients(), Any, UUID, Internal service-to-service DATA client into secretaria (`X-Internal-Api-Key`)., Tenant appointments — `GET /internal/tenants/{tenant_id}/appointments`.      ` (+3 more)
 
-### Community 182 - "Any"
-Cohesion: 0.10
-Nodes (22): ProcessedStripeEvent, Stripe webhook idempotency ledger (stripe-billing-entitlements skill).  Stripe, A Stripe event id we already applied. PK = the event id (natural dedupe key)., _apply_precheck_topup_checkout(), apply_stripe_event(), _is_stale_subscription_event(), _is_timestamp(), _line_is_proration() (+14 more)
+### Community 182 - "ProcessedStripeEvent"
+Cohesion: 0.50
+Nodes (3): ProcessedStripeEvent, Stripe webhook idempotency ledger (stripe-billing-entitlements skill).  Stripe, A Stripe event id we already applied. PK = the event id (natural dedupe key).
 
-### Community 183 - "UUID"
-Cohesion: 0.13
-Nodes (24): _apply_signup_intent_checkout(), create_portal_session(), create_precheck_topup_checkout_session(), _create_subscription_for_signup(), _entitlement_for_event(), _fail_intent(), harden_charge(), _is_test_tenant() (+16 more)
+### Community 183 - "apply_stripe_event"
+Cohesion: 0.09
+Nodes (29): _apply_precheck_topup_checkout(), apply_stripe_event(), create_portal_session(), create_precheck_topup_checkout_session(), _entitlement_for_event(), harden_charge(), _is_stale_subscription_event(), _is_test_tenant() (+21 more)
 
 ### Community 184 - "PrivacyRequestIn"
-Cohesion: 0.40
-Nodes (3): PrivacyRequestIn, Pydantic v2 schemas for the LGPD privacy orchestration (CONTRACTS.md §14).  Bo, Identify the subject of an erasure/export and confirm the (possibly destructive)
+Cohesion: 0.19
+Nodes (11): erasure(), export(), AsyncSession, LGPD cross-database privacy orchestration (CONTRACTS.md §14) — role `admin`., Erase a subject's data across brain + secretaria + precheck.      Idempotent:, Collect a subject's data across brain + secretaria + precheck.      Each servi, PrivacyRequestIn, PrivacyResultOut (+3 more)
 
 ### Community 188 - "test_catalog_compose.py"
 Cohesion: 0.21
@@ -887,17 +901,13 @@ Nodes (10): _ent(), SimpleNamespace, _quota(), catalog.compose_entitlement_state
 Cohesion: 0.25
 Nodes (7): CHECKPOINT: clínica de teste criada pelo admin, sem Stripe (`POST /admin/tenants`), Contrato HTTP, Decisões tomadas sem consultar o dono, Nota para a auditoria de pontes, O que o endpoint faz, Provas, Remover antes do lançamento real (pedido do dono, 2026-09-25)
 
-### Community 190 - "_send_precheck_attachment"
-Cohesion: 0.25
-Nodes (11): BinaryIO, CheckedAttachment, An upload that passed `check_attachment`: its REAL kind, a safe name, its real s, _file_chunks(), _off_the_loop(), Relay one patient message WITH a file to `product`'s inbound, as `multipart/form, PreCheck's file wire (2026-09-22): the RAW bytes, addressed by query, no multipa, The spooled upload, from its start, in chunks — read in a worker thread by the c (+3 more)
+### Community 190 - "get_current_principal"
+Cohesion: 0.20
+Nodes (11): get_current_principal(), AsyncSession, Mutable clinic access is checked on every request, including old bearer tokens., create_access_token(), Mint a short-lived access token. `sub` is the brain user id (UUID string)., A malformed claim must never 401 the whole token — it just reads as absent., test_access_token_omits_professional_id_when_none(), test_access_token_round_trips_professional_id() (+3 more)
 
 ### Community 191 - "CHECKPOINT — cobertura das pontes de provisionamento (secretarIA / PreCheck)"
 Cohesion: 0.29
 Nodes (6): A regra, CHECKPOINT — cobertura das pontes de provisionamento (secretarIA / PreCheck), Decisões tomadas sem consulta, O problema, Provas, Tabela de cobertura (conferida no código em 2026-09-24)
-
-### Community 193 - "SlidingWindowLimiter"
-Cohesion: 0.17
-Nodes (9): In-process sliding-window rate limiter (CONTRACTS.md §5).  Deliberately trivia, Per-key (client IP) sliding 60s window. `limit_getter` is read per call so a, True if `key` is under the limit (and records the hit), else False.          F, SlidingWindowLimiter, test_login_rate_limited(), Second call from the same IP inside the window -> 429 (limit forced to 1)., test_rate_limit_trips(), Unlike the three signup routes, this endpoint deliberately does NOT share the (+1 more)
 
 ### Community 194 - "1. Authentication"
 Cohesion: 0.33
@@ -905,27 +915,27 @@ Nodes (6): 1.1 Patient ↔ brain-api, 1.2 Staff ↔ product (unaffected by this 
 
 ### Community 195 - "test_hub_agenda_scope.py"
 Cohesion: 0.13
-Nodes (29): agenda_scope_for(), AsyncSession, UUID, Who sees the whole clinic agenda in secretarIA's hub (owner decision 2026-10-09, The rule, pure. Roles are the exact stored strings (models/user.py)., The scope of the hub session whose token names `actor` (the `act` claim) and, resolve_agenda_scope(), _clinics() (+21 more)
+Nodes (28): agenda_scope_for(), AsyncSession, UUID, Who sees the whole clinic agenda in secretarIA's hub (owner decision 2026-10-09, The rule, pure. Roles are the exact stored strings (models/user.py)., The scope of the hub session whose token names `actor` (the `act` claim) and, resolve_agenda_scope(), _clinics() (+20 more)
 
 ### Community 196 - "PrecheckAccountLink"
 Cohesion: 0.27
 Nodes (8): link(), _parse_args(), Namespace, Link a brain user to their PreCheck user id — the SSO account-link (onboarding)., _resolve_user(), PrecheckAccountLink, Account-link model — maps a brain user to their PreCheck user (SSO bridge).  T, One-to-one link: brain user (UUID) -> PreCheck user (int), scoped to a tenant.
 
 ### Community 197 - "_peek_code"
-Cohesion: 0.20
-Nodes (10): _peek_code(), Brute-force the code out of its HASH — the test's stand-in for reading the e-mai, The second presentation of a correct code fails — `consumed_at` is burned., test_code_is_single_use(), The wave-2/wave-3 seam: service verifies, browser receives the account.      T, test_internal_inline_contract_promotes_only_on_the_browser_leg(), (h) Claimed e-mail, then: no code / wrong code. Nothing issues an account token, Claiming an address that ALREADY has an account must not log the visit in either (+2 more)
+Cohesion: 0.17
+Nodes (12): _peek_code(), Brute-force the code out of its HASH — the test's stand-in for reading the e-mai, A wrong guess is a 400 with the generic message, and it is COUNTED., Past `expires_at` the code is dead even though it is the RIGHT code., The second presentation of a correct code fails — `consumed_at` is burned., GREP THE ACTUAL LOG OUTPUT — the code must not appear anywhere in it.      Ass, test_code_is_single_use(), test_expired_code_is_rejected() (+4 more)
 
-### Community 198 - "DemoRequest"
-Cohesion: 0.25
-Nodes (7): DemoRequest, DemoRequest model — isolated lead capture for the "Agendar demo" form.  Does N, A captured demo/lead request from the public marketing forms., _erase_brain_patient(), _erase_brain_user(), Erase a brain portal user by email (lower-cased) and any demo-request leads of t, Brain holds no patient rows: only demo-request leads, and only if an email was
-
-### Community 199 - "DoctorMeUpdateIn"
-Cohesion: 0.21
-Nodes (11): Identity-only view of a tenant (non-sensitive config)., Identity-only view of a user. NEVER declares `password_hash` (or any secret)., TenantOut, UserOut, AnamnesisStatusIn, DoctorMeUpdateIn, HubTokenOut, Pydantic v2 schemas for the doctor (tenant) vertical (RBAC task, Part 1B).  `G (+3 more)
+### Community 199 - "update_doctor_me"
+Cohesion: 0.10
+Nodes (26): doctor_me(), doctor_me_update(), AsyncSession, Mint the tenant-scoped, purpose-scoped token the portal presents to secretarIA's, The authenticated doctor's profile + tenant + entitlements (no secrets)., Edit the CALLER'S OWN low-risk fields (today: `name` only — "Meu Perfil" foundat, secretaria_hub_token(), Identity-only view of a tenant (non-sensitive config). (+18 more)
 
 ### Community 200 - "SignupIntentCreate"
-Cohesion: 0.17
-Nodes (10): Same rule as SetPasswordIn/AdminUserCreateIn: reject a purely-numeric or, Body for `POST /public/signup-intents` — the FIRST-card lead + selection + passw, SignupIntentCreate, register (no intake) -> attach_intake -> provision reads the attached intake and, Contrast case: a secretarIA-enabling signup still fires the provisioning bridge, test_attach_intake_then_provision_seeds_onboarding_state(), test_precheck_only_signup_does_not_provision_secretaria(), test_provision_none_intake_defaults_to_aquecimento() (+2 more)
+Cohesion: 0.13
+Nodes (14): IntakeIn, Same rule as SetPasswordIn/AdminUserCreateIn: reject a purely-numeric or, Pre-checkout intake answers (CONTRACT_onboarding_v1.md §7).      Stored verbat, Body for `POST /public/signup-intents` — the FIRST-card lead + selection + passw, SignupIntentCreate, The result of registering a lead: the intent (drives checkout) + the owner user, Registration, register (no intake) -> attach_intake -> provision reads the attached intake and (+6 more)
+
+### Community 203 - "CLAUDE.md"
+Cohesion: 0.22
+Nodes (6): brain-api — instruções para Codex, Plano preparado, Autenticação e entrega, Comportamento, TASK-054 — Equipe e primeiro acesso, Validação e limites
 
 ### Community 204 - "redeem"
 Cohesion: 0.25
@@ -935,77 +945,77 @@ Nodes (8): normalize(), plano_valido(), AsyncSession, Resgate de cupom de cortes
 Cohesion: 0.39
 Nodes (8): _calls(), Tests for the money-moving proof guard (loaded by path: scripts/ is not a packag, test_aborts_that_step_when_target_is_not_the_designated_one(), test_an_aborted_step_does_not_stop_the_next_one(), test_runs_only_on_the_exact_designated_pair(), test_skips_when_a_designation_var_is_blank(), test_skips_when_designation_env_is_absent(), test_skips_when_only_one_designation_var_is_set()
 
-### Community 206 - "test_patient_visit_merge.py"
-Cohesion: 0.29
-Nodes (10): An identity as a past verified login leaves it.      For the cases a live logi, _seed_identity(), Completing a visit discards its chat only when the clinic already knows the acco, A twin identity exists at the clinic => the visit's chat is discarded upstream., test_a_secretaria_that_refuses_the_merge_never_breaks_the_login(), test_completing_a_first_time_visit_does_not_merge_anything(), test_completing_a_superseded_visit_tells_secretaria_to_merge(), _verified_visit() (+2 more)
+### Community 206 - "decode_token"
+Cohesion: 0.24
+Nodes (11): decode_patient_account_token(), decode_patient_pending_token(), decode_patient_token(), decode_token(), Any, Return the claims, or None for any invalid/expired/forged token.      `algorit, Validate a patient token: signature/expiry via `decode_token` + the EXACT scope., Validate an account token: signature/expiry, the EXACT account scope, `sub` and (+3 more)
 
 ### Community 209 - "test_migration_0026_entitlement_product_state.py"
 Cohesion: 0.43
 Nodes (5): _as_list(), _load(), Migration 0026 — entitlements.precheck_plan / manual_products (TASK C, spec §5.1, test_revision_chain_and_id_length(), test_upgrade_adds_columns_and_backfills_manual_products()
 
-### Community 211 - "test_billing_upgrade_dual.py"
-Cohesion: 0.43
-Nodes (7): upgrade_precheck_plan for a combo tenant and for a clinic with BOTH products (TA, test_a_combo_tenant_cannot_swap_and_nothing_reaches_stripe(), test_a_dual_clinic_already_on_the_target_tier_is_refused(), test_a_dual_clinic_swaps_only_its_precheck_tier(), test_a_precheck_only_clinic_keeps_todays_behavior(), test_a_secretaria_only_clinic_has_nothing_to_swap(), _wire()
+### Community 211 - "test_auth_email_after_response.py"
+Cohesion: 0.31
+Nodes (8): _client(), _OrderRecorder, Authentication e-mail on PUBLIC routes leaves AFTER the response (TASK-056)., ASGI wrapper noting when the response body is fully sent., _record_mail(), test_patient_login_code_is_mailed_after_the_response(), test_staff_reset_code_is_mailed_after_the_response(), test_visit_code_is_mailed_after_the_response()
 
-### Community 212 - "install_fake_settings"
-Cohesion: 0.13
-Nodes (21): fake_settings(), install_fake_settings(), SimpleNamespace, A stand-in for `get_settings()` inside services.billing (Stripe configured, TEST, Point `services.billing.get_settings` at `fake_settings(**overrides)`., _env(), _env(), _settings() (+13 more)
+### Community 212 - "test_entitlement_dual_readers.py"
+Cohesion: 0.42
+Nodes (8): _basic_quota(), _clinic(), Readers of a clinic that has BOTH products (TASK C, spec §5.9): they must ask `, test_entitlement_out_exposes_both_plans(), test_entitlement_out_precheck_plan_is_null_for_one_family(), test_topup_accepts_a_dual_clinic_and_refuses_secretaria_only(), test_usage_summary_of_a_secretaria_only_clinic_has_no_precheck(), test_usage_summary_reports_the_precheck_plan_not_the_anchor()
 
-### Community 213 - "entitlement.py"
-Cohesion: 0.22
-Nodes (9): ChannelsOut, PatientInviteOut, ProductsOut, Pydantic v2 schemas for the entitlements vertical (CONTRACTS.md §3.1).  The re, Per-product access flags (CONTRACTS.md §3.1 `products`).      `precheck` <- en, Per-channel delivery flags (CONTRACTS.md §3.1 `channels`).      `whatsapp` <-, `GET /entitlements/patient-invite` — what a clinic hands its patients so they ca, The second line, on its own: no offered product means nothing to greet into. (+1 more)
+### Community 213 - "resolve_entitlement"
+Cohesion: 0.06
+Nodes (36): enter_thread(), get_thread_media(), list_threads(), _media_headers(), The trigger the Portal was missing (owner, 2026-10-05): before it, only a NEW vi, What makes a stored file safe to hand a browser from this origin.      `nosnif, Stream one attachment back to the patient whose conversation holds it.      OW, Exactly `EntitlementOut.products` intersected with `channels.brain_message`. (+28 more)
 
-### Community 214 - "AttachmentRefused"
-Cohesion: 0.29
-Nodes (5): Exception, AttachmentRefused, Any, A refusal the caller can act on. Carries its CODE only — never a name, never a b, The HTTP error body: a stable code, the sentence, and the ceiling when it applie
+### Community 214 - "CHECKPOINT — e-mails de autenticação no brain-api + "esqueci a senha" por código (TASK-056)"
+Cohesion: 0.20
+Nodes (9): brain-api, brain-frontend, Brain-Message-Frontend, CHECKPOINT — e-mails de autenticação no brain-api + "esqueci a senha" por código (TASK-056), O que entrou, por repo, Pendências, Provas, Publicação — o que o dono faz, nesta ordem (cada passo com autorização) (+1 more)
 
-### Community 215 - "_tenant_b_id"
-Cohesion: 0.29
-Nodes (7): Each PATCH layers on the previous state: plan -> addon override -> limit overrid, The "known but unassignable (reserved slot)" case (e.g. the old     secretaria_, _tenant_b_id(), test_admin_patch_chain_plan_then_addons_then_limits(), test_admin_patch_legacy_alias_normalizes_to_canonical_plan(), test_admin_patch_rejects_unassignable_or_unknown_plan(), test_admin_patch_rejects_unknown_addon_and_bad_limits()
+### Community 215 - "join_launch_waitlist"
+Cohesion: 0.20
+Nodes (8): join_launch_waitlist(), AsyncSession, Request, Public launch-waitlist endpoint (CONTRACTS.md §4 + §5): the PRE-LAUNCH buy gate., Capture a waitlist lead: honeypot + rate-limit guard, then upsert + confirm., Pydantic v2 schemas for the launch-waitlist vertical (CONTRACTS.md §4 + §5)., `POST /public/launch-waitlist` response. No lead data echoed back.      A re-s, WaitlistLeadConfirmation
 
 ### Community 216 - "test_billing_stripe_fixtures.py"
 Cohesion: 0.40
 Nodes (3): Replay of REAL (sanitized) Stripe subscription objects through the derivation (, Runs even with no fixtures: the loader and the derivation are importable togethe, test_the_replay_harness_itself_is_wired()
 
-### Community 217 - "demo.py"
-Cohesion: 0.28
-Nodes (8): ProductInterestEnum, ProfileEnum, Pydantic v2 schemas for the demo-request vertical (CONTRACTS.md §4 + §5).  Pub, Who the lead is (CONTRACTS.md §4 `profile`). secretarIA-variant radio maps here., Which product the lead wants (CONTRACTS.md §4 `product_interest`).      brain-, Which surface the lead came from (CONTRACTS.md §4 `source`). Defaults to brain., SourceEnum, StrEnum
+### Community 217 - "complete_staff_first_access"
+Cohesion: 0.31
+Nodes (9): Purpose-separated keys: permissive shared-key consumers cannot accept staff proo, staff_token_key(), aware(), complete_staff_first_access(), create_staff_setup_token(), AsyncSession, datetime, Short-lived, purpose-restricted first access. No operational refresh credential. (+1 more)
 
 ### Community 218 - "stripe_proof_guard.py"
 Cohesion: 0.67
 Nodes (3): ProofResult, Guard for Stripe proof steps that MOVE MONEY (owner decision, 2026-09-29).  Th, run_money_step()
 
-### Community 220 - "_BodyTooLarge"
-Cohesion: 0.40
-Nodes (4): Message, MultiPartException, _BodyTooLarge, Raised from inside the body stream when a request outgrows its cap.      A `Mu
+### Community 220 - "get_patient_invite"
+Cohesion: 0.25
+Nodes (8): get_entitlements(), get_patient_invite(), AsyncSession, Entitlements endpoint (CONTRACTS.md §3.1, stripe-billing-entitlements skill)., Return the resolved entitlement state for the authenticated tenant.      `requ, The clinic's own patient invite: its short code and link (Brain-Message portal)., generate_invite_code(), A fresh code from `secrets` (uniformly over the alphabet).
 
 ### Community 221 - "record_usage"
-Cohesion: 0.33
-Nodes (6): _forward_meter_event(), AsyncSession, Usage-event recording (metering leg — stripe-billing-entitlements skill).  MET, Apply one usage event: idempotent ledger insert + entitlement counter increment., Best-effort Stripe meter-event forward for a metered feature (`billable_patients, record_usage()
+Cohesion: 0.16
+Nodes (12): create_usage_event(), The inbound metering write path (stripe-billing-entitlements: METERING leg only, `POST /internal/usage-events` response. `recorded=False` means a duplicate, `POST /internal/usage-events` body — one billable/meterable action, already done, UsageEventIn, UsageEventOut, _forward_meter_event(), AsyncSession (+4 more)
 
-### Community 222 - "get_thread_media"
-Cohesion: 0.40
-Nodes (5): get_thread_media(), _media_headers(), What makes a stored file safe to hand a browser from this origin.      `nosnif, Stream one attachment back to the patient whose conversation holds it.      OW, StreamingResponse
+### Community 222 - "invite_codes.py"
+Cohesion: 0.36
+Nodes (8): normalize_invite_code(), parse_invite(), UUID, The clinic's patient invite: a short code a person can type, and the parser that, The stored spelling of a typed code, or `None` when it cannot be one., A clinic UUID, a normalized code, or `None` — never an error.      Anything sh, _single(), test_the_parser_never_guesses()
 
 ### Community 223 - "Checkpoint — digitando backend (TASK-033)"
 Cohesion: 0.50
 Nodes (3): Checkpoint — digitando backend (TASK-033), Navegador e deploy, Validação local
 
-### Community 224 - "test_billing_checkout_trial_policy.py"
-Cohesion: 0.60
-Nodes (4): _checkout(), The authenticated checkout follows the trial policy of `_trial_days_for` (TASK C, test_a_precheck_checkout_carries_no_trial_even_when_a_trial_is_configured(), test_a_secretaria_checkout_still_carries_the_trial()
+### Community 224 - "Conta pessoal de equipe — contrato congelado TASK-057"
+Cohesion: 0.25
+Nodes (8): APIs para a fase 3, Conta pessoal de equipe — contrato congelado TASK-057, Convites e credenciais, Fronteiras e fase 2, Identidade, permissões e armazenamento, Limites e baseline, Migração, matriz e ordem de rollout, Sessão operacional equivalente a Session
 
-### Community 225 - "erase_subject"
-Cohesion: 0.28
-Nodes (9): _call_secretaria(), erase_subject(), _normalize_subject_key(), UUID, GET/DELETE secretaria's `/internal/privacy/tenants/{tenant_id}/subjects/{wa_id}/, Erase a subject across brain + secretaria + precheck; persist ONE audit row., A stable string identifying the subject, built ONLY to be hashed (never stored)., sha256 hex of the normalized subject key — the ONLY subject reference ever store (+1 more)
+### Community 225 - "staff_local_server.py"
+Cohesion: 0.25
+Nodes (3): Proxy, Loopback-only API/SMTP/browser fixture; no production data or integrations., SMTP
 
 ### Community 227 - "database.py"
 Cohesion: 0.40
 Nodes (4): get_session(), AsyncSession, Async SQLAlchemy 2.0 engine, session factory and declarative Base., FastAPI dependency that yields a database session.
 
-### Community 228 - "list_onboarding_tenants"
-Cohesion: 0.40
-Nodes (5): list_onboarding_tenants(), secretaria's `run_onboarding_nudges` cron pulls this hourly to decide who needs, InternalOnboardingListOut, InternalOnboardingTenantOut, One row of `GET /internal/onboarding/tenants` — everything secretaria's onboardi
+### Community 228 - "EntitlementPatchIn"
+Cohesion: 0.29
+Nodes (4): EntitlementPatchIn, Partial update of a tenant's entitlement (admin manual activation, pre-Stripe)., Only assignable catalog plans may be written (legacy aliases normalize)., test_admin_patch_without_a_subscription_records_manual_products()
 
 ### Community 229 - "PrecheckHandoffIn"
 Cohesion: 0.40
@@ -1019,25 +1029,77 @@ Nodes (4): _internal_key_scheme, Security, Gate `/internal/*` on the shared pair
 Cohesion: 0.50
 Nodes (3): PrivacyRequest, PrivacyRequest model — the LGPD audit trail for cross-database erasure/export., One LGPD erasure/export invocation (`POST /admin/privacy/erasure|export`).
 
+### Community 233 - "create_demo_request"
+Cohesion: 0.29
+Nodes (6): check_rate_limit(), create_demo_request(), AsyncSession, Demo-request service layer: in-process anti-spam + persistence (CONTRACTS.md §4, Return True if `client_ip` is under the per-minute limit, else False.      All, Persist one demo request and return the stored row.      `source` defaults to
+
+### Community 234 - "test_staff_account_sessions.py"
+Cohesion: 0.29
+Nodes (3): New account contract and clinical gate isolation, using the actual ASGI API., test_account_login_requires_selection_even_one_membership(), test_legacy_invite_writer_uses_restricted_first_access_when_enabled()
+
+### Community 235 - "Convite médico: recusa de plano mascarada como 502"
+Cohesion: 0.33
+Nodes (5): Convite médico: recusa de plano mascarada como 502, Correção, Defeito reproduzido no código, Evidência de runtime disponível, Validação e limite
+
+### Community 236 - "Limpeza administrativa de pacientes por clínica — TASK-029"
+Cohesion: 0.33
+Nodes (6): Contrato e falhas, Escopo e preservação, Limpeza administrativa de pacientes por clínica — TASK-029, Operação pelo Swagger, Pré-requisitos de publicação, Validação e limites
+
+### Community 237 - "claim_pending_email"
+Cohesion: 0.33
+Nodes (6): claim_pending_email(), secretarIA -> brain-api: the visitor typed an address into the chat.      The, PendingEmailClaimIn, PendingEmailClaimOut, `POST /internal/brain-message/pending-email` — secretarIA captured an address in, `POST /internal/brain-message/pending-email` response.      `claimed` is the o
+
+### Community 238 - "WaitlistLeadCreate"
+Cohesion: 0.33
+Nodes (4): Body for `POST /public/launch-waitlist`.      `plan_hint` is deliberately NOT, Trim `name` and reject blank-after-trim (422)., Trim `plan_hint`; blank-after-trim stores as NULL rather than an empty string., WaitlistLeadCreate
+
+### Community 239 - "brain-api"
+Cohesion: 0.40
+Nodes (5): brain-api, Documentação, graphify, Plano preparado — TASK-036, Prompts pendentes
+
+### Community 240 - "0031_staff_accounts.py"
+Cohesion: 0.50
+Nodes (3): create_tables(), Add personal staff accounts without removing the legacy global email constraint., upgrade()
+
+### Community 241 - "0032_staff_membership_email.py"
+Cohesion: 0.50
+Nodes (3): adopt_legacy_rows(), Contract step: retire global user email uniqueness only after account-aware code, upgrade()
+
+### Community 242 - "TASK-057 — conta pessoal de equipe e vínculos clínicos"
+Cohesion: 0.50
+Nodes (4): Implementado, Limites e pendências, Provas locais já executadas, TASK-057 — conta pessoal de equipe e vínculos clínicos
+
+### Community 243 - "test_capture_creates_no_tenant_or_entitlement"
+Cohesion: 0.50
+Nodes (4): _db(), Isolated lead capture (CONTRACTS.md §0.4): no tenant, no entitlement, no billing, A session on the SAME in-memory DB the `client` fixture serves from., test_capture_creates_no_tenant_or_entitlement()
+
+### Community 244 - "14. LGPD privacy orchestration — role `admin`"
+Cohesion: 0.67
+Nodes (3): 14.1 Upstream contract (fixed — the other two services implement the receiving side), 14.2 Audit trail, 14. LGPD privacy orchestration — role `admin`
+
+### Community 245 - "3. Entitlements"
+Cohesion: 0.67
+Nodes (3): 3.1 `GET /entitlements` — resolved entitlement state (protected), 3.2 Catalog — plans, tiers & add-ons (`services/catalog.py`), 3. Entitlements
+
 ## Knowledge Gaps
-- **442 isolated node(s):** `brain-api`, `EmailTemplate`, `Plano preparado`, `Plano preparado — TASK-036`, `Documentação` (+437 more)
+- **459 isolated node(s):** `brain-api`, `EmailTemplate`, `Plano preparado`, `Plano preparado — TASK-036`, `Documentação` (+454 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **14 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **16 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `get_settings()` connect `get_settings` to `CheckoutSelection`, `_token`, `test_admin_tenant_create.py`, `MessagePatientSession`, `internal.py`, `onboarding_sync.py`, `billing.py`, `decode_token`, `test_catalog_entitlements.py`, `User`, `test_refresh_cookie.py`, `BaseModel`, `_bearer`, `SignupIntent`, `MessagePatient`, `admin.py`, `TokenResponse`, `_call`, `Entitlement`, `privacy.py`, `_families_from_subscription`, `_stripe_post_or_raise`, `create_precheck_usage_event`, `precheck_handoff`, `signup.py`, `test_impersonation.py`, `_upstream`, `_request`, `hash_refresh_token`, `HTTPException`, `UUID`, `_configure_mesh`, `issue_password_reset_code`, `Any`, `timedelta`, `_mesh`, `_send_precheck_attachment`, `test_auth_hardening.py`, `complete`, `secretaria_client.py`, `test_smoke.py`, `test_staff_first_access.py`, `team.py`, `cleanup_patients`, `message_switchboard.py`, `test_mailer.py`, `Settings`, `_request`, `billing.py`, `record_usage`, `erase_subject`, `config.py`, `list_onboarding_tenants`, `cookies.py`, `require_internal_api_key`, `patient_access.py`?**
-  _High betweenness centrality (0.122) - this node is a cross-community bridge._
-- **Why does `Tenant` connect `Tenant` to `test_billing_add_product.py`, `MessagePatientSession`, `test_admin_tenant_create.py`, `_token`, `test_launch_waitlist.py`, `onboarding_sync.py`, `decode_token`, `test_billing_phase1.py`, `User`, `BaseModel`, `_bearer`, `test_test_window.py`, `SignupIntent`, `test_portal_auto_greeting.py`, `MessagePatient`, `_trial_will_end_obj`, `Entitlement`, `privacy.py`, `make_clinic`, `internal.py`, `get_settings`, `admin.py`, `MessagePatientAccount`, `test_patient_pending_account_shortcut.py`, `test_patient_pending_session.py`, `onboarding.py`, `hash_refresh_token`, `HTTPException`, `UUID`, `_configure_mesh`, `_tenant_com_precheck`, `_mesh`, `timedelta`, `test_staff_first_access.py`, `test_billing_checkout_guard.py`, `test_hub_agenda_scope.py`, `team.py`, `SignupIntentCreate`, `cleanup_patients`, `_admin_entitlements`, `FakeStripe`, `install_fake_settings`, `config.py`, `patient_access.py`?**
-  _High betweenness centrality (0.069) - this node is a cross-community bridge._
-- **Why does `Entitlement` connect `Entitlement` to `CheckoutSelection`, `test_admin_tenant_create.py`, `test_launch_waitlist.py`, `onboarding_sync.py`, `billing.py`, `test_billing_phase1.py`, `test_catalog_entitlements.py`, `User`, `BaseModel`, `test_test_window.py`, `apply_subscription_state`, `SignupIntent`, `_trial_will_end_obj`, `make_clinic`, `make_sub`, `get_settings`, `create_precheck_usage_event`, `admin.py`, `MessagePatientAccount`, `usage_summary`, `test_test_window_add_product.py`, `Any`, `UUID`, `_tenant_com_precheck`, `_mesh`, `timedelta`, `test_staff_first_access.py`, `test_billing_checkout_guard.py`, `SignupIntentCreate`, `FakeStripe`, `install_fake_settings`, `billing.py`, `record_usage`, `list_onboarding_tenants`, `patient_access.py`?**
-  _High betweenness centrality (0.054) - this node is a cross-community bridge._
-- **Are the 101 inferred relationships involving `Tenant` (e.g. with `seed()` and `require_billable_tenant()`) actually correct?**
-  _`Tenant` has 101 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 137 inferred relationships involving `get_settings()` (e.g. with `seed_admin()` and `impersonate_token()`) actually correct?**
-  _`get_settings()` has 137 INFERRED edges - model-reasoned connections that need verification._
+- **Why does `get_settings()` connect `get_settings` to `CheckoutSelection`, `User`, `_bearer`, `test_admin_tenant_create.py`, `select`, `onboarding_sync.py`, `billing.py`, `test_patient_account_invites.py`, `test_catalog_entitlements.py`, `async_sessionmaker`, `test_refresh_cookie.py`, `_bearer`, `signup.py`, `MessagePatient`, `Entitlement`, `admin.py`, `auth.py`, `message_switchboard.py`, `test_precheck_billing.py`, `privacy.py`, `precheck_client.py`, `BaseModel`, `_families_from_subscription`, `install_fake_settings`, `StaffAccount`, `create_precheck_usage_event`, `admin.py`, `precheck_handoff`, `conftest.py`, `MessagePatientSession`, `onboarding.py`, `SignupIntent`, `_request`, `secretaria_internal.py`, `apply_stripe_event`, `_configure_mesh`, `issue_password_reset_code`, `_mesh`, `test_visit_retention.py`, `test_smoke.py`, `get_current_principal`, `config.py`, `cookies.py`, `test_auth_hardening.py`, `secretaria_client.py`, `visit_retention.py`, `test_mailer.py`, `invite_team_member`, `update_doctor_me`, `cleanup_patients`, `internal.py`, `mailer.py`, `internal.py`, `decode_token`, `Settings`, `FastAPI`, `_request`, `complete_staff_first_access`, `billing.py`, `record_usage`, `issue_precheck_token`, `require_internal_api_key`, `test_staff_account_sessions.py`, `HTTPException`?**
+  _High betweenness centrality (0.115) - this node is a cross-community bridge._
+- **Why does `Tenant` connect `Tenant` to `CheckoutSelection`, `User`, `test_billing_add_product.py`, `select`, `test_admin_tenant_create.py`, `onboarding_sync.py`, `billing.py`, `test_patient_account_invites.py`, `test_billing_phase1.py`, `async_sessionmaker`, `_bearer`, `test_test_window.py`, `signup.py`, `_spy_transport`, `MessagePatient`, `Entitlement`, `_tenant_ids`, `test_precheck_billing.py`, `privacy.py`, `make_clinic`, `internal.py`, `StaffAccount`, `admin.py`, `MessagePatientSession`, `test_patient_pending_account_shortcut.py`, `onboarding.py`, `ensure_precheck_provisioned`, `test_patient_pending_session.py`, `onboarding.py`, `auth.py`, `apply_stripe_event`, `_tenant_com_precheck`, `_configure_mesh`, `issue_password_reset_code`, `_mesh`, `test_visit_retention.py`, `config.py`, `test_hub_agenda_scope.py`, `invite_team_member`, `SignupIntentCreate`, `cleanup_patients`, `FastAPI`, `FakeStripe`, `test_entitlement_dual_readers.py`, `resolve_entitlement`, `billing.py`, `get_patient_invite`, `_install_fake_stripe_httpx`, `EntitlementPatchIn`, `test_capture_creates_no_tenant_or_entitlement`, `HTTPException`?**
+  _High betweenness centrality (0.075) - this node is a cross-community bridge._
+- **Why does `select()` connect `select` to `User`, `_bearer`, `test_admin_tenant_create.py`, `test_privacy.py`, `test_launch_waitlist.py`, `onboarding_sync.py`, `billing.py`, `test_patient_account_invites.py`, `async_sessionmaker`, `test_patient_account_name.py`, `onboarding.py`, `_bearer`, `signup.py`, `MessagePatient`, `Entitlement`, `auth.py`, `test_precheck_billing.py`, `privacy.py`, `test_secretary_role.py`, `internal.py`, `team.py`, `BaseModel`, `StaffAccount`, `admin.py`, `MessagePatientSession`, `upsert_waitlist_lead`, `test_patient_pending_account_shortcut.py`, `onboarding.py`, `ensure_precheck_provisioned`, `SignupIntent`, `test_patient_pending_session.py`, `auth.py`, `apply_stripe_event`, `_tenant_com_precheck`, `issue_password_reset_code`, `_mesh`, `test_visit_retention.py`, `test_smoke.py`, `cookies.py`, `visit_retention.py`, `PrecheckAccountLink`, `invite_team_member`, `_peek_code`, `cleanup_patients`, `redeem`, `internal.py`, `complete_staff_first_access`, `issue_precheck_token`, `test_capture_creates_no_tenant_or_entitlement`?**
+  _High betweenness centrality (0.066) - this node is a cross-community bridge._
+- **Are the 155 inferred relationships involving `get_settings()` (e.g. with `seed_admin()` and `impersonate_token()`) actually correct?**
+  _`get_settings()` has 155 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 109 inferred relationships involving `Tenant` (e.g. with `seed()` and `require_billable_tenant()`) actually correct?**
+  _`Tenant` has 109 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 146 inferred relationships involving `select()` (e.g. with `create_admin()` and `main()`) actually correct?**
+  _`select()` has 146 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `Alembic environment — async (asyncpg) configuration.`, `Run migrations in 'offline' mode (emit SQL, no live DB connection).`, `Run migrations in 'online' mode using an async engine.` to the rest of the system?**
-  _1795 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `CheckoutSelection` be split into smaller, more focused modules?**
-  _Cohesion score 0.11231884057971014 - nodes in this community are weakly interconnected._
+  _1833 weakly-connected nodes found - possible documentation gaps or missing edges._

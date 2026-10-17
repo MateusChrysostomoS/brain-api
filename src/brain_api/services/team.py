@@ -1,5 +1,6 @@
 """Tenant-locked team mutations; no platform-wide admin surface or shared passwords."""
 
+import secrets
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -11,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.api.deps import Principal
 from brain_api.config import get_settings
-from brain_api.core.security import hash_password
-from brain_api.models import RefreshToken, Tenant, User
+from brain_api.core.security import hash_password, hash_refresh_token
+from brain_api.models import RefreshToken, StaffAccount, StaffMembershipInvite, Tenant, User
 from brain_api.schemas.team import TeamInviteInput, TeamInviteResult, TeamMember
 from brain_api.services import mailer, onboarding_sync, secretaria_provisioning
 from brain_api.services.staff_first_access import generate_temporary_password
@@ -30,7 +31,7 @@ def member_out(user: User) -> TeamMember:
         if user.access_revoked_at
         else (
             "pending_first_access"
-            if user.requires_password_change or user.invite_token_hash
+            if user.requires_password_change or user.invite_token_hash or user.membership_pending
             else "active"
         )
     )
@@ -44,6 +45,7 @@ def member_out(user: User) -> TeamMember:
         professional_id=user.professional_id,
         access_status=state,
         delivery_status=user.invite_delivery_status,
+        access_version=user.credential_version,
     )
 
 
@@ -71,12 +73,27 @@ async def lock_clinic(session: AsyncSession, principal: Principal) -> Tenant:
     )
     if tenant is None:
         raise HTTPException(404, "Clinic not found")
+    actor = await session.get(User, UUID(principal.user_id), populate_existing=True)
+    if (
+        not actor
+        or actor.tenant_id != tenant.id
+        or actor.access_revoked_at
+        or actor.requires_password_change
+        or actor.membership_pending
+        or actor.credential_version != principal.credential_version
+    ):
+        raise HTTPException(401, "Invalid or expired token")
+    if not can_manage_team(actor):
+        raise HTTPException(403, "team_manager_required")
     return tenant
 
 
 async def target_member(session: AsyncSession, tenant_id: UUID, user_id: UUID) -> User:
     user = await session.scalar(
-        select(User).where(User.id == user_id, User.tenant_id == tenant_id).with_for_update()
+        select(User)
+        .where(User.id == user_id, User.tenant_id == tenant_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if user is None:
         raise HTTPException(404, "Team member not found")
@@ -86,14 +103,27 @@ async def target_member(session: AsyncSession, tenant_id: UUID, user_id: UUID) -
 async def require_remaining_manager(session: AsyncSession, tenant_id: UUID, target: User) -> None:
     if target.is_owner:
         raise HTTPException(409, "clinic_owner_protected")
-    if not can_manage_team(target) or target.access_revoked_at or target.requires_password_change:
+    if (
+        not can_manage_team(target)
+        or target.access_revoked_at
+        or target.requires_password_change
+        or target.membership_pending
+    ):
         return
     other = await session.scalar(
-        select(User.id).where(
+        select(User.id)
+        .outerjoin(StaffAccount, StaffAccount.id == User.account_id)
+        .where(
             User.tenant_id == tenant_id,
             User.id != target.id,
             User.access_revoked_at.is_(None),
             User.requires_password_change.is_(False),
+            User.membership_pending.is_(False),
+            or_(
+                User.account_id.is_(None),
+                StaffAccount.disabled_at.is_(None)
+                & StaffAccount.requires_password_change.is_(False),
+            ),
             or_(
                 User.is_owner.is_(True),
                 User.role == "manager",
@@ -147,7 +177,21 @@ async def invite_team_member(
     url = staff_login_url()  # fail before remote or local creation
     tenant = await lock_clinic(session, principal)
     email = str(payload.email).lower()
-    if await session.scalar(select(User.id).where(User.email == email)):
+    account = await session.scalar(select(StaffAccount).where(StaffAccount.email == email))
+    if account and account.disabled_at:
+        raise HTTPException(409, "email_already_registered")
+    existing = list(await session.scalars(select(User).where(User.email == email)))
+    if existing and not get_settings().STAFF_ACCOUNT_CREDENTIALS_ENABLED:
+        raise HTTPException(409, "email_already_registered")
+    if existing and account is None and len(existing) == 1:
+        from brain_api.services.staff_accounts import adopt_user
+
+        account = await adopt_user(session, existing[0])
+    if await session.scalar(
+        select(User.id).where(User.email == email, User.tenant_id == tenant.id)
+    ):
+        raise HTTPException(409, "email_already_registered")
+    if existing and (not get_settings().STAFF_MULTI_CLINIC_ENABLED or account is None):
         raise HTTPException(409, "email_already_registered")
     professional_id = None
     if payload.role == "doctor":
@@ -163,6 +207,16 @@ async def invite_team_member(
             )
         ):
             raise HTTPException(409, "professional_already_linked")
+    if account:
+        if not get_settings().STAFF_MULTI_CLINIC_ENABLED:
+            raise HTTPException(409, "email_already_registered")
+        from brain_api.services.staff_invitations import invite_existing
+
+        try:
+            return await invite_existing(session, account, tenant, payload, professional_id, url)
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(409, "email_already_registered") from None
     password = generate_temporary_password()
     user = User(
         tenant_id=tenant.id,
@@ -177,6 +231,10 @@ async def invite_team_member(
     )
     session.add(user)
     try:
+        await session.flush()
+        from brain_api.services.staff_accounts import adopt_new_user
+
+        await adopt_new_user(session, user)
         await session.commit()
     except IntegrityError:
         await session.rollback()
@@ -201,9 +259,9 @@ async def set_member_management(
         if not enabled:
             await require_remaining_manager(session, tenant.id, user)
         user.is_manager = enabled
-        # A pending invitation's generation must stay deliverable. It has no normal session.
-        if not user.requires_password_change:
-            user.credential_version += 1
+        user.credential_version += 1
+        if user.membership_pending:
+            user.invite_delivery_status = "not_requested"
         await session.commit()
     return member_out(user)
 
@@ -212,11 +270,41 @@ async def resend_member_first_access(
     session: AsyncSession, principal: Principal, user_id: UUID
 ) -> TeamInviteResult:
     url = staff_login_url()
+    before = await session.scalar(
+        select(User).where(User.id == user_id, User.tenant_id == principal.tenant_id)
+    )
+    locked_account_id = before.account_id if before else None
+    if locked_account_id:
+        await session.scalar(
+            select(StaffAccount)
+            .where(StaffAccount.id == locked_account_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
     tenant = await lock_clinic(session, principal)
     user = await target_member(session, tenant.id, user_id)
+    if user.account_id and user.account_id != locked_account_id:
+        # Adoption crossed the initial read; restart before writing with account -> user locks.
+        await session.commit()
+        return await resend_member_first_access(session, principal, user_id)
+    if user.access_revoked_at:
+        raise HTTPException(409, "first_access_not_pending")
+    if user.membership_pending:
+        from brain_api.services.staff_invitations import resend_invitation
+
+        return await resend_invitation(session, user, tenant, url)
     if user.access_revoked_at or (not user.requires_password_change and not user.invite_token_hash):
         raise HTTPException(409, "first_access_not_pending")
     password = generate_temporary_password()
+    if user.account_id:
+        account = await session.scalar(
+            select(StaffAccount).where(StaffAccount.id == user.account_id).with_for_update()
+        )
+        if not account or not account.requires_password_change:
+            raise HTTPException(409, "first_access_not_pending")
+        account.password_hash = hash_password(password)
+        account.temporary_password_expires_at = datetime.now(UTC) + timedelta(hours=72)
+        account.credential_version += 1
     user.password_hash = hash_password(password)
     user.requires_password_change = True
     user.temporary_password_expires_at = datetime.now(UTC) + timedelta(hours=72)
@@ -240,6 +328,9 @@ async def revoke_member_access(
     user = await target_member(session, tenant.id, user_id)
     await require_remaining_manager(session, tenant.id, user)
     if user.access_revoked_at is None:
+        # An unconsumed legacy invite is an obligation, not an active membership.
+        if user.invite_token_hash:
+            user.requires_password_change = True
         user.access_revoked_at = datetime.now(UTC)
         user.credential_version += 1
         user.invite_token_hash = None
@@ -250,4 +341,117 @@ async def revoke_member_access(
             .values(revoked_at=datetime.now(UTC))
         )
         await session.commit()
+    return member_out(user)
+
+
+async def restore_member_access(
+    session: AsyncSession, principal: Principal, user_id: UUID, expected_version: int
+) -> TeamMember:
+    # Match setup/reset/invitation lock order: account before clinic and membership.
+    before = await session.scalar(
+        select(User).where(User.id == user_id, User.tenant_id == principal.tenant_id)
+    )
+    account_id = before.account_id if before else None
+    account = None
+    if account_id:
+        account = await session.scalar(
+            select(StaffAccount)
+            .where(StaffAccount.id == account_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    tenant = await lock_clinic(session, principal)
+    user = await target_member(session, tenant.id, user_id)
+    if user.account_id != account_id:
+        await session.commit()
+        return await restore_member_access(session, principal, user_id, expected_version)
+    if user.is_owner:
+        raise HTTPException(409, "clinic_owner_protected")
+    if user.access_revoked_at is None:
+        # Retrying the same successful transition must not remove a later grant.
+        if user.credential_version not in (expected_version, expected_version + 1):
+            raise HTTPException(409, "team_member_changed")
+        return member_out(user)
+    if user.credential_version != expected_version:
+        raise HTTPException(409, "team_member_changed")
+    if account_id and (not account or account.disabled_at):
+        raise HTTPException(409, "account_unavailable")
+    if user.requires_password_change and account and not account.requires_password_change:
+        # Never replace a personal password that has already been established.
+        raise HTTPException(409, "first_access_not_pending")
+    values = {
+        "access_revoked_at": None,
+        "credential_version": User.credential_version + 1,
+        "invite_token_hash": None,
+        "invite_token_expires_at": None,
+    }
+    if user.role == "doctor":
+        values["is_manager"] = False
+    password = None
+    invitation = None
+    raw_invitation = None
+    url = None
+    if user.requires_password_change:
+        # Owner decision: restoration also resends the first-access e-mail. Only
+        # an unfinished personal credential may get a new temporary password.
+        url = staff_login_url()
+        password = generate_temporary_password()
+        password_hash = hash_password(password)
+        expires_at = datetime.now(UTC) + timedelta(hours=72)
+        values["password_hash"] = password_hash
+        values["temporary_password_expires_at"] = expires_at
+        values["invite_delivery_status"] = "not_requested"
+    elif user.membership_pending:
+        url = staff_login_url()
+        invitation = await session.scalar(
+            select(StaffMembershipInvite)
+            .where(
+                StaffMembershipInvite.user_id == user.id,
+                StaffMembershipInvite.accepted_at.is_(None),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if invitation is None:
+            raise HTTPException(409, "first_access_not_pending")
+        raw_invitation = secrets.token_urlsafe(32)
+        values["invite_delivery_status"] = "not_requested"
+    changed = await session.execute(
+        update(User)
+        .where(
+            User.id == user.id,
+            User.tenant_id == tenant.id,
+            User.access_revoked_at.is_not(None),
+            User.credential_version == expected_version,
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    if changed.rowcount != 1:
+        raise HTTPException(409, "team_member_changed")
+    if password and account:
+        account.password_hash = password_hash
+        account.temporary_password_expires_at = expires_at
+        account.credential_version += 1
+    if invitation:
+        invitation.membership_version = expected_version + 1
+        invitation.token_hash = hash_refresh_token(raw_invitation)
+        invitation.expires_at = datetime.now(UTC) + timedelta(hours=72)
+        invitation.is_manager = False if user.role == "doctor" else user.is_manager
+        invitation.delivery_status = "not_requested"
+    await session.execute(
+        update(RefreshToken)
+        .where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=datetime.now(UTC))
+    )
+    await session.commit()
+    await session.refresh(user)
+    if password:
+        return (await deliver_first_access(session, user, tenant, password, url)).member
+    if invitation:
+        from brain_api.services.staff_invitations import deliver_invitation
+
+        return (
+            await deliver_invitation(session, user, invitation, tenant, raw_invitation, url)
+        ).member
     return member_out(user)

@@ -7,7 +7,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from brain_api.core.database import Base
@@ -49,14 +49,28 @@ class User(Base):
     """A portal user. `tenant_id` is NULL for a platform admin."""
 
     __tablename__ = "users"
+    __table_args__ = (
+        Index("uq_users_tenant_email", "tenant_id", "email", unique=True),
+        Index("uq_users_account_tenant", "account_id", "tenant_id", unique=True),
+        Index(
+            "uq_users_unlinked_email",
+            "email",
+            unique=True,
+            postgresql_where=text("account_id IS NULL"),
+            sqlite_where=text("account_id IS NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("staff_accounts.id"), nullable=True, index=True
+    )
     # NULL for a platform admin; otherwise the tenant this user acts for.
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
     )
     # Stored lower-cased; unique across the platform.
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
     name: Mapped[str] = mapped_column(String(255))
     # bcrypt hash. NEVER serialized to a response, NEVER logged.
     password_hash: Mapped[str] = mapped_column(String(255))
@@ -65,7 +79,7 @@ class User(Base):
     # native enum and no CHECK constraint, which is why adding `secretary` needed no
     # schema change (migrations/versions/0013_secretary_role.py).
     role: Mapped[str] = mapped_column(String(32), default=ROLE_DOCTOR)
-    # "Also a manager": a doctor with manager powers. Checked live for team management and billing; it does not
+    # "Also a manager": a doctor with manager powers. Checked live for team/billing;
     # replace the doctor role or the clinical professional linkage.
     is_manager: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), default=False)
     # The clinic OWNER — whoever bought the clinic. Preserves the pre-taxonomy
@@ -89,6 +103,9 @@ class User(Base):
     credential_version: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
     access_revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    membership_pending: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
     )
     invite_delivery_status: Mapped[str] = mapped_column(
         String(32), server_default="not_requested", default="not_requested"

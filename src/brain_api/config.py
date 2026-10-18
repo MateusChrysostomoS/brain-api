@@ -22,9 +22,9 @@ class Settings(BaseSettings):
     # --- Application ---
     APP_ENV: str = "dev"
     LOG_LEVEL: str = "INFO"
-    # Enable only after account-aware writers/readers and compatible consumers are live.
-    STAFF_MULTI_CLINIC_ENABLED: bool = False
-    STAFF_ACCOUNT_CREDENTIALS_ENABLED: bool = False
+    # Personal staff accounts and multi-clinic memberships: on by default (no env var needed).
+    STAFF_MULTI_CLINIC_ENABLED: bool = True
+    STAFF_ACCOUNT_CREDENTIALS_ENABLED: bool = True
 
     # --- Database (asyncpg driver) — brain's own database ---
     DATABASE_URL: str = "postgresql+asyncpg://brain:brain@localhost:5432/brain"
@@ -289,7 +289,8 @@ class Settings(BaseSettings):
     FRONTEND_BASE_URL: str = "http://localhost:3000"
     # Public origin of the unified portal: staff /login and patient /clinicas/.
     # Never inferred from a browser-supplied Origin. Empty disables invite links.
-    BRAIN_MESSAGE_PUBLIC_URL: str = ""
+    # Defaults to the deployed Brain-Message frontend; override with the env var for a custom domain.
+    BRAIN_MESSAGE_PUBLIC_URL: str = "https://precheckv2-brain-message-frontend.cpux9k.easypanel.host"
     # Fallback for the ativo transition when secretaria's Coexistence "mode resolved"
     # signal (history/smb_app_state_sync webhook fields, secretaria-side) never arrives:
     # a tenant whose WhatsApp `connected_at` is older than this many hours is treated as

@@ -142,6 +142,13 @@ def mail_spy(monkeypatch):
 
 
 @pytest.fixture
+def legacy_staff_invites(monkeypatch):
+    """Run a test against the legacy invite flow (staff credentials flag off)."""
+    from brain_api.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "STAFF_ACCOUNT_CREDENTIALS_ENABLED", False)
+
+@pytest.fixture
 def staff_accounts_enabled(monkeypatch):
     from brain_api.config import get_settings
 

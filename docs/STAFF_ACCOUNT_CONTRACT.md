@@ -121,3 +121,7 @@ Os testes de downgrade comprovam preservação de dados em estado unívoco, não
 Inbox compartilhada/reutilizada continua sendo risco da conta identificada por e-mail; convites não descobrem/grantem clínicas por esse atributo. Convite tem 256 bits e exige conta comprovada, mas token pessoal vazado alcança os próprios vínculos e convites dirigidos à conta. E-mail de recuperação não é autenticação forte de dois fatores. Logs de operações pessoais não incluem e-mail, nome da clínica nem account id.
 
 F3/F5/F7 da TASK-056 permanecem baseline. F4 permanece no caminho legado não adotado; a nova emissão pessoal serializa na conta para preservar a cota comum sob concorrência, necessidade desta migração. Não foram eliminados jobs/callbacks legados, nem alterados avisos/e-mails operacionais da SecretarIA. Captura SMTP local prova recebimento no capturador, não entrega externa.
+
+## Nota 2026-10-18 — padrões ligados
+
+`STAFF_ACCOUNT_CREDENTIALS_ENABLED` e `STAFF_MULTI_CLINIC_ENABLED` agora têm padrão `true` (decisão do dono: a funcionalidade não depende de variável de ambiente). As variáveis continuam podendo desligar o recurso. `BRAIN_MESSAGE_PUBLIC_URL` tem padrão no frontend implantado (sobrescreva por variável em domínio próprio). Com a chave ligada, os convites legados delegam ao fluxo de equipe: `invite_link` aponta para `/login`. Os testes do fluxo legado (token em `/convite`) rodam com a fixture `legacy_staff_invites`, que desliga a chave.

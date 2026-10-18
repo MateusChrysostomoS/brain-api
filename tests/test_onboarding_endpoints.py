@@ -1097,6 +1097,7 @@ async def test_list_professionals_joins_local_user_linkage(client, monkeypatch):
 # ===========================================================================================
 
 
+@pytest.mark.usefixtures("legacy_staff_invites")
 async def test_invite_professional_end_to_end(client, monkeypatch):
     new_professional_id = str(uuid4())
     create_calls: list[dict] = []
@@ -1145,6 +1146,7 @@ async def test_invite_professional_end_to_end(client, monkeypatch):
     assert reuse.json()["detail"] == "invalid_invite_token"
 
 
+@pytest.mark.usefixtures("legacy_staff_invites")
 async def test_invite_professional_email_failure_still_returns_invite_link(client, monkeypatch):
     monkeypatch.setattr(
         secretaria_provisioning,
@@ -1163,6 +1165,7 @@ async def test_invite_professional_email_failure_still_returns_invite_link(clien
     assert resp.json()["invite_link"]
 
 
+@pytest.mark.usefixtures("legacy_staff_invites")
 async def test_invite_professional_duplicate_email_conflict(client, monkeypatch):
     monkeypatch.setattr(
         secretaria_provisioning,
@@ -1179,6 +1182,7 @@ async def test_invite_professional_duplicate_email_conflict(client, monkeypatch)
     assert resp.json()["detail"] == "email_already_registered"
 
 
+@pytest.mark.usefixtures("legacy_staff_invites")
 async def test_invite_professional_secretaria_failure_returns_502(client, monkeypatch):
     monkeypatch.setattr(secretaria_provisioning, "create_professional", _noop_async(None))
     token = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)

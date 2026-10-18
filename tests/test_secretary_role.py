@@ -22,6 +22,7 @@ unset (conftest) so proxy routes degrade instead of hitting the network.
 
 from uuid import uuid4
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
@@ -209,6 +210,7 @@ async def test_secretary_can_pause_onboarding_but_a_plain_doctor_still_cannot(cl
 # --- REACHES: team management ----------------------------------------------
 
 
+@pytest.mark.usefixtures("legacy_staff_invites")
 async def test_owner_invites_a_secretary_without_creating_a_professional(
     client, monkeypatch, mail_spy
 ):
@@ -274,6 +276,7 @@ async def test_secretary_cannot_invite_a_professional(client, monkeypatch):
     assert resp.status_code == 403
 
 
+@pytest.mark.usefixtures("legacy_staff_invites")
 async def test_invited_secretary_completes_the_invite_flow(client, monkeypatch):
     """End to end: invite -> redeem the single-use token -> set a password -> log in with
     the new role. `/auth/exchange-invite-token` is role-agnostic, which this proves."""

@@ -851,7 +851,11 @@ Both are gated on the **resolved product being secretarIA** — the link's `prod
   `/inbound` route with `text: null` was considered and REJECTED: it is only safe in `INIT`, and a
   patient who opened the pre-consult tab before booking is already past it, where the same body
   would reach `_turn()` and could record an answer nobody gave. Contract and deploy order in
-  `CONTRACTS.md` §12.3.2 (PreCheck first).
+  `CONTRACTS.md` §12.3.2 (PreCheck first). **Off by default since 2026-10-19** (founder:
+  "secretarIA and PreCheck share the patient Portal and nothing else"): unless
+  `PORTAL_PRECHECK_HANDOFF_ENABLED`, the Portal leg answers `403 precheck_portal_handoff_disabled`
+  and PreCheck is not called, so a booking with secretarIA no longer opens the pre-consult (welcome
+  + a second LGPD consent). The WhatsApp leg is unchanged.
 - **A PreCheck link speaks first too** (2026-09-22). `api/portal/patient_access.py::
   _open_if_precheck` → `message_switchboard.open_precheck_session`, fire-and-forget, calls that
   same PreCheck route with `{tenant_id, session_ref}` (no `patient_name`; PreCheck answers `200
@@ -1106,6 +1110,17 @@ e-mail address, a cookie, or a JWT from this channel.
   AND `secretaria-worker` together, no migration, `GET /build` → `deploy_parity: match`. The Portal
   front still needs a scroll fix (keyed on the last message id, not the count) for a new reply to
   come into view in a conversation past 50 messages (§4.1, consumer note).
+- **2026-10-19** — product separation (founder, binding: "secretarIA and PreCheck share the
+  patient Portal and nothing else"). Live QA showed a `produto=secretaria` patient switched to
+  PreCheck right after the code (the booking is born at the code, its post-booking hand-off opened
+  PreCheck's welcome + LGPD, and the Portal's reveal moved the patient there) and on every reopen.
+  **§8.6** — the Portal leg of `POST /internal/precheck-handoff` is off by default
+  (`PORTAL_PRECHECK_HANDOFF_ENABLED=false` → `403 precheck_portal_handoff_disabled`, no upstream
+  call; secretarIA maps it to its silent `NOT_ENTITLED`). Nothing else on this contract moved: the
+  link's `product` on `/pending`, `_greet_if_secretaria`/`_open_if_precheck`, `/threads` and
+  `/enter` are as they were. The Portal side (no reveal on the secretarIA link, PreCheck's tab only
+  after the patient wrote there) is Brain-Message-Frontend's. Branch
+  `fix/portal-product-separation`, not deployed, no migration.
 
 ## Typing — o contrato de digitação, qualquer produto
 

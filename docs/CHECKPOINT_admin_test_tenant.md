@@ -219,3 +219,5 @@ porta inteira para que ninguém consiga ter produto sem pagar:
 deste trabalho. Ele não faz parte desta porta, mas é a mesma classe de risco. Antes do
 lançamento, decida se ele continua existindo.
 
+
+Capacidade de profissionais por clínica (TASK-063): `docs/CHECKPOINT_admin_professional_capacity.md`.

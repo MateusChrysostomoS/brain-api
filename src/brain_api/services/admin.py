@@ -422,9 +422,20 @@ async def update_entitlement(
         ent.secretaria_enabled = data["secretaria_enabled"]
 
     if data.get("addons") is not None:
+        # A professionals cap the admin set (`services/professional_capacity.py`) survives
+        # an unrelated add-on edit while `multi_professional` stays on. A plan patch in the
+        # same request is a deliberate reset, so it does not carry the cap over.
+        multi = catalog.ADDON_MULTI_PROFESSIONAL
+        kept_cap = (
+            (ent.limits or {}).get(catalog.LIMIT_PROFESSIONALS)
+            if data.get("plan") is None and (ent.addons or {}).get(multi)
+            else None
+        )
         # Normalize to the full keyset: plan defaults, then the patched flags on top.
         ent.addons = {**catalog.default_addons(ent.plan), **data["addons"]}
         ent.limits = catalog.compute_limits(ent.plan, ent.addons)
+        if kept_cap is not None and ent.addons.get(multi):
+            ent.limits = {**ent.limits, catalog.LIMIT_PROFESSIONALS: kept_cap}
 
     if data.get("limits") is not None:
         # Manual override merges over the (re)computed limits — an admin can raise one

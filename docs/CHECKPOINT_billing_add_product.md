@@ -79,3 +79,4 @@ Monitorar `billing_add_product_previewed`, `_requested`, `_succeeded`, `_refused
 ## 10. Ações posteriores do dono
 
 Aplicar a migração e implantar na ordem da seção 7 só mediante pedido explícito. Fornecer uma prévia Vercel, se quiser prova hospedada da UI. Executar as classes de prova Stripe quando houver entradas adequadas; passos que movem dinheiro exigem o par `STRIPE_PROOF_*` designado e passam pelo guarda. Sanitar eventos reais antes de criar fixtures de replay. Ver `tasks/TASK-015/TASK.md` para gates e estado mais recente.
+> TASK-062, somente worktree: intenção explícita de **nova clínica** usa conta pessoal/C/intent próprio, nunca add-product de A/B. Guardas administrativos continuam valendo. [Contrato e testes](CHECKPOINT_criar_clinica_conta_existente.md).

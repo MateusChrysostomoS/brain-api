@@ -1,5 +1,7 @@
 """Personal staff sessions open no clinic without explicit authorized selection."""
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +17,7 @@ from brain_api.core.cookies import (
 from brain_api.core.database import get_session
 from brain_api.models import StaffAccountSession
 from brain_api.schemas.auth import LoginRequest, SetPasswordIn, TokenResponse
+from brain_api.schemas.signup import AccountClinicCreate, AccountClinicOut, CheckoutSessionOut
 from brain_api.schemas.staff_account import (
     AcceptInviteIn,
     AccountResponse,
@@ -26,6 +29,19 @@ from brain_api.services import staff_accounts as service
 
 router = APIRouter(prefix="/auth/account", tags=["auth"])
 COOKIE = STAFF_ACCOUNT_COOKIE_NAME
+
+
+def clinic_body(registration, row):
+    from brain_api.api.auth import build_session_response
+    from brain_api.schemas.signup import AccountClinicOut
+
+    intent = registration.intent
+    return AccountClinicOut(
+        intent_id=intent.id, operation_id=intent.operation_id,
+        clinic_name=intent.clinic_name, whatsapp_phone=intent.whatsapp_phone,
+        catalog_ids=intent.catalog_ids, status=intent.status,
+        session=build_session_response(registration.user, None, account_session_id=str(row.id)),
+    )
 
 
 def set_cookie(response: Response, raw: str):
@@ -43,6 +59,47 @@ async def current_account(
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Missing bearer token")
     return await service.resolve_account(session, authorization[7:].strip())
+
+
+@router.post("/clinics", status_code=201, response_model=AccountClinicOut)
+async def create_clinic(
+    payload: AccountClinicCreate, response: Response, proof=Depends(current_account),
+    session: AsyncSession = Depends(get_session),
+):
+    from brain_api.services import account_clinics
+
+    response.headers["Cache-Control"] = "no-store"
+    result = await account_clinics.create_clinic(session, proof, payload)
+    return clinic_body(result, proof[1])
+
+
+@router.get("/clinics/{operation_id}", response_model=AccountClinicOut)
+async def resume_clinic(
+    operation_id: UUID, response: Response, proof=Depends(current_account),
+    session: AsyncSession = Depends(get_session),
+):
+    from brain_api.services import account_clinics
+
+    response.headers["Cache-Control"] = "no-store"
+    account, row = await account_clinics.lock_proof(session, proof)
+    result = await account_clinics.find_operation(session, account.id, operation_id)
+    return clinic_body(result, row)
+
+
+@router.post("/clinics/{operation_id}/checkout", response_model=CheckoutSessionOut)
+async def clinic_checkout(
+    operation_id: UUID, response: Response, proof=Depends(current_account),
+    session: AsyncSession = Depends(get_session),
+):
+    from brain_api.services import account_clinics, signup
+
+    response.headers["Cache-Control"] = "no-store"
+    account, _ = await account_clinics.lock_proof(session, proof)
+    result = await account_clinics.find_operation(session, account.id, operation_id)
+    url = await signup.create_checkout_session_for_intent(
+        session, result.intent.id, owner_account_id=account.id,
+    )
+    return CheckoutSessionOut(checkout_url=url)
 
 
 async def response_body(session, account, row):

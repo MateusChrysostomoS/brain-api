@@ -25,7 +25,7 @@ hash, burning it for good.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, func, text
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from brain_api.core.database import Base
@@ -35,8 +35,16 @@ class SignupIntent(Base):
     """One cold-signup attempt: lead data + catalog selection through to provisioning."""
 
     __tablename__ = "signup_intents"
+    __table_args__ = (UniqueConstraint("owner_account_id", "operation_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    owner_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("staff_accounts.id"), nullable=True
+    )
+    operation_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    checkout_attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    checkout_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
     name: Mapped[str] = mapped_column(String(255))
     clinic_name: Mapped[str] = mapped_column(String(255))

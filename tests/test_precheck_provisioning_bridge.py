@@ -28,15 +28,21 @@ async def _tenant_com_precheck(db_session, *, precheck=True, clinic_name="Clíni
     tenant = Tenant(clinic_name=clinic_name)
     db_session.add(tenant)
     await db_session.flush()
-    db_session.add(Entitlement(
-        tenant_id=tenant.id,
-        plan="precheck_basic" if precheck else "secretaria_basico",
-        precheck_enabled=precheck,
-        secretaria_enabled=not precheck,
-    ))
+    db_session.add(
+        Entitlement(
+            tenant_id=tenant.id,
+            plan="precheck_basic" if precheck else "secretaria_basico",
+            precheck_enabled=precheck,
+            secretaria_enabled=not precheck,
+        )
+    )
     owner = User(
-        tenant_id=tenant.id, name="Dra. Ana", email="ana@clinica.com",
-        password_hash="x", role="doctor", is_owner=True,
+        tenant_id=tenant.id,
+        name="Dra. Ana",
+        email="ana@clinica.com",
+        password_hash="x",
+        role="doctor",
+        is_owner=True,
     )
     db_session.add(owner)
     await db_session.flush()
@@ -55,9 +61,7 @@ def chamadas(monkeypatch):
             raise r
         return r
 
-    monkeypatch.setattr(
-        onboarding_sync.precheck_provisioning, "provision_clinic", fake
-    )
+    monkeypatch.setattr(onboarding_sync.precheck_provisioning, "provision_clinic", fake)
     return registro
 
 
@@ -91,21 +95,27 @@ async def test_nao_provisiona_sem_direito_a_precheck(db_session, chamadas):
 @pytest.mark.asyncio
 async def test_provisiona_grava_link_e_carimba(db_session, chamadas):
     tenant, owner = await _tenant_com_precheck(db_session)
-    db_session.add(SignupIntent(
-        tenant_id=tenant.id, name="Ana", clinic_name=tenant.clinic_name,
-        email=owner.email, whatsapp_phone="5521999999999",
-        catalog_ids=["precheck_basic"], precheck_template_slug="cardiologia",
-    ))
+    db_session.add(
+        SignupIntent(
+            tenant_id=tenant.id,
+            name="Ana",
+            clinic_name=tenant.clinic_name,
+            email=owner.email,
+            whatsapp_phone="5521999999999",
+            catalog_ids=["precheck_basic"],
+            precheck_template_slug="cardiologia",
+        )
+    )
     await db_session.flush()
 
     await onboarding_sync.ensure_precheck_provisioned(db_session, tenant)
 
     assert len(chamadas["calls"]) == 1
     call = chamadas["calls"][0]
-    assert call["template_slug"] == "cardiologia"      # escolha da vitrine respeitada
+    assert call["template_slug"] == "cardiologia"  # escolha da vitrine respeitada
     assert call["doctor_email"] == owner.email
-    assert call["doctor_phone"] == "5521999999999"     # vem do intent, não do tenant
-    assert len(call["doctor_password"]) >= 32          # aleatória: o médico entra por SSO
+    assert call["doctor_phone"] == "5521999999999"  # vem do intent, não do tenant
+    assert len(call["doctor_password"]) >= 32  # aleatória: o médico entra por SSO
 
     # o link é o ponto do bridge: sem ele o SSO responde 409
     link = await db_session.scalar(
@@ -127,14 +137,39 @@ async def test_sem_intent_cai_no_template_padrao(db_session, chamadas):
 
 
 @pytest.mark.asyncio
+async def test_personal_clinic_provisions_explicit_clinical_identity(db_session, chamadas):
+    from brain_api.models import StaffAccount
+
+    tenant, owner = await _tenant_com_precheck(db_session)
+    account = StaffAccount(email=owner.email, name=owner.name, password_hash="!fixture")
+    db_session.add(account)
+    await db_session.flush()
+    db_session.add(
+        SignupIntent(
+            tenant_id=tenant.id,
+            name=owner.name,
+            clinic_name=tenant.clinic_name,
+            email=owner.email,
+            whatsapp_phone="5511000000062",
+            catalog_ids=["precheck_basic"],
+            owner_account_id=account.id,
+        )
+    )
+    await db_session.flush()
+    await onboarding_sync.ensure_precheck_provisioned(db_session, tenant)
+    assert chamadas["calls"][0]["brain_user_id"] == owner.id
+    assert owner.id != account.id
+
+
+@pytest.mark.asyncio
 async def test_slug_e_trigger_sao_deterministicos(db_session):
     tenant, _ = await _tenant_com_precheck(db_session, clinic_name="Clínica São José")
     a = onboarding_sync._precheck_identity(tenant.clinic_name, tenant.id)
     b = onboarding_sync._precheck_identity(tenant.clinic_name, tenant.id)
-    assert a == b                                    # retentativa gera o mesmo
+    assert a == b  # retentativa gera o mesmo
     slug, _ = a
-    assert slug.startswith("clinica-sao-jose")       # acento normalizado
-    assert str(tenant.id)[:8] in slug                # sufixo garante unicidade
+    assert slug.startswith("clinica-sao-jose")  # acento normalizado
+    assert str(tenant.id)[:8] in slug  # sufixo garante unicidade
 
 
 @pytest.mark.asyncio
@@ -149,8 +184,8 @@ async def test_frase_sai_em_palavras_sem_hifen_nem_codigo(db_session):
     _, frase = onboarding_sync._precheck_identity(tenant.clinic_name, tenant.id)
 
     assert frase == "precheck clinica sao jose"
-    assert "-" not in frase                          # não é uma URL
-    assert str(tenant.id)[:8] not in frase           # nada de hexadecimal por padrão
+    assert "-" not in frase  # não é uma URL
+    assert str(tenant.id)[:8] not in frase  # nada de hexadecimal por padrão
 
 
 @pytest.mark.asyncio

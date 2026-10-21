@@ -382,6 +382,16 @@ async def precheck_handoff(
 
     Both legs answer with the same two words (`seeded` / `already_active`) and the same
     status matrix, so secretarIA branches once, not per channel.
+
+    ### The `external_id` leg is OFF by default (founder, 2026-10-19)
+
+    "secretarIA and PreCheck share the patient Portal and nothing else." On the Portal this
+    leg was the one thing they shared besides it: a booking with secretarIA opened PreCheck's
+    session — its welcome and a second LGPD consent — and the Portal switched the patient
+    there. Unless `PORTAL_PRECHECK_HANDOFF_ENABLED`, it now answers
+    `403 precheck_portal_handoff_disabled` after the entitlement gate and before any upstream
+    call; secretarIA maps every 403 to its silent `NOT_ENTITLED`. The WhatsApp leg is not
+    affected.
     """
     ent = await resolve_entitlement(session, payload.tenant_id)
     entitled = ent.status in ACTIVE_STATUSES and ent.products.precheck
@@ -399,6 +409,11 @@ async def precheck_handoff(
         # see the route docstring for why this is a different upstream route and not the
         # same one with a different field. `booked_service` is not forwarded on this leg
         # (PreCheck's opening route does not declare it, and its model is `extra="forbid"`).
+        if not get_settings().PORTAL_PRECHECK_HANDOFF_ENABLED:
+            # THE SEPARATION (see the docstring): PreCheck opens only when the patient goes
+            # there, never because they booked with secretarIA. Nothing reaches PreCheck.
+            logger.info("precheck_portal_handoff_disabled", tenant_id=str(payload.tenant_id))
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "precheck_portal_handoff_disabled")
         result = await request_portal_handoff(
             payload.tenant_id,
             str(payload.external_id),

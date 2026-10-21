@@ -1231,7 +1231,7 @@ accepts `SECRETARIA_API_KEY_PREVIOUS` during rotation):
 | `POST` | `/internal/secretaria/hub-token/verify` | introspection above. Always `200` for an authenticated service caller — refusal is `active:false`, not an HTTP error. Answer also carries `professional_id` and `agenda_scope` (see §12.2 step 3). |
 | `GET` | `/internal/tenants/{tenant_id}/entitlements` | entitlement summary `{tenant_id, status, active, secretaria_enabled, plan, secretaria_tier, addons, limits}` — the gate data secretarIA's plugin registry consumes (same `is_entitled` semantics, §3.2) |
 | `POST` | `/internal/usage-events` | metering leg only (`stripe-billing-entitlements`; NO Stripe call — meter forwarding is a later billing round). Body `{tenant_id, feature, amount, event_id}` — `feature` must be a catalog `LIMIT_KEYS` id (422 otherwise), `amount` `1..10000`, `event_id` is the CALLER's own idempotency key (e.g. `"reminder:24h:<appointment_id>"`). Inserts a `usage_events` row (§6.3d) AND increments `entitlements.usage[feature]` in ONE transaction (upserts the entitlement row if missing). Always `200 {recorded: bool}` — `false` means `event_id` was already applied (replay), no double-count, never an HTTP error |
-| `POST` | `/internal/precheck-handoff` | secretarIA → brain-api → PreCheck patient handoff (§12.3). Body `{tenant_id}` + **exactly one** handle: `phone_number` (digits only, `8..15`) **or** `external_id` (UUID, the Portal patient's `MessagePatient.id` — TASK-003 §5.1); both or neither → `422`. Plus the OPTIONAL booking context `patient_name?` / `booked_service?` (both `str|null`, ≤255 chars — FEAT 38). Entitlement-gated: `403 precheck_not_entitled` unless status active/trialing AND `precheck_enabled`. `phone_number` forwards to PreCheck (full status matrix in §12.3); `external_id` opens the Portal patient's session through PreCheck's `/internal/brain-message/open` — **see §12.3.2**. No DB write |
+| `POST` | `/internal/precheck-handoff` | secretarIA → brain-api → PreCheck patient handoff (§12.3). Body `{tenant_id}` + **exactly one** handle: `phone_number` (digits only, `8..15`) **or** `external_id` (UUID, the Portal patient's `MessagePatient.id` — TASK-003 §5.1); both or neither → `422`. Plus the OPTIONAL booking context `patient_name?` / `booked_service?` (both `str|null`, ≤255 chars — FEAT 38). Entitlement-gated: `403 precheck_not_entitled` unless status active/trialing AND `precheck_enabled`. `phone_number` forwards to PreCheck (full status matrix in §12.3); `external_id` opens the Portal patient's session through PreCheck's `/internal/brain-message/open` — **see §12.3.2**; **off by default since 2026-10-19** (`PORTAL_PRECHECK_HANDOFF_ENABLED=false` → `403 precheck_portal_handoff_disabled`, nothing sent upstream). No DB write |
 
 ### 12.3 secretarIA → PreCheck patient handoff (`POST /internal/precheck-handoff`)
 
@@ -1386,6 +1386,14 @@ either value reaches a logger call (asserting on the recorded call args — stru
 `PrintLoggerFactory` bypasses stdlib logging, so `caplog` cannot see these lines).
 
 ### 12.3.2 `external_id` (a Portal patient) — the Portal leg
+
+> **Off by default since 2026-10-19** — founder's decision, binding: "secretarIA and PreCheck
+> share the patient Portal and nothing else (for now)". With `PORTAL_PRECHECK_HANDOFF_ENABLED`
+> false (the default) this leg answers `403 precheck_portal_handoff_disabled` right after the
+> entitlement gate and calls nothing upstream; secretarIA maps every `403` to `NOT_ENTITLED`, its
+> silent no-op. A Portal patient's pre-consult opens only when they go to PreCheck (a
+> `produto=precheck` link → `_open_if_precheck`, or a message in that tab). The `phone_number`
+> leg is unaffected. Everything below describes the leg as it runs when the setting is on.
 
 Added 2026-09-19 as a validated `501` (TASK-003 §5.1); **closed 2026-09-20 (TASK-004)**. The
 `501` no longer exists and is unreachable from any valid body (pinned by

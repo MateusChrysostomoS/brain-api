@@ -1597,9 +1597,12 @@ def _open_if_precheck(
     Fires ONLY when the resolved product is PreCheck: an explicit `produto=precheck` link, or a
     clinic whose sole offered product is PreCheck. NEVER on a clinic that offers both and a link
     that names secretarIA or nothing — the portal polls the PreCheck thread in the background on
-    such clinics and SWITCHES the patient to that tab as soon as it has messages (the hand-off
-    reveal). Opening a PreCheck session there would pull a patient who came to book away from
-    the booking.
+    the general link and SWITCHES the patient to that tab as soon as it has messages (the
+    hand-off reveal). Opening a PreCheck session there would pull a patient who came to book
+    away from the booking. Since 2026-10-19 that is the founder's rule for both products ("they
+    share the Portal and nothing else"): this is the ONLY automatic PreCheck opening left on the
+    Portal — the post-booking hand-off is off (`PORTAL_PRECHECK_HANDOFF_ENABLED`) and the
+    secretarIA link never probes or switches.
 
     Unlike the secretarIA greeting, it also fires on a RESUMED visit: a patient who opened the
     clinic's booking link earlier and now scans its PreCheck QR code resumes the same visit,

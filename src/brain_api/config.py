@@ -467,6 +467,17 @@ class Settings(BaseSettings):
     # Longer than SECRETARIA_TIMEOUT_SECONDS because the product stores the bytes before it
     # answers; httpx applies it per network operation, not to the whole transfer.
     ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS: float = 60.0
+    # --- The secretarIA -> PreCheck hand-off on the PORTAL (founder, 2026-10-19) ----------
+    # "secretarIA and PreCheck share the patient Portal and nothing else (for now)." Off = the
+    # Portal leg of POST /internal/precheck-handoff (`external_id`) answers 403
+    # `precheck_portal_handoff_disabled` WITHOUT calling PreCheck: a booking made with
+    # secretarIA no longer opens the patient's pre-consult behind their back (PreCheck's own
+    # welcome and a second LGPD consent, which the Portal then switched them to). PreCheck opens
+    # only when the patient goes there: a `produto=precheck` link (`_open_if_precheck`) or a
+    # message in that tab. secretarIA reads the 403 as "not entitled" and stays silent. The
+    # WhatsApp leg (`phone_number`) is untouched. On = TASK-004's behaviour, kept whole as the
+    # lever for "for now" — never turn it on without the founder.
+    PORTAL_PRECHECK_HANDOFF_ENABLED: bool = False
 
     @property
     def STRIPE_CHECKOUT_SUCCESS_URL(self) -> str:

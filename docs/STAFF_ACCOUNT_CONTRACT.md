@@ -171,7 +171,7 @@ clínico; cookie pessoal host-only permanece. Sessão clínica antiga, preferên
 e-mail conhecido ou ID de intent não autorizam criação/faturamento. Todos os portais podem estar
 revogados sem impedir a conta de criar C. Revogação posterior C bloqueia a própria retomada.
 
-DDL 0033 após 0032; unique conta/operação e locks; checkout aberto reaproveitado; webhook ativa
+DDL 0034 (após a 0033 da TASK-065); unique conta/operação e locks; checkout aberto reaproveitado; webhook ativa
 somente C. Intents pessoais não entram em checkout/catálogo/cortesia/status/ready/token públicos.
 Não se mistura pagamento de C com `/billing` clínico paralelo ou assinatura de A/B. Reset/counters
 globais não são reiniciados por clínica nova. Chamadores anônimos novos mantêm o contrato anterior.

@@ -369,11 +369,11 @@ async def test_postgres_downgrade_refuses_to_discard_multiple_memberships(pg):
     async with pg() as session:
         assert (await session.get(User, uaid)).access_revoked_at
         assert (await session.get(User, ubid)).account_id == aid
-        # The refused downgrade rolls back as one transaction: still at head (0033 since
-        # TASK-065, whose own downgrade ran first inside that transaction).
+        # The refused downgrade rolls back as one transaction: still at head (0034 since
+        # TASK-062, whose own downgrade, then TASK-065's, ran first inside that transaction).
         assert (
             await session.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0033_staff_session_rotation"
+            == "0034_account_clinic_signup"
         )
 
 

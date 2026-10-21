@@ -26,7 +26,7 @@ Roteiro, bases dos quatro repos e comandos: `C:/TECH/BRAIN/tasks/TASK-062/TASK.m
 
 ## Migração e cobrança
 
-`0033_account_clinic_signup`, após `0032_staff_membership_email`: conta dona, operação,
+`0034_account_clinic_signup`, após `0033_staff_session_rotation` (TASK-065): conta dona, operação,
 hash do body, tentativa/URL de checkout; unique `(owner_account_id, operation_id)`.
 Aplicada apenas nos PostgreSQL descartáveis locais. Downgrade recusa qualquer intent pessoal:
 remover autorização por conta e voltar a tratá-lo como público não é rollback seguro.
@@ -77,7 +77,7 @@ Ver `../../PreCheck/docs/CHECKPOINT_criar_clinica_conta_existente.md`.
 
 ## Ordem futura (não autorizada nesta tarefa)
 
-1. DDL 0033 da API e 0017 do PreCheck em ambiente controlado, sem novos emissores ainda.
+1. DDL 0033 (TASK-065) e 0034 da API e 0017 do PreCheck em ambiente controlado, sem novos emissores ainda.
 2. PreCheck consumidor com guardas de login/reset nativos e identidade explícita.
 3. API emissora/guardas de intent pessoal; então brain-frontend e console.
 4. Provar compatibilidade antes de qualquer ativação real. Não reverter a código sem guardas

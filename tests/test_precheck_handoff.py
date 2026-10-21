@@ -27,8 +27,15 @@ async def _tenant_ids(client, admin_token: str) -> dict[str, str]:
     return {t["clinic_name"]: t["id"] for t in tenants["items"]}
 
 
-def _set_pair_key(monkeypatch, key: str = "pair-key") -> None:
-    fake_settings = SimpleNamespace(SECRETARIA_API_KEY=key, SECRETARIA_API_KEY_PREVIOUS="")
+def _set_pair_key(monkeypatch, key: str = "pair-key", *, portal_handoff: bool = False) -> None:
+    """`portal_handoff` is `PORTAL_PRECHECK_HANDOFF_ENABLED`, off by default exactly as in
+    production (founder, 2026-10-19). The TASK-004 tests below turn it on: they pin the Portal
+    leg as it runs when the lever is pulled, which is what "for now" may bring back."""
+    fake_settings = SimpleNamespace(
+        SECRETARIA_API_KEY=key,
+        SECRETARIA_API_KEY_PREVIOUS="",
+        PORTAL_PRECHECK_HANDOFF_ENABLED=portal_handoff,
+    )
     monkeypatch.setattr(internal_api, "get_settings", lambda: fake_settings)
 
 
@@ -510,7 +517,8 @@ async def test_context_never_reaches_a_log_line(client, monkeypatch):
 # TASK-004 verified it — inbound is safe only at `INIT` — and PreCheck grew
 # `POST /internal/brain-message/open`, which opens or no-ops and never calls its agent.
 # These tests pin the new leg AND the thing the 501 was protecting: this route must never
-# reach `/brain-message/inbound`, and must never send a `text`.
+# reach `/brain-message/inbound`, and must never send a `text`. Since 2026-10-19 the leg is off
+# by default (see THE SEPARATION below), so these run with `portal_handoff=True`.
 
 OPEN_PATH = "/internal/brain-message/open"
 INBOUND_PATH = "/internal/brain-message/inbound"
@@ -523,7 +531,7 @@ def _body_portal(tenant_id: str, external_id: str | None = None) -> dict:
 async def test_handoff_external_id_opens_the_precheck_session(client, monkeypatch):
     """The symptom the owner reported: a brand-new Portal patient books, and the
     questionnaire is waiting for them — introduction included — without them writing."""
-    _set_pair_key(monkeypatch)
+    _set_pair_key(monkeypatch, portal_handoff=True)
     tenant_a_id = await _entitled_tenant(client)
     captured = _install_fake_httpx(
         monkeypatch, response=_FakeResponse(200, {"status": "awaiting_consent"})
@@ -548,7 +556,7 @@ async def test_handoff_external_id_never_calls_the_inbound_route(client, monkeyp
     empty text reaches PreCheck's `_turn()` and can save an answer nobody gave. This leg
     must therefore never touch that path, and must never send a `text` field at all.
     """
-    _set_pair_key(monkeypatch)
+    _set_pair_key(monkeypatch, portal_handoff=True)
     tenant_a_id = await _entitled_tenant(client)
     captured = _install_fake_httpx(
         monkeypatch, response=_FakeResponse(200, {"status": "awaiting_consent"})
@@ -566,7 +574,7 @@ async def test_handoff_external_id_on_a_session_already_open_is_already_active(
 ):
     """PreCheck's `exists` — the patient opened the pre-consult tab before booking — is the
     `already_active` this contract already had a word for. secretarIA still invites them."""
-    _set_pair_key(monkeypatch)
+    _set_pair_key(monkeypatch, portal_handoff=True)
     tenant_a_id = await _entitled_tenant(client)
     _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {"status": "exists"}))
 
@@ -579,7 +587,7 @@ async def test_handoff_external_id_on_a_session_already_open_is_already_active(
 
 async def test_handoff_external_id_unknown_upstream_status_is_502(client, monkeypatch):
     """A 200 whose `status` is neither known word is a broken contract, not a guess."""
-    _set_pair_key(monkeypatch)
+    _set_pair_key(monkeypatch, portal_handoff=True)
     tenant_a_id = await _entitled_tenant(client)
     _install_fake_httpx(monkeypatch, response=_FakeResponse(200, {"status": "who_knows"}))
 
@@ -596,7 +604,7 @@ async def test_handoff_external_id_maps_upstream_like_the_whatsapp_leg(
     client, monkeypatch, upstream: int, expected: int
 ):
     """One status matrix for both channels, so secretarIA branches once."""
-    _set_pair_key(monkeypatch)
+    _set_pair_key(monkeypatch, portal_handoff=True)
     tenant_a_id = await _entitled_tenant(client)
     _install_fake_httpx(monkeypatch, response=_FakeResponse(upstream, {}))
 
@@ -612,7 +620,7 @@ async def test_501_is_unreachable_from_every_valid_body(client, monkeypatch):
     Every body the contract accepts — either handle, with and without context — crossed
     with every upstream outcome the mesh can produce. None may answer 501 any more.
     """
-    _set_pair_key(monkeypatch)
+    _set_pair_key(monkeypatch, portal_handoff=True)
     tenant_a_id = await _entitled_tenant(client)
     # The 200 bodies differ per leg because the two upstream routes speak different
     # vocabularies — that is exactly what `request_portal_handoff` translates.
@@ -665,7 +673,7 @@ async def test_handoff_external_id_forwards_the_name_but_not_the_service(client,
     `extra="forbid"`, so sending it would be a 422 from a service that is working
     perfectly (`frozen-contract-migration`). The WhatsApp leg still sends both.
     """
-    _set_pair_key(monkeypatch)
+    _set_pair_key(monkeypatch, portal_handoff=True)
     tenant_a_id = await _entitled_tenant(client)
     captured = _install_fake_httpx(
         monkeypatch, response=_FakeResponse(200, {"status": "awaiting_consent"})
@@ -749,7 +757,7 @@ async def test_handoff_explicit_null_phone_with_external_id_is_accepted(client, 
     """`{"phone_number": null, "external_id": "..."}` is exactly one handle, so it validates
     and takes the Portal leg — not a 422. A caller that spells absence explicitly must not
     be punished for it."""
-    _set_pair_key(monkeypatch)
+    _set_pair_key(monkeypatch, portal_handoff=True)
     tenant_a_id = await _entitled_tenant(client)
     _install_fake_httpx(
         monkeypatch, response=_FakeResponse(200, {"status": "awaiting_consent"})
@@ -808,3 +816,94 @@ async def test_handoff_unknown_handle_name_still_422(client, monkeypatch):
         json={"tenant_id": tenant_a_id, "session_ref": str(uuid4())},
     )
     assert resp.status_code == 422, resp.text
+
+
+# --- THE SEPARATION (founder, 2026-10-19): the Portal leg is OFF by default -----------------
+#
+# "secretarIA and PreCheck share the patient Portal and nothing else." Live in production: a
+# patient who came through a `produto=secretaria` link booked, typed the code, and this leg
+# opened PreCheck behind them — its welcome and a SECOND LGPD consent — and the Portal
+# switched them there. With `PORTAL_PRECHECK_HANDOFF_ENABLED` off (the default), the leg answers
+# 403 before anything reaches PreCheck; secretarIA maps every 403 to its silent `NOT_ENTITLED`
+# (`services/precheck.py` there), so the patient hears nothing and the booking stands.
+
+
+def test_the_portal_leg_is_off_unless_someone_turns_it_on():
+    from brain_api.config import Settings
+
+    assert Settings.model_fields["PORTAL_PRECHECK_HANDOFF_ENABLED"].default is False
+
+
+async def test_portal_handoff_off_refuses_without_calling_precheck(client, monkeypatch):
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    captured = _install_fake_httpx(
+        monkeypatch, response=_FakeResponse(200, {"status": "awaiting_consent"})
+    )
+
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={**_body_portal(tenant_a_id), "patient_name": NAME},
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == "precheck_portal_handoff_disabled"
+    # No PreCheck client was even built: neither /open nor any other route was asked.
+    assert captured == {}
+
+
+async def test_portal_handoff_off_still_answers_not_entitled_first(client, monkeypatch):
+    """The entitlement gate keeps its place and its word: a clinic without PreCheck is told
+    so, whatever the lever says."""
+    _set_pair_key(monkeypatch)
+    admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    tenant_b_id = (await _tenant_ids(client, admin_token))[CLINIC_B]
+
+    resp = await client.post(
+        ROUTE, headers={"X-Internal-Api-Key": "pair-key"}, json=_body_portal(tenant_b_id)
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == "precheck_not_entitled"
+
+
+async def test_portal_handoff_off_leaves_the_whatsapp_leg_alone(client, monkeypatch):
+    """The decision is about the Portal. A WhatsApp patient's hand-off is byte-for-byte what it
+    was: same upstream route, same body, same answer, with the lever off or on."""
+    tenant_a_id = await _entitled_tenant(client)
+    sent = {}
+    for lever in (False, True):
+        _set_pair_key(monkeypatch, portal_handoff=lever)
+        captured = _install_fake_httpx(
+            monkeypatch, response=_FakeResponse(200, {"status": "seeded"})
+        )
+        resp = await client.post(
+            ROUTE, headers={"X-Internal-Api-Key": "pair-key"}, json=_body(tenant_a_id)
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"status": "seeded"}
+        assert captured["path"] == "/internal/precheck-handoff"
+        assert captured["json"]["phone_number"] == PHONE
+        sent[lever] = captured["json"]
+    assert sent[False] == sent[True]
+
+
+async def test_portal_handoff_off_logs_no_handle_and_no_name(client, monkeypatch):
+    _set_pair_key(monkeypatch)
+    tenant_a_id = await _entitled_tenant(client)
+    handle = str(uuid4())
+    logged: list = []
+
+    class _Spy:
+        def __getattr__(self, _level):
+            return lambda *args, **kwargs: logged.append((args, kwargs))
+
+    monkeypatch.setattr(internal_api, "logger", _Spy())
+    resp = await client.post(
+        ROUTE,
+        headers={"X-Internal-Api-Key": "pair-key"},
+        json={**_body_portal(tenant_a_id, handle), "patient_name": NAME},
+    )
+    assert resp.status_code == 403, resp.text
+    assert (("precheck_portal_handoff_disabled",), {"tenant_id": tenant_a_id}) in logged
+    assert handle not in repr(logged)
+    assert NAME not in repr(logged)

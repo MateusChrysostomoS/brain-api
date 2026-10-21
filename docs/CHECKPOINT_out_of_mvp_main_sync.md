@@ -1,5 +1,11 @@
 # Atualização de feature/out-of-mvp — TASK-066
 
+## Continuação: main remota
+
+O dono pediu pull e novo merge após a rodada abaixo. `git pull --ff-only origin main` atualizou main para `19c9e19`; esta revisão foi incorporada novamente à feature, preservando o contrato de papel e a separação Portal secretarIA/PreCheck. A validação nova passou em 72 testes de handoff e emissão/revogação de hub. Alterações locais de instruções na pasta principal foram guardadas/reaplicadas e conferidas; nenhuma publicação. Registro atual: `C:/TECH/BRAIN/tasks/TASK-066/PULL_MAIN.md`. As observações de main/origin mais abaixo são o histórico da primeira rodada.
+
+## Primeira rodada: main local
+
 Em 2026-10-21, incorporada a main local `8655cec` na feature que partiu de `a00b2ff`, por pedido explícito de `git merge main`. Sem push/deploy.
 
 Os tokens do hub mantêm role/is_owner/is_manager da TASK-020 e passam a carregar também credential_version/account_sid da main. A introspecção preserva as verificações atuais de vínculo, conta, revogação e troca obrigatória de senha. Testes antigos de role agora usam um ator existente, sem enfraquecer o controle de acesso.

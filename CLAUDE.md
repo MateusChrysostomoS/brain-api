@@ -1,5 +1,7 @@
 # brain-api
 
+Separação de produtos (2026-10-19, decisão do fundador: "secretarIA e PreCheck compartilham o Portal e nada mais"): a perna Portal do `POST /internal/precheck-handoff` fica desligada por padrão (`PORTAL_PRECHECK_HANDOFF_ENABLED=false` → `403 precheck_portal_handoff_disabled`, nada vai ao PreCheck); WhatsApp intacto. Contrato em `CONTRACTS.md` §12.3.2 e `docs/PORTAL_MESSAGING_API.md` §8.6. Par no Brain-Message-Frontend. Branch `fix/portal-product-separation`, sem deploy, sem migração.
+
 TASK-055: bases públicas únicas e rotas derivadas; configuração por serviço em [URLs públicas](docs/CHECKPOINT_urls_publicas.md). Commit e push para origin/main autorizados; sem deploy manual.
 
 Continuação TASK-055: convite médico preserva recusas de plano que viravam 502; teste reproduziu o defeito, correção revisada. A causa da tentativa real ainda depende de logs: [checkpoint](docs/CHECKPOINT_convite_medico_502.md).

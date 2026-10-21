@@ -249,67 +249,63 @@ no entitlements (`tenant-secrets-encryption` never-leak rule; whitelisted `*Out`
 
 ### 2.6 `POST /auth/password-reset/*` — forgotten-password recovery (public, rate-limited)
 
-The **unauthenticated** recovery path, as opposed to `/auth/set-password` (§15.1), which
-requires a live session. Three steps, all sharing the per-IP auth bucket with §2.1/§2.1a.
+TASK-057 local: após adoção segura, recuperação acompanha a conta pessoal sem restaurar vínculos. Sessão pessoal/seleção/convites, campos operacionais aditivos e matriz de rollout: [STAFF_ACCOUNT_CONTRACT.md](docs/STAFF_ACCOUNT_CONTRACT.md). Não publicado; contrato legado abaixo continua durante expansão.
 
-> **Why this exists (2026-08-14).** brain-api previously had *no* reset capability, and
-> brain-frontend's "Esqueci a senha" screens called **PreCheck's** API instead. For any
-> user that exists only in brain-api — every self-serve `/cadastro` signup — PreCheck
-> found no such email and, by its own correct anti-enumeration rule, returned a generic
-> success and sent nothing. The failure was completely silent. Both frontends now call
-> the endpoints below.
+The **unauthenticated** recovery path for clinic staff, as opposed to `/auth/set-password`
+(§15.1), which requires a live session. Three steps, all sharing the per-IP auth bucket with
+§2.1/§2.1a. **Since TASK-056 (2026-10-13) the person proves the mailbox with a 6-digit
+e-mailed code; the emailed link of 2026-08-14 no longer exists.**
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| `POST` | `/auth/password-reset/request` | `{email}` | `200 {detail}` — **always the same body**, registered or not (§2.6.1). `429` rate limited |
-| `POST` | `/auth/password-reset/verify` | `{token}` | `200 {detail}`; `400` unknown/expired/used. Read-only pre-flight — does **not** consume the token |
-| `POST` | `/auth/password-reset/confirm` | `{token, new_password}` | `200 {detail}`; `400` unknown/expired/used; `422` password policy |
+| `POST` | `/auth/password-reset/request` | `{email}` | `200 {"detail": "Se houver uma conta com esse e-mail, enviamos um código para ele."}` — **always the same body**, registered or not (§2.6.1). `429` per IP or per address. `422` malformed address |
+| `POST` | `/auth/password-reset/verify-code` | `{email, code}` (`code` = exactly 6 ASCII digits) | `200 {"reset_token": str}`; `400 {"detail": "Código inválido ou expirado"}` for unknown e-mail **and** wrong/expired/exhausted code alike; `422` malformed; `429` |
+| `POST` | `/auth/password-reset/confirm` | `{token, new_password}` | `200 {detail}`; `400 "Token inválido ou expirado"`; `422` password policy; `429` |
 
-Request/response shapes deliberately **mirror PreCheck's** long-standing reset contract,
-so the three `esqueci_senha/*` screens work against either backend unchanged.
+`POST /auth/password-reset/verify` (the link pre-flight) was **removed** in TASK-056. All
+three answers above carry `Cache-Control: no-store`.
 
-**Token mechanics.** `secrets.token_urlsafe(32)`, stored only as sha256 in
-`users.reset_token_hash` (+ `reset_token_expires_at`) — the same hashed-at-rest,
-single-use, burn-on-redemption scheme as the professional-invite token (§16.3), added by
-migration `0014_password_reset`. TTL `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES` (default **30
-min** — the shortest-lived token in the service; it sits in an inbox). Only **one** reset
-can be pending per user: a new request overwrites the hash, invalidating the prior link.
+**Code rules.**
 
-**Emailed link.** `{FRONTEND_BASE_URL}/esqueci_senha/token?token=<raw>`, sent via
-secretaria's `password_reset` template (`services/email.py::_TEMPLATES`) with
-`{name, link, ttl_minutes}`. Fail-soft like every transactional email here — a failed
-send must never become a 500 that reveals the address exists. ⚠️ `FRONTEND_BASE_URL` is
-the **same single setting** the invite link uses, and *both* frontends now serve
-`/esqueci_senha` — which domain it points at is an open deploy decision (see
-`docs/CHECKPOINT_secretary_role.md`); do not fork a second setting for it.
+| Rule | Value |
+|---|---|
+| Code | 6 digits, `secrets.randbelow`, leading zeros kept |
+| Code lifetime | `PASSWORD_RESET_CODE_EXPIRE_MINUTES` = 10 |
+| Wrong attempts per code | `PASSWORD_RESET_CODE_MAX_ATTEMPTS` = 5, spent by a conditional UPDATE before comparing (race-safe); then the code is dead |
+| Codes per user per hour | `PASSWORD_RESET_CODE_MAX_PER_HOUR` = 5, persisted (survives restarts); above it no e-mail, same answer |
+| Requests per address | `PASSWORD_RESET_EMAIL_RATE_LIMIT_PER_MIN` = 3 (in-process), on top of the per-IP bucket |
+| Re-issue | overwrites the previous code and zeroes the attempts — one live code per user |
+| Revoked access (`access_revoked_at`) | no code, same answer |
+| Storage | `staff_password_reset_codes` (§6.2a): HMAC-SHA256 keyed by `SECRET_KEY`, never the code |
+| Reset token | minted only by a correct code: `secrets.token_urlsafe(32)` stored as sha256 in `users.reset_token_hash`, `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES` = 15, single use |
+
+Ceiling for a guesser: 5 codes/hour × 5 attempts = 25 guesses per hour against 10⁶ values.
+
+**E-mail.** Template `password_reset_code` (`{name, code, ttl_minutes}`) sent by brain-api's
+own SMTP (`services/mailer.py`, §7 `SMTP_*`), **after** the response (`BackgroundTasks`) so
+SMTP latency does not mark the matching branch. Fail-soft: a failed send never changes the
+answer.
 
 **Password policy on confirm.** Identical to `SignupIntentCreate` / `SetPasswordIn` /
 `AdminUserCreateIn`: 8-72 chars (bcrypt's ceiling), at least one letter **and** one digit.
-Reset is not a back door around the rule the account was created under. A rejected
-password does **not** burn the token — the user can retry without a new email.
+A rejected password does **not** burn the token — the user can retry. Confirming bumps
+`credential_version`, clears `requires_password_change`, burns pending invites and
+**revokes every refresh token of the user**.
 
 #### 2.6.1 Anti-enumeration
 
 `/request` has exactly **one** return path, so status, body and headers are identical
 whether or not the email belongs to an account. Known, accepted limitations:
 
-- **Timing is not constant.** The matched branch does a DB write plus an email dispatch;
-  the unmatched one does neither. Closing that channel needs a dummy write and a padded
-  delay. Recorded rather than papered over — PreCheck's implementation has the same shape.
+- **Timing is not perfectly constant.** The matched branch does one DB write the
+  unmatched one does not (the e-mail itself is already off the response path).
 - **A malformed address returns `422`, not the generic `200`.** This is *not* a leak:
-  `EmailStr` rejects on format alone, before the handler runs, so the answer depends only
-  on what was typed. A well-formed *unregistered* address still gets the same `200` as a
-  real one. Do not "fix" this by swallowing validation errors — it would hide typos for
-  no security gain. (Pinned by `tests/test_password_reset.py`.)
+  `EmailStr` rejects on format alone, before the handler runs. A well-formed
+  *unregistered* address still gets the same `200` as a real one.
 
-`/verify` and `/confirm` return the same `400 "Token inválido ou expirado"` for unknown,
-expired and already-used tokens — distinguishing them would reveal whether a token ever
-existed.
-
-**Not done here, deliberately:** confirming a reset does **not** revoke the user's
-existing refresh tokens. Defensible hardening (a reset is often triggered *by* a
-compromise), but there is no revoke-all-for-user helper today and session invalidation
-deserves its own review.
+`/verify-code` answers the same `400` for an unknown e-mail and for a wrong code; `/confirm`
+the same `400` for unknown, expired and already-used tokens. Logs carry `user_id` only —
+never the e-mail, the code or the token. (Pinned by `tests/test_password_reset.py`.)
 
 ---
 
@@ -593,7 +589,20 @@ for `updated_at`). Conventions exactly mirror `secretarIA` models.
 | `invite_token_hash` | String(64) | nullable, indexed; sha256 of a professional- **or secretary**-invite token (`hash_refresh_token`), single-use, §16.3. Redemption (`POST /auth/exchange-invite-token`) is role-agnostic: it resolves the user by token hash and mints that user's normal session, so the secretary invite reuses it unchanged |
 | `invite_token_expires_at` | DateTime(tz) | nullable; `INVITE_TOKEN_EXPIRE_HOURS` from mint, §16.3 |
 | `reset_token_hash` | String(64) | nullable, indexed; sha256 of a password-reset token (`hash_refresh_token`), single-use, §2.6. Deliberately mirrors `invite_token_hash` above — same scheme, no separate table. Added by migration `0014_password_reset` |
-| `reset_token_expires_at` | DateTime(tz) | nullable; `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES` (default 30) from mint, §2.6. Only one reset pending per user: a new request overwrites the hash, invalidating the previous link |
+| `reset_token_expires_at` | DateTime(tz) | nullable; `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES` (default 15) from mint, §2.6. Minted only by a correct e-mailed code (TASK-056); one pending per user |
+
+### 6.2a `staff_password_reset_codes` (e-mailed reset code — §2.6, migration `0030`)
+
+| Column | Type | Notes |
+|---|---|---|
+| `user_id` | UUID | PK, FK `users.id` ON DELETE CASCADE — one live code per user |
+| `code_hash` | String(64) | HMAC-SHA256 of the 6-digit code keyed by `SECRET_KEY`; the code itself exists only in the e-mail |
+| `expires_at` | DateTime(tz) | issue + `PASSWORD_RESET_CODE_EXPIRE_MINUTES` (10) |
+| `attempts` | Integer | wrong guesses against this code; at `PASSWORD_RESET_CODE_MAX_ATTEMPTS` (5) the code is dead |
+| `window_started_at` | DateTime(tz) | start of the 1-hour issue window |
+| `issued_in_window` | Integer | codes issued in the window; capped by `PASSWORD_RESET_CODE_MAX_PER_HOUR` (5) |
+
+When the multi-clinic roadmap moves the password to a personal account, this table and `users.reset_token_*` move with it.
 
 ### 6.3 `entitlements` (one row per tenant)
 Shape from `stripe-billing-entitlements`, extended with the explicit product flags the
@@ -798,6 +807,10 @@ Migration **`0001`** creates `tenants`/`users`/`entitlements`/`demo_requests`; m
 | `MODE_RESOLVE_FALLBACK_HOURS` | `24` | fallback for the `ativo` transition when secretaria's Coexistence "mode resolved" signal never arrives: a tenant whose `connected_at` is older than this many hours is treated as mode-resolved anyway, so a stalled signal can never permanently block activation (§16.1, `onboarding_sync.refresh_config_status`) |
 | `CONFIG_STATUS_PULL_TTL_SECONDS` | `60` | throttle (in-process TTL cache, per-tenant) on how often `GET /doctor/onboarding` / `GET /doctor/professionals` re-pull secretaria's config-status (§16.5) |
 | `INVITE_TOKEN_EXPIRE_HOURS` | `72` | lifetime of a professional-invite token (`POST /doctor/professionals/invites` → `POST /auth/exchange-invite-token`, §16.3); same hashed-at-rest/single-use scheme as the onboarding token, expressed in hours since a human is expected to check an invite email within days, not minutes |
+| `PASSWORD_RESET_CODE_EXPIRE_MINUTES` / `PASSWORD_RESET_CODE_MAX_ATTEMPTS` / `PASSWORD_RESET_CODE_MAX_PER_HOUR` / `PASSWORD_RESET_EMAIL_RATE_LIMIT_PER_MIN` | `10` / `5` / `5` / `3` | e-mailed reset code rules, §2.6 |
+| `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES` | `15` | reset token minted by a correct code, §2.6 |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_USE_TLS` | `""` / `587` / `""` / `""` / `true` | brain-api's own SMTP for authentication e-mail (`services/mailer.py`, TASK-056): reset code, staff temporary password, professional/secretary invite, patient access code. **Empty `SMTP_HOST` = mail off** (sends return False, startup logs `email_smtp_not_configured`). Set only in the deployed service |
+| `EMAIL_FROM_ADDRESS` / `EMAIL_FROM_NAME` | `""` / `Brain` | From identity of those e-mails (`EMAIL_FROM_ADDRESS` falls back to `SMTP_USERNAME`) |
 
 `get_settings()` is `@lru_cache`d. `cors_origins` is a parsed-list property.
 
@@ -2052,3 +2065,37 @@ user and therefore no address, so secretarIA's booking-notification hook
 (`plugins/professional_notification.py`) is a logged no-op for them. Both frontends'
 professionals screen states this explicitly on the row ("Sem e-mail vinculado — não
 recebe aviso de nova consulta") rather than leaving it blank.
+
+## TASK-054 — Clinic team and restricted staff first access (local)
+
+Additive identity fields: `is_owner`, `is_manager`, `requires_password_change`,
+`credential_version`. Normal authentication re-reads live user/tenant/permissions;
+revoked or pending users and stale versions cannot use operational endpoints.
+Legacy tokens without a version remain compatible for version-zero users.
+
+`POST /auth/token` with a temporary password returns `requires_password_change=true`,
+a `staff_password_setup` token (maximum 10 minutes) and the HttpOnly
+`__Host-staff_setup` cookie, without a normal refresh. `/auth/first-access/resume`
+requires the browser CSRF header; `/auth/first-access/complete` accepts only the
+restricted bearer and `{new_password}`, performs versioned completion, and returns
+the normal session. Personal password must differ from temporary and fit bcrypt's
+72-byte ceiling. Temporary passwords expire in 72 hours. Existing accounts and
+already-issued legacy invite links are not forced into the new flow.
+
+`GET /doctor/team`, `POST /doctor/team/invites`, and per-user management/resend/revoke
+routes require live management of the caller's clinic. Inputs admit `doctor`,
+`manager`, `secretary`; only doctors may optionally carry management. No ownership
+transfer, cross-clinic email association, or credential in a response. Owner/last
+active manager are protected. Revocation preserves appointments/professional data.
+
+`GET /doctor/professionals?include_inactive=true` is a fresh complete roster.
+Foreground professional creation sends additive `interactive=true` to secretaria;
+old bootstrap calls remain unchanged. All interactive linkage checks existing owners.
+
+New `staff_temporary_password` mail template uses encrypted Redis job envelopes and
+versioned internal delivery callbacks under the mesh key. Queue acceptance is not
+delivery. Configuration `BRAIN_MESSAGE_PUBLIC_URL` points to the unified portal root;
+the staff login path `/login` is appended in code. Missing/invalid configuration refuses creation.
+
+Implementation, validation, publication order and limits:
+`docs/CHECKPOINT_equipe_primeiro_acesso.md`. Local only; no deployment authorized.

@@ -59,6 +59,51 @@ from brain_api.config import get_settings
 # `__Host-` is part of the NAME, not a flag: the browser enforces the prefix's
 # rules on set, and sends it back under this exact string.
 REFRESH_COOKIE_NAME = "__Host-refresh_token"
+STAFF_SETUP_COOKIE_NAME = "__Host-staff_setup"
+STAFF_ACCOUNT_COOKIE_NAME = "__Host-staff_account"
+
+
+def set_staff_account_cookie(response: Response, raw: str) -> None:
+    settings = get_settings()
+    response.set_cookie(
+        STAFF_ACCOUNT_COOKIE_NAME,
+        raw,
+        path="/",
+        domain=None,
+        secure=True,
+        httponly=True,
+        samesite="lax",
+        max_age=(
+            settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
+            if settings.REFRESH_COOKIE_PERSISTENT
+            else None
+        ),
+    )
+
+
+def clear_staff_account_cookie(response: Response) -> None:
+    response.delete_cookie(
+        STAFF_ACCOUNT_COOKIE_NAME, path="/", domain=None, secure=True, httponly=True, samesite="lax"
+    )
+
+
+def set_staff_setup_cookie(response: Response, token: str, expires_in: int) -> None:
+    response.set_cookie(
+        STAFF_SETUP_COOKIE_NAME,
+        token,
+        max_age=expires_in,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def clear_staff_setup_cookie(response: Response) -> None:
+    response.delete_cookie(
+        STAFF_SETUP_COOKIE_NAME, path="/", secure=True, httponly=True, samesite="lax"
+    )
+
 
 # The header a browser client must send when it authenticates with the cookie.
 # Value is a constant, not a secret — its security comes from the fact that only

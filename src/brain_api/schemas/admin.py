@@ -213,6 +213,45 @@ class EntitlementPatchIn(BaseModel):
         return v
 
 
+#: Ceiling for an admin-set professional capacity. A typo (e.g. 1000) must be refused,
+#: not silently granted; raise it here if a real clinic ever needs more.
+ADMIN_MAX_PROFESSIONALS = 50
+
+#: Why a clinic's professional capacity cannot be edited by the admin right now.
+#: `stripe_managed` — a Stripe subscription owns the row (the next webhook would undo the
+#: edit). `secretaria_disabled` — the cap only means something to the secretarIA.
+CapacityBlockedReason = Literal["stripe_managed", "secretaria_disabled"]
+
+
+class ProfessionalCapacityIn(BaseModel):
+    """`PUT /admin/tenants/{id}/professional-capacity` — the ONE field the admin sets.
+
+    Closed body (`extra="forbid"`): the add-on flag and every other limit are derived
+    server-side, never accepted from the client.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_professionals: int = Field(ge=1, le=ADMIN_MAX_PROFESSIONALS)
+
+
+class ProfessionalCapacityOut(BaseModel):
+    """How many professionals a clinic may keep active, and how many it has now.
+
+    `active_professionals` is read live from the secretarIA roster; `None` means it could
+    not be read (secretarIA unconfigured/unreachable, or the product is off) — never 0.
+    `editable` is False exactly when `blocked_reason` is set.
+    """
+
+    tenant_id: UUID
+    max_professionals: int
+    multi_professional: bool
+    active_professionals: int | None
+    editable: bool
+    blocked_reason: CapacityBlockedReason | None = None
+    max_allowed: int = ADMIN_MAX_PROFESSIONALS
+
+
 # --- Users -----------------------------------------------------------------
 
 

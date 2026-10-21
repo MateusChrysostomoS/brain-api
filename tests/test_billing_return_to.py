@@ -20,6 +20,7 @@ from tests.test_rbac import OWNER_B_EMAIL, OWNER_B_PASSWORD, _bearer, _token
 BASE = "https://brain.example.com/checkout/sucesso?session_id={CHECKOUT_SESSION_ID}"
 FAKE_URL = "https://checkout.stripe.test/session"
 CONFIGURED_SUCCESS = "http://localhost:3000/app?checkout=success"
+CONSOLE_SUCCESS = "http://localhost:3000/checkout/sucesso/?session_id={CHECKOUT_SESSION_ID}"
 
 
 # --- Pure helpers ------------------------------------------------------------------
@@ -110,7 +111,7 @@ async def test_return_to_console_appends_origem_and_produto_for_a_precheck_plan(
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"url": FAKE_URL}
     assert (
-        captured["data"]["success_url"] == CONFIGURED_SUCCESS + "&origem=console&produto=precheck"
+        captured["data"]["success_url"] == CONSOLE_SUCCESS + "&origem=console&produto=precheck"
     )
     assert captured["data"]["cancel_url"] == "http://localhost:3000/app?checkout=cancelled"
 
@@ -122,7 +123,7 @@ async def test_return_to_console_on_a_plan_without_precheck_has_no_produto(clien
     resp = await _checkout(client, "secretaria_basico", return_to="console")
 
     assert resp.status_code == 200, resp.text
-    assert captured["data"]["success_url"] == CONFIGURED_SUCCESS + "&origem=console"
+    assert captured["data"]["success_url"] == CONSOLE_SUCCESS + "&origem=console"
 
 
 async def test_without_return_to_the_success_url_is_exactly_the_configured_one(client, monkeypatch):

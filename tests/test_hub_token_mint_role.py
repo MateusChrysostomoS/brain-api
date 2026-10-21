@@ -5,8 +5,13 @@ doctor (`is_owner` + `is_manager`), a plain doctor, and a secretary. A `manager`
 added here because that fixture has none.
 """
 
-import pytest
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
+import pytest
+from sqlalchemy import select
+
+import brain_api.api.internal as internal_api
 from brain_api.core.security import decode_hub_token, hash_password
 from brain_api.models import User
 from brain_api.models.user import ROLE_MANAGER
@@ -85,6 +90,36 @@ async def test_request_body_cannot_upgrade_the_minted_role(client):
     assert claims["role"] == "secretary"
     assert claims["is_owner"] is False
     assert claims["is_manager"] is False
+
+
+@pytest.mark.parametrize("change", ["revoked", "credential_version"])
+async def test_role_bearing_hub_token_stops_working_when_staff_access_changes(
+    client, monkeypatch, change
+):
+    """The payment role from the feature must retain main's live revocation checks."""
+    minted = await _mint(client, OWNER_EMAIL, OWNER_PASSWORD)
+    assert minted.status_code == 200
+    hub_token = minted.json()["hub_token"]
+    assert decode_hub_token(hub_token)["role"] == "doctor"
+    monkeypatch.setattr(internal_api, "get_settings", lambda: SimpleNamespace(
+        SECRETARIA_API_KEY="pair-key", SECRETARIA_API_KEY_PREVIOUS="",
+    ))
+    request = {
+        "headers": {"X-Internal-Api-Key": "pair-key"},
+        "json": {"token": hub_token},
+    }
+    verified = await client.post("/internal/secretaria/hub-token/verify", **request)
+    assert verified.status_code == 200 and verified.json()["active"] is True
+
+    async with client.sessionmaker() as session, session.begin():
+        actor = await session.scalar(select(User).where(User.email == OWNER_EMAIL))
+        if change == "revoked":
+            actor.access_revoked_at = datetime.now(UTC)
+        else:
+            actor.credential_version += 1
+
+    refused = await client.post("/internal/secretaria/hub-token/verify", **request)
+    assert refused.status_code == 200 and refused.json()["active"] is False
 
 
 async def test_platform_admin_gets_no_hub_token(client):

@@ -60,6 +60,18 @@ async def create_admin(argv: list[str]) -> int:
 
     async with async_session_factory() as session, session.begin():
         existing = await session.scalar(select(User).where(User.email == email))
+        from brain_api.services.staff_accounts import email_registered
+
+        if (
+            existing
+            and (
+                existing.role != ROLE_ADMIN or existing.account_id or existing.tenant_id is not None
+            )
+            or not existing
+            and await email_registered(session, email)
+        ):
+            print("[error] staff identity cannot become a platform admin by email", file=sys.stderr)
+            return 1
 
         if existing is not None:
             existing.role = ROLE_ADMIN

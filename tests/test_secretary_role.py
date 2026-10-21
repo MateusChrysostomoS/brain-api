@@ -22,6 +22,7 @@ unset (conftest) so proxy routes degrade instead of hitting the network.
 
 from uuid import uuid4
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
@@ -209,23 +210,19 @@ async def test_secretary_can_pause_onboarding_but_a_plain_doctor_still_cannot(cl
 # --- REACHES: team management ----------------------------------------------
 
 
-async def test_secretary_invites_a_secretary_without_creating_a_professional(client, monkeypatch):
+@pytest.mark.usefixtures("legacy_staff_invites")
+async def test_owner_invites_a_secretary_without_creating_a_professional(
+    client, monkeypatch, mail_spy
+):
     """The invite mirrors the professional one EXCEPT for the secretaria round-trip: no
     `professionals` row, no `professional_id`, and the reused `professional_invite`
     template."""
-    emails: list[dict] = []
-
-    async def fake_email(to, template, variables):
-        emails.append({"to": to, "template": template, "variables": variables})
-        return True
-
     async def must_not_be_called(*args, **kwargs):
         raise AssertionError("create_professional must NOT be called for a secretary")
 
-    monkeypatch.setattr(secretaria_provisioning, "send_notification_email", fake_email)
     monkeypatch.setattr(secretaria_provisioning, "create_professional", must_not_be_called)
 
-    token = await _token(client, SECRETARY_EMAIL, SECRETARY_PASSWORD)
+    token = await _token(client, OWNER_EMAIL, OWNER_PASSWORD)
     resp = await client.post(
         "/doctor/secretaries/invites",
         json={"name": "Nova Recepção", "email": "Nova@Clinic.com"},
@@ -245,11 +242,12 @@ async def test_secretary_invites_a_secretary_without_creating_a_professional(cli
     assert invited.tenant_id == client.tenant_id
     assert invited.invite_token_hash is not None
 
-    assert len(emails) == 1
-    assert emails[0]["to"] == "nova@clinic.com"
-    # Reused on purpose: an unknown template id is a SILENT no-send in secretaria.
-    assert emails[0]["template"] == "professional_invite"
-    assert emails[0]["variables"]["clinic_name"] == CLINIC
+    # Sent by brain-api's own mailer since TASK-056 (services/mailer.py).
+    assert len(mail_spy.calls) == 1
+    to, template, variables = mail_spy.last
+    assert to == "nova@clinic.com"
+    assert template == "professional_invite"
+    assert variables["clinic_name"] == CLINIC
 
     # Duplicate email is a clean 409, same contract as the professional invite.
     dup = await client.post(
@@ -261,8 +259,8 @@ async def test_secretary_invites_a_secretary_without_creating_a_professional(cli
     assert dup.json()["detail"] == "email_already_registered"
 
 
-async def test_secretary_can_invite_a_professional(client, monkeypatch):
-    """Team management is not limited to inviting peers — a secretary invites doctors."""
+async def test_secretary_cannot_invite_a_professional(client, monkeypatch):
+    """Reception access cannot grant other people access to the clinic."""
     monkeypatch.setattr(secretaria_provisioning, "send_notification_email", _noop_async(True))
     monkeypatch.setattr(
         secretaria_provisioning,
@@ -275,9 +273,10 @@ async def test_secretary_can_invite_a_professional(client, monkeypatch):
         json={"name": "Dr. Novo", "email": "novo@clinic.com"},
         headers=_bearer(token),
     )
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == 403
 
 
+@pytest.mark.usefixtures("legacy_staff_invites")
 async def test_invited_secretary_completes_the_invite_flow(client, monkeypatch):
     """End to end: invite -> redeem the single-use token -> set a password -> log in with
     the new role. `/auth/exchange-invite-token` is role-agnostic, which this proves."""

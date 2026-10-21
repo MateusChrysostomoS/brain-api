@@ -15,7 +15,6 @@ Run with:  make seed-admin
 import asyncio
 from collections.abc import Callable
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
@@ -56,8 +55,9 @@ async def seed_admin(
 
     factory = session_factory or async_session_factory
     async with factory() as session, session.begin():
-        existing = await session.scalar(select(User).where(User.email == email))
-        if existing is not None:
+        from brain_api.services.staff_accounts import email_registered
+
+        if await email_registered(session, email):
             # Idempotent: nothing to do (do not touch an existing row or raise).
             logger.info("seed_admin_skipped_exists", email=email)
             return False

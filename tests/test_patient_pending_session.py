@@ -379,15 +379,11 @@ async def test_internal_inline_contract_refuses_missing_email_and_cross_tenant_h
 
 
 async def test_internal_inline_request_never_promises_an_unqueued_code(
-    pclient, monkeypatch
+    pclient, monkeypatch, mail_spy
 ):
-    """A notification refusal is 503 and leaves the Portal outside code mode."""
-    from brain_api.services import secretaria_provisioning
-
-    async def _refused(to, template, variables):
-        return False
-
-    monkeypatch.setattr(secretaria_provisioning, "send_notification_email", _refused)
+    """A refused e-mail (brain-api's own mailer since TASK-056) is 503 and leaves the
+    Portal outside code mode."""
+    mail_spy.result = False
     client, sessionmaker, seed = pclient
     opened = (await _open(client, sessionmaker, seed.both)).json()
     assert (
@@ -402,6 +398,7 @@ async def test_internal_inline_request_never_promises_an_unqueued_code(
         opened["patient_ref"],
     )
     assert requested.status_code == 503
+    assert mail_spy.of("patient_access_otp")
     progress = await client.get(
         "/patient-access/pending/status",
         headers=_bearer(opened["pending_token"]),

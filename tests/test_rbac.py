@@ -610,10 +610,8 @@ async def test_legacy_tenant_owner_token_passes_doctor_and_owner_gates(client):
     assert pause_resp.status_code == 200, pause_resp.text
 
 
-async def test_legacy_tenant_staff_token_passes_doctor_not_owner_gate(client):
-    """A legacy `tenant_staff` token passes `require_doctor` but stays 403 on the
-    owner-only pause route — `require_owner` denies before touching the DB, so an
-    unresolvable tenant/user id is fine here."""
+async def test_legacy_tenant_staff_unknown_user_is_rejected(client):
+    """Signature alone cannot authenticate a deleted or unresolvable staff user."""
     settings = get_settings()
     legacy_claims = {
         "sub": str(uuid4()),
@@ -626,7 +624,7 @@ async def test_legacy_tenant_staff_token_passes_doctor_not_owner_gate(client):
     pause_resp = await client.post(
         "/doctor/onboarding/pause", headers=_bearer(legacy_token), json={"retries": True}
     )
-    assert pause_resp.status_code == 403
+    assert pause_resp.status_code == 401
 
 
 async def test_login_response_claims_carry_is_owner_and_is_manager(client):

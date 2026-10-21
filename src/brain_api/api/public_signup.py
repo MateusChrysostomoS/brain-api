@@ -119,7 +119,9 @@ async def register_signup(
         )
 
     registration = await signup_service.register_signup(session, payload)
-    refresh = await issue_refresh_token(session, registration.user.id)
+    refresh = await issue_refresh_token(
+        session, registration.user.id, expected_version=registration.user.credential_version
+    )
     logger.info(
         "signup_intent_created",
         intent_id=str(registration.intent.id),
@@ -148,9 +150,7 @@ async def register_signup(
     responses={
         404: {"description": "Unknown signup intent."},
         409: {
-            "description": (
-                "intent_not_pending | plan_change_not_allowed | addon_not_available"
-            )
+            "description": ("intent_not_pending | plan_change_not_allowed | addon_not_available")
         },
         422: {"description": "Bad catalog selection (unknown id / not exactly one plan)."},
         429: {"description": "Rate limited (per-IP anti-spam)."},

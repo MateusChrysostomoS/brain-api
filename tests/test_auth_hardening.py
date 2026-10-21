@@ -15,7 +15,7 @@ from jose import jwt as jose_jwt
 import brain_api.api.auth as auth_api
 import brain_api.api.internal as internal_api
 import brain_api.core.security as security
-from brain_api.api.deps import get_current_principal
+from brain_api.api.deps import get_token_principal as get_current_principal
 from brain_api.config import get_settings
 from brain_api.core.ratelimit import SlidingWindowLimiter
 from brain_api.core.security import (
@@ -238,7 +238,8 @@ async def test_internal_hub_token_verify_key_and_states(client, monkeypatch):
         json={"plan": "complete_clinic_combo", "status": "active"},
     )
     assert patch.status_code == 200, patch.text
-    hub_token = create_hub_token(tenant_id=tenant_a_id, actor_user_id="owner-a")
+    owner = await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD)
+    hub_token = create_hub_token(tenant_id=tenant_a_id, actor_user_id=decode_token(owner)["sub"])
 
     entitled = await client.post(
         "/internal/secretaria/hub-token/verify",
@@ -518,7 +519,7 @@ async def test_internal_hub_token_verify_passes_professional_id(client, monkeypa
     assert patch.status_code == 200, patch.text
     hub_token = create_hub_token(
         tenant_id=tenant_a_id,
-        actor_user_id="owner-a",
+        actor_user_id=decode_token(await _token(client, OWNER_A_EMAIL, OWNER_A_PASSWORD))["sub"],
         professional_id=str(OWNER_A_PROFESSIONAL_ID),
     )
 

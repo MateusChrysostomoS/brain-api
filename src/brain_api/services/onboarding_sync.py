@@ -299,6 +299,11 @@ class _ConfigStatusCacheEntry:
 _config_status_cache: dict[UUID, _ConfigStatusCacheEntry] = {}
 
 
+def invalidate_config_status(tenant_id: UUID) -> None:
+    """Foreground mutations must not return a pre-mutation roster."""
+    _config_status_cache.pop(tenant_id, None)
+
+
 def get_cached_config_status(tenant_id: UUID) -> dict[str, Any] | None:
     """The last successfully-pulled config-status payload for a tenant (this process),
     or `None` if it has never been pulled. Freshness is governed by

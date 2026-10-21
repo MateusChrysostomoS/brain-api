@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # --- Application ---
     APP_ENV: str = "dev"
     LOG_LEVEL: str = "INFO"
+    # Personal staff accounts and multi-clinic memberships: on by default (no env var needed).
+    STAFF_MULTI_CLINIC_ENABLED: bool = True
+    STAFF_ACCOUNT_CREDENTIALS_ENABLED: bool = True
 
     # --- Database (asyncpg driver) — brain's own database ---
     DATABASE_URL: str = "postgresql+asyncpg://brain:brain@localhost:5432/brain"
@@ -176,16 +179,7 @@ class Settings(BaseSettings):
     # Stripe price ids, e.g. {"secretaria_basico": "price_123", "ehr": "price_456"}.
     # Per-environment (test vs live prices); the catalog itself never hardcodes one.
     STRIPE_PRICE_MAP: str = "{}"
-    # Where Stripe Checkout / the Billing Portal send the browser back to.
-    STRIPE_CHECKOUT_SUCCESS_URL: str = "http://localhost:3000/app?checkout=success"
-    STRIPE_CHECKOUT_CANCEL_URL: str = "http://localhost:3000/app?checkout=cancelled"
-    # Cold-signup checkouts land on a PUBLIC onboarding page (the buyer has no session
-    # yet, so /app would bounce them to /login). Empty = fall back to the shared URLs
-    # above. The success URL should carry Stripe's {CHECKOUT_SESSION_ID} template so the
-    # page can poll GET /public/onboarding-status.
-    STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL: str = ""
-    STRIPE_SIGNUP_CHECKOUT_CANCEL_URL: str = ""
-    STRIPE_PORTAL_RETURN_URL: str = "http://localhost:3000/app"
+    # Payment return routes are derived from FRONTEND_BASE_URL below.
     # Stripe API base + client timeout (base overridable only for local stubs).
     STRIPE_API_BASE: str = "https://api.stripe.com"
     STRIPE_TIMEOUT_SECONDS: float = 15.0
@@ -291,9 +285,12 @@ class Settings(BaseSettings):
     # portal. Not a secret (Meta's JS SDK takes the same string client-side) — unlike
     # META_APP_SECRET, safe to echo back.
     META_ES_COEXISTENCE_FEATURE_TYPE: str = "whatsapp_business_app_onboarding"
-    # Base URL of the brain-frontend portal — used to build the professional-invite link
-    # (POST /doctor/professionals/invites -> "{FRONTEND_BASE_URL}/convite?token=...").
+    # Public base of brain-frontend: payment returns, legacy invites and password reset.
     FRONTEND_BASE_URL: str = "http://localhost:3000"
+    # Public origin of the unified portal: staff /login and patient /clinicas/.
+    # Never inferred from a browser-supplied Origin. Empty disables invite links.
+    # Defaults to the deployed Brain-Message frontend; override with the env var for a custom domain.
+    BRAIN_MESSAGE_PUBLIC_URL: str = "https://precheckv2-brain-message-frontend.cpux9k.easypanel.host"
     # Fallback for the ativo transition when secretaria's Coexistence "mode resolved"
     # signal (history/smb_app_state_sync webhook fields, secretaria-side) never arrives:
     # a tenant whose WhatsApp `connected_at` is older than this many hours is treated as
@@ -312,10 +309,31 @@ class Settings(BaseSettings):
     # Lifetime of a password-reset token (POST /auth/password-reset/request ->
     # /confirm). Expressed in MINUTES, not hours like the invite above: a reset link is
     # a credential-recovery secret sitting in an inbox, so it is deliberately the
-    # shortest-lived token in the service. 30 minutes matches what PreCheck's own reset
-    # flow has used since it shipped (app/services/password_reset.py), so a user who has
-    # accounts in both products sees the same window.
-    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
+    # shortest-lived token in the service. 15 minutes: since TASK-056 it is minted only
+    # AFTER a correct e-mailed code, so it covers just the new-password screen.
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 15
+
+    # --- Password reset by e-mailed code (POST /auth/password-reset/request ->
+    # /verify-code -> /confirm). A 6-digit code IS guessable: what protects it is the
+    # per-code attempt ceiling, the per-user hourly issue cap and the short expiry —
+    # together at most 25 guesses per hour against 10^6 values.
+    PASSWORD_RESET_CODE_EXPIRE_MINUTES: int = 10
+    PASSWORD_RESET_CODE_MAX_ATTEMPTS: int = 5
+    PASSWORD_RESET_CODE_MAX_PER_HOUR: int = 5
+    # Per-ADDRESS request bucket (per minute), on top of the per-IP auth bucket.
+    PASSWORD_RESET_EMAIL_RATE_LIMIT_PER_MIN: int = 3
+
+    # --- Outbound authentication e-mail (services/mailer.py) ---
+    # brain-api's own SMTP. Empty SMTP_HOST = mail OFF: every send returns False and
+    # logs `email_not_configured`; startup logs `email_smtp_not_configured` once.
+    # Values live ONLY in the deployed service settings (EasyPanel), never in the repo.
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_USE_TLS: bool = True
+    EMAIL_FROM_ADDRESS: str = ""
+    EMAIL_FROM_NAME: str = "Brain"
 
     # --- Brain-Message patient access (OTP by e-mail + the patient session) ---
     # The patient's end of the second channel. A patient is NOT a `users` row: they prove
@@ -441,10 +459,27 @@ class Settings(BaseSettings):
     # Longer than SECRETARIA_TIMEOUT_SECONDS because the product stores the bytes before it
     # answers; httpx applies it per network operation, not to the whole transfer.
     ATTACHMENT_UPSTREAM_TIMEOUT_SECONDS: float = 60.0
-    # Public base URL of the Brain-Message patient portal (e.g. `https://portal.example`),
-    # used ONLY to build the invite link a clinic reads (`core/invite_codes.py::invite_link`).
-    # Not a secret. Empty = no link; the short code alone still works.
-    BRAIN_MESSAGE_PORTAL_URL: str = ""
+
+    @property
+    def STRIPE_CHECKOUT_SUCCESS_URL(self) -> str:
+        return f"{self.FRONTEND_BASE_URL.strip().rstrip('/')}/app?checkout=success"
+
+    @property
+    def STRIPE_CHECKOUT_CANCEL_URL(self) -> str:
+        return f"{self.FRONTEND_BASE_URL.strip().rstrip('/')}/app?checkout=cancelled"
+
+    @property
+    def STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL(self) -> str:
+        base = self.FRONTEND_BASE_URL.strip().rstrip("/")
+        return f"{base}/checkout/sucesso/?session_id={{CHECKOUT_SESSION_ID}}"
+
+    @property
+    def STRIPE_SIGNUP_CHECKOUT_CANCEL_URL(self) -> str:
+        return f"{self.FRONTEND_BASE_URL.strip().rstrip('/')}/checkout/cancelado/"
+
+    @property
+    def STRIPE_PORTAL_RETURN_URL(self) -> str:
+        return f"{self.FRONTEND_BASE_URL.strip().rstrip('/')}/app"
 
     @property
     def cors_origins(self) -> list[str]:

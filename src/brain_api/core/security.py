@@ -12,6 +12,7 @@ Follows the auth-jwt-multitenant skill:
 """
 
 import hashlib
+import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -20,6 +21,36 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 
 from brain_api.config import get_settings
+
+
+def staff_token_key(scope: str, secret: str) -> str:
+    """Purpose-separated keys: permissive shared-key consumers cannot accept staff proof."""
+    salts = {
+        "staff_account": b"brain-api/staff-account/v1",
+        "staff_password_setup": b"brain-api/staff-password-setup/v1",
+    }
+    if not secret or scope not in salts:
+        raise ValueError("staff_auth_not_configured")
+    return hmac.new(secret.encode(), salts[scope], hashlib.sha256).hexdigest()
+
+
+def decode_staff_token(token: str, scope: str, *, allow_legacy: bool = False) -> dict | None:
+    settings = get_settings()
+    for secret in (settings.SECRET_KEY, settings.SECRET_KEY_PREVIOUS):
+        if not secret:
+            continue
+        try:
+            claims = jwt.decode(token, staff_token_key(scope, secret), algorithms=[ALGORITHM])
+        except JWTError:
+            continue
+        if claims.get("scope") == scope:
+            return claims
+    if allow_legacy:
+        claims = decode_token(token)
+        if claims and claims.get("scope") == scope:
+            return claims
+    return None
+
 
 ALGORITHM = "HS256"
 
@@ -53,6 +84,8 @@ def create_access_token(
     professional_id: str | None = None,
     is_owner: bool = False,
     is_manager: bool = False,
+    credential_version: int = 0,
+    account_session_id: str | None = None,
 ) -> str:
     """Mint a short-lived access token. `sub` is the brain user id (UUID string).
 
@@ -73,11 +106,14 @@ def create_access_token(
         "role": role,  # admin | doctor | manager (legacy: tenant_owner | tenant_staff)
         "is_owner": is_owner,  # the clinic owner (role-taxonomy round)
         "is_manager": is_manager,  # "also a manager" (role-taxonomy round)
+        "credential_version": credential_version,
         "iat": now,
         "exp": now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
     }
     if professional_id:
         claims["professional_id"] = professional_id
+    if account_session_id:
+        claims["account_sid"] = account_session_id
     return jwt.encode(claims, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -138,6 +174,8 @@ def create_hub_token(
     role: str | None = None,
     is_owner: bool = False,
     is_manager: bool = False,
+    credential_version: int = 0,
+    account_session_id: str | None = None,
 ) -> str:
     """Mint the tenant-scoped token the doctor portal presents to secretarIA's hub.
 
@@ -164,6 +202,7 @@ def create_hub_token(
         "sub": tenant_id,  # the tenant the hub session acts for
         "scope": HUB_TOKEN_SCOPE,
         "act": actor_user_id,  # audit: which doctor opened the hub session
+        "credential_version": credential_version,
         "iat": now,
         "exp": now + timedelta(minutes=settings.HUB_TOKEN_EXPIRE_MINUTES),
     }
@@ -173,6 +212,8 @@ def create_hub_token(
         claims["role"] = role
         claims["is_owner"] = bool(is_owner)
         claims["is_manager"] = bool(is_manager)
+    if account_session_id:
+        claims["account_sid"] = account_session_id
     return jwt.encode(claims, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 

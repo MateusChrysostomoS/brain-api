@@ -32,9 +32,16 @@ from brain_api.schemas.admin import (
     EntitlementPatchIn,
     ImpersonationTokenOut,
     Page,
+    ProfessionalCapacityIn,
+    ProfessionalCapacityOut,
 )
 from brain_api.schemas.secretaria import SecretariaResetIn
-from brain_api.services import admin as admin_service, precheck_client, secretaria_client
+from brain_api.services import (
+    admin as admin_service,
+    precheck_client,
+    professional_capacity,
+    secretaria_client,
+)
 
 logger = get_logger(__name__)
 
@@ -163,6 +170,51 @@ async def patch_tenant_entitlements(
         tenant_id=str(tenant_id),
     )
     return result
+
+
+_CAPACITY_RESPONSES = {
+    404: {"description": "Tenant not found."},
+}
+
+
+@router.get(
+    "/tenants/{tenant_id}/professional-capacity",
+    response_model=ProfessionalCapacityOut,
+    summary="Read how many professionals a clinic may keep active",
+    responses=_CAPACITY_RESPONSES,
+)
+async def get_professional_capacity(
+    tenant_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> ProfessionalCapacityOut:
+    """The cap (`limits.professionals`), the add-on flag and the live active count."""
+    return await professional_capacity.get_capacity(session, tenant_id)
+
+
+@router.put(
+    "/tenants/{tenant_id}/professional-capacity",
+    response_model=ProfessionalCapacityOut,
+    summary="Set how many professionals a clinic may keep active",
+    responses={
+        **_CAPACITY_RESPONSES,
+        409: {
+            "description": (
+                "`stripe_managed` (a subscription owns the row), `secretaria_disabled`, "
+                "or `below_active_professionals` (cap under the live roster)."
+            )
+        },
+    },
+)
+async def put_professional_capacity(
+    tenant_id: UUID,
+    body: ProfessionalCapacityIn,
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_session),
+) -> ProfessionalCapacityOut:
+    """Set the cap and switch `multi_professional` on. Idempotent; never deactivates."""
+    return await professional_capacity.set_capacity(
+        session, tenant_id, body.max_professionals, actor_user_id=principal.user_id
+    )
 
 
 # --- Users -----------------------------------------------------------------

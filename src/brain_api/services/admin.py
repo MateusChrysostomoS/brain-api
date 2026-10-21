@@ -299,7 +299,9 @@ async def create_tenant(
     409 if the email is already registered, checked up front and on the unique constraint.
     """
     email = payload.email.lower()
-    if await session.scalar(select(User).where(User.email == email)) is not None:
+    from brain_api.services.staff_accounts import adopt_new_user, email_registered
+
+    if await email_registered(session, email):
         raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
 
     tenant = Tenant(clinic_name=payload.clinic_name, is_test=True)
@@ -327,6 +329,8 @@ async def create_tenant(
     ent.manual_products = catalog.families_enabled(ent)  # no Stripe, ever: every family is manual
     session.add(ent)
     try:
+        await session.flush()
+        await adopt_new_user(session, user)
         await session.commit()
     except IntegrityError:
         # A concurrent create raced the check above; users.email unique is the real guard.
@@ -418,9 +422,20 @@ async def update_entitlement(
         ent.secretaria_enabled = data["secretaria_enabled"]
 
     if data.get("addons") is not None:
+        # A professionals cap the admin set (`services/professional_capacity.py`) survives
+        # an unrelated add-on edit while `multi_professional` stays on. A plan patch in the
+        # same request is a deliberate reset, so it does not carry the cap over.
+        multi = catalog.ADDON_MULTI_PROFESSIONAL
+        kept_cap = (
+            (ent.limits or {}).get(catalog.LIMIT_PROFESSIONALS)
+            if data.get("plan") is None and (ent.addons or {}).get(multi)
+            else None
+        )
         # Normalize to the full keyset: plan defaults, then the patched flags on top.
         ent.addons = {**catalog.default_addons(ent.plan), **data["addons"]}
         ent.limits = catalog.compute_limits(ent.plan, ent.addons)
+        if kept_cap is not None and ent.addons.get(multi):
+            ent.limits = {**ent.limits, catalog.LIMIT_PROFESSIONALS: kept_cap}
 
     if data.get("limits") is not None:
         # Manual override merges over the (re)computed limits — an admin can raise one
@@ -497,7 +512,9 @@ async def create_user(session: AsyncSession, payload: AdminUserCreateIn) -> Admi
     tooling is a deliberate, explicit act (the admin UI does not send it today).
     """
     email = payload.email.lower()
-    if await session.scalar(select(User).where(User.email == email)) is not None:
+    from brain_api.services.staff_accounts import adopt_new_user, email_registered
+
+    if await email_registered(session, email):
         raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
 
     clinic_name: str | None = None
@@ -519,7 +536,13 @@ async def create_user(session: AsyncSession, payload: AdminUserCreateIn) -> Admi
         is_owner=payload.is_owner,
     )
     session.add(user)
-    await session.commit()
+    try:
+        await session.flush()
+        await adopt_new_user(session, user)
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(409, "Email already registered") from None
     await session.refresh(user)
     return AdminUserOut(
         id=user.id,
@@ -593,11 +616,16 @@ async def issue_impersonation_token(session: AsyncSession, target_email: str) ->
     writes); the caller logs the impersonation.
     """
     email = target_email.strip().lower()
-    user = await session.scalar(select(User).where(User.email == email))
+    users = list(await session.scalars(select(User).where(User.email == email)))
+    # E-mail alone no longer names a clinical context for impersonation.
+    user = users[0] if len(users) == 1 else None
     if (
         user is None
         or user.tenant_id is None
         or user.role not in (ROLE_DOCTOR, ROLE_MANAGER, *_LEGACY_DOCTOR_ROLES)
+        or user.requires_password_change
+        or user.access_revoked_at is not None
+        or user.membership_pending
     ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "impersonation_target_unavailable")
     tenant = await session.get(Tenant, user.tenant_id)
@@ -612,6 +640,7 @@ async def issue_impersonation_token(session: AsyncSession, target_email: str) ->
         professional_id=str(user.professional_id) if user.professional_id else None,
         is_owner=user.is_owner,
         is_manager=user.is_manager,
+        credential_version=user.credential_version,
     )
     out = ImpersonationTokenOut(
         access_token=token,

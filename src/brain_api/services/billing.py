@@ -1257,8 +1257,15 @@ async def create_checkout_session(
         raise HTTPException(status.HTTP_409_CONFLICT, block)
 
     plan = catalog.get_plan(selection.plan_id)
+    # Ordinary purchases return to the account; console purchases use the public
+    # return page's console branch, which skips cold-signup status polling.
+    return_url = (
+        settings.STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL
+        if return_to == "console"
+        else settings.STRIPE_CHECKOUT_SUCCESS_URL
+    )
     success_url = success_url_for(
-        settings.STRIPE_CHECKOUT_SUCCESS_URL,
+        return_url,
         return_to,
         carries_precheck=bool(plan is not None and plan.precheck),
     )

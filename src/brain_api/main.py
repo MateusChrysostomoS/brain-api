@@ -27,11 +27,15 @@ from brain_api.api import (
     public_signup,
     public_waitlist,
     sso,
+    staff_account,
+    staff_first_access,
+    team,
     tenant_patient_cleanup,
 )
 from brain_api.api.portal import internal as portal_internal, patient_access
 from brain_api.config import get_settings
 from brain_api.core.logging import get_logger, setup_logging
+from brain_api.services import mailer
 
 setup_logging()
 logger = get_logger(__name__)
@@ -41,6 +45,10 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logger.info("api_starting", env=settings.APP_ENV)
+    if not mailer.is_configured():
+        # Authentication mail (reset codes, invites, patient codes) is OFF until the
+        # deployed service has SMTP_* set — loud once, instead of silently per request.
+        logger.warning("email_smtp_not_configured")
     # TASK-042: empty Portal visits are deleted after 24 h. brain-api has no worker, so the
     # job is a background task of the API process, off unless VISIT_RETENTION_ENABLED.
     retention = None
@@ -76,6 +84,9 @@ def create_app() -> FastAPI:
     )
     app.include_router(health.router, tags=["health"])
     app.include_router(auth.router, tags=["auth"])
+    app.include_router(staff_first_access.router)
+    app.include_router(staff_account.router)
+    app.include_router(team.router)
     app.include_router(entitlements.router, tags=["entitlements"])
     app.include_router(sso.router, tags=["sso"])
     app.include_router(demo.router, tags=["demo"])

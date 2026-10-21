@@ -30,8 +30,9 @@ DEMO_CLINIC = "Consultório Dr. Aurélio Lima"
 
 async def seed() -> None:
     async with async_session_factory() as session, session.begin():
-        existing = await session.scalar(select(User).where(User.email == DEMO_EMAIL))
-        if existing is not None:
+        from brain_api.services.staff_accounts import email_registered
+
+        if await email_registered(session, DEMO_EMAIL):
             logger.info("seed_skipped_user_exists", email=DEMO_EMAIL)
             return
 
@@ -83,7 +84,8 @@ async def ensure_demo_link() -> None:
         return
 
     async with async_session_factory() as session, session.begin():
-        user = await session.scalar(select(User).where(User.email == DEMO_EMAIL))
+        users = list(await session.scalars(select(User).where(User.email == DEMO_EMAIL)))
+        user = users[0] if len(users) == 1 else None
         if user is None or user.tenant_id is None:
             logger.warning("seed_link_skipped_no_demo_user")
             return

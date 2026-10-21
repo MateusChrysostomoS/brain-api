@@ -103,8 +103,9 @@ async def register_signup(session: AsyncSession, payload: SignupIntentCreate) ->
     these rows.
     """
     email = payload.email.lower()
-    existing = await session.scalar(select(User).where(User.email == email))
-    if existing is not None:
+    from brain_api.services.staff_accounts import adopt_new_user, email_registered
+
+    if await email_registered(session, email):
         raise HTTPException(status.HTTP_409_CONFLICT, "email_already_registered")
 
     tenant = Tenant(clinic_name=payload.clinic_name)
@@ -148,6 +149,8 @@ async def register_signup(session: AsyncSession, payload: SignupIntentCreate) ->
     )
     session.add(intent)
     try:
+        await session.flush()
+        await adopt_new_user(session, user)
         await session.commit()
     except IntegrityError:
         # Raced: another registration inserted this email between the check above and this
@@ -289,12 +292,9 @@ async def create_checkout_session_for_intent(session: AsyncSession, intent_id: U
     selection = billing.validate_selection(plan_id, addon_ids)
 
     settings = get_settings()
-    # Signup checkouts get their own return URLs (public onboarding page — the buyer has
-    # no session yet), falling back to the shared tenant ones when unset.
-    success_url = (
-        settings.STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL or settings.STRIPE_CHECKOUT_SUCCESS_URL
-    )
-    cancel_url = settings.STRIPE_SIGNUP_CHECKOUT_CANCEL_URL or settings.STRIPE_CHECKOUT_CANCEL_URL
+    # Public return routes are derived from the single frontend base URL.
+    success_url = settings.STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL
+    cancel_url = settings.STRIPE_SIGNUP_CHECKOUT_CANCEL_URL
     data: dict[str, str] = {
         "mode": "setup",
         # Required in setup mode and ONLY there: with no line items there is no price for

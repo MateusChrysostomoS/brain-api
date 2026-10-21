@@ -38,6 +38,9 @@ os.environ.setdefault("PATIENT_LINK_RATE_LIMIT_PER_MIN", "0")
 # against a budget that is deliberately the tightest in the app); its own rate-limit test
 # monkeypatches the limiter instance.
 os.environ.setdefault("PATIENT_PENDING_RATE_LIMIT_PER_MIN", "0")
+# Same reasoning for the per-address password-reset bucket (tests/test_password_reset.py
+# requests codes for one address many times); its own test swaps the limiter instance.
+os.environ.setdefault("PASSWORD_RESET_EMAIL_RATE_LIMIT_PER_MIN", "0")
 
 # Mesh upstreams are UNSET in tests: the proxy / internal-data clients then degrade to an
 # empty page with no network. Force-empty here (real env beats the .env file in
@@ -62,6 +65,11 @@ for _external_var in (
     "PRECHECK_API_KEY_PREVIOUS",
     "META_APP_ID",
     "META_ES_CONFIG_ID",
+    # Outbound SMTP (services/mailer.py): a local `.env` must never make a test send mail.
+    "SMTP_HOST",
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
+    "EMAIL_FROM_ADDRESS",
 ):
     os.environ[_external_var] = ""
 
@@ -95,7 +103,10 @@ os.environ.setdefault(
 # Re-export the seeded in-memory app fixture so any test module can request `client` by
 # name (pytest injection) without importing it — avoids the F811 "redefinition" lint that
 # importing a fixture and shadowing it as a parameter would otherwise trigger.
+import pytest  # noqa: E402
+
 from brain_api.core.database import Base  # noqa: E402
+from tests.mail_spy import MailSpy  # noqa: E402
 from tests.test_patient_access import pclient  # noqa: E402, F401
 from tests.test_rbac import client  # noqa: E402, F401
 
@@ -118,3 +129,27 @@ async def db_session():
     async with sessionmaker() as session:
         yield session
     await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def mail_spy(monkeypatch):
+    """Replace the real SMTP sender for every test (see tests/mail_spy.py)."""
+    from brain_api.services import mailer
+
+    spy = MailSpy()
+    monkeypatch.setattr(mailer, "send_email", spy)
+    return spy
+
+
+@pytest.fixture
+def legacy_staff_invites(monkeypatch):
+    """Run a test against the legacy invite flow (staff credentials flag off)."""
+    from brain_api.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "STAFF_ACCOUNT_CREDENTIALS_ENABLED", False)
+
+@pytest.fixture
+def staff_accounts_enabled(monkeypatch):
+    from brain_api.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "STAFF_ACCOUNT_CREDENTIALS_ENABLED", True)

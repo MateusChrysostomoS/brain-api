@@ -41,7 +41,7 @@ class ChannelsOut(BaseModel):
 
 class PatientInviteOut(BaseModel):
     """`GET /entitlements/patient-invite` — what a clinic hands its patients so they can add
-    it to their Brain-Message account: the short code and, once `BRAIN_MESSAGE_PORTAL_URL`
+    it to their Brain-Message account: the short code and, once `BRAIN_MESSAGE_PUBLIC_URL`
     is set, the link. Neither is a secret (both only NAME the clinic), but they are the
     clinic's own, so the tenant comes from the staff token like every route here."""
 

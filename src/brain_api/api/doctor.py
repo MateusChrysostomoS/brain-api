@@ -127,6 +127,8 @@ async def secretaria_hub_token(
     token = create_hub_token(
         tenant_id=str(principal.tenant_id),
         actor_user_id=principal.user_id,
+        credential_version=principal.credential_version,
+        account_session_id=principal.account_session_id,
         professional_id=str(principal.professional_id) if principal.professional_id else None,
         # TASK-020: the hub gates clinic-manager-only actions on these three claims. They
         # come from the validated user JWT (`Principal`), never from the request.

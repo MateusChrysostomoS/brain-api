@@ -34,7 +34,13 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_api.api.deps import Principal, deny_secretary, require_doctor, require_owner
+from brain_api.api.deps import (
+    Principal,
+    deny_secretary,
+    require_doctor,
+    require_owner,
+    require_team_manager,
+)
 from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
@@ -66,12 +72,14 @@ from brain_api.schemas.signup import IntakeIn
 from brain_api.services import (
     billing,
     catalog,
+    mailer,
     meta_graph,
     onboarding,
     onboarding_sync,
     secretaria_provisioning,
     signup as signup_service,
 )
+from brain_api.services.team import lock_clinic
 
 logger = get_logger(__name__)
 
@@ -394,15 +402,21 @@ async def attach_intake(
     summary="Professionals + local invite/link state",
 )
 async def list_professionals(
+    include_inactive: bool = False,
     principal: Principal = Depends(require_doctor),
     session: AsyncSession = Depends(get_session),
 ) -> ProfessionalsOut:
     """Proxies secretaria's config-status `professionals` array, joined with the LOCAL
     brain-api user linkage (email + whether an invite is still pending)."""
     tenant = await _load_tenant(session, principal.tenant_id)
-    await onboarding_sync.refresh_config_status(session, tenant)
-    payload = onboarding_sync.get_cached_config_status(tenant.id) or {}
-    remote_professionals = payload.get("professionals") or []
+    if include_inactive:
+        remote_professionals = await secretaria_provisioning.get_professionals(tenant.id)
+        if remote_professionals is None:
+            raise HTTPException(502, "secretaria_unavailable")
+    else:
+        await onboarding_sync.refresh_config_status(session, tenant)
+        payload = onboarding_sync.get_cached_config_status(tenant.id) or {}
+        remote_professionals = payload.get("professionals") or []
 
     linked_users = (
         await session.scalars(
@@ -442,7 +456,7 @@ async def list_professionals(
 )
 async def invite_professional(
     payload: ProfessionalInviteIn,
-    principal: Principal = Depends(require_doctor),
+    principal: Principal = Depends(require_team_manager),
     session: AsyncSession = Depends(get_session),
 ) -> ProfessionalInviteOut:
     """Create-or-attach the secretaria professional, then a local `doctor` user (not an
@@ -453,18 +467,41 @@ async def invite_professional(
     Open to any doctor (owner OR staff) — corrections round, 2026-07-22; previously
     owner-only (`require_owner`).
     """
-    tenant = await _load_tenant(session, principal.tenant_id)
+    tenant = await lock_clinic(session, principal)
     email = payload.email.lower()
+    if get_settings().STAFF_ACCOUNT_CREDENTIALS_ENABLED:
+        from brain_api.schemas.team import TeamInviteInput
+        from brain_api.services import team
 
-    if await session.scalar(select(User).where(User.email == email)) is not None:
+        result = await team.invite_team_member(
+            session,
+            principal,
+            TeamInviteInput(
+                name=payload.name,
+                email=email,
+                role="doctor",
+                specialty=payload.specialty,
+            ),
+        )
+        return ProfessionalInviteOut(
+            professional_id=result.member.professional_id,
+            user_id=result.member.user_id,
+            invite_link=team.staff_login_url(),
+        )
+
+    from brain_api.services.staff_accounts import adopt_new_user, email_registered
+
+    if await email_registered(session, email):
         raise HTTPException(status.HTTP_409_CONFLICT, "email_already_registered")
 
     professional = await secretaria_provisioning.create_professional(
-        tenant.id, name=payload.name, specialty=payload.specialty, about=None
+        tenant.id, name=payload.name, specialty=payload.specialty, about=None, interactive=True
     )
     if professional is None or not professional.get("professional_id"):
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "secretaria_unavailable")
     professional_id = UUID(str(professional["professional_id"]))
+    if await session.scalar(select(User.id).where(User.professional_id == professional_id)):
+        raise HTTPException(409, "professional_already_linked")
 
     raw_token = secrets.token_urlsafe(32)
     user = User(
@@ -479,14 +516,16 @@ async def invite_professional(
         + timedelta(hours=get_settings().INVITE_TOKEN_EXPIRE_HOURS),
     )
     session.add(user)
+    await session.flush()
+    await adopt_new_user(session, user)
     await session.commit()
     await session.refresh(user)
 
     invite_link = f"{get_settings().FRONTEND_BASE_URL}/convite?token={raw_token}"
-    await secretaria_provisioning.send_notification_email(
+    await mailer.send_email(
         email,
         "professional_invite",
-        # secretaria's professional_invite template renders `{link}` (services/email.py).
+        # services/mailer.py's professional_invite renders {name}, {clinic_name}, {link}.
         {"name": payload.name, "clinic_name": tenant.clinic_name, "link": invite_link},
     )
 
@@ -521,8 +560,8 @@ async def bind_self_professional(
     defined not to be (models/user.ROLE_SECRETARY).
     """
     deny_secretary(principal, "secretary_cannot_be_professional")
-    tenant = await _load_tenant(session, principal.tenant_id)
-    user = await session.get(User, UUID(principal.user_id))
+    tenant = await lock_clinic(session, principal, require_manager=False)
+    user = await session.get(User, UUID(principal.user_id), populate_existing=True)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
     if user.professional_id is not None:
@@ -530,13 +569,19 @@ async def bind_self_professional(
 
     name = payload.name or user.name or tenant.clinic_name
     professional = await secretaria_provisioning.create_professional(
-        tenant.id, name=name, specialty=payload.specialty, about=None
+        tenant.id, name=name, specialty=payload.specialty, about=None, interactive=True
     )
     if professional is None or not professional.get("professional_id"):
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "secretaria_unavailable")
 
-    user.professional_id = UUID(str(professional["professional_id"]))
+    professional_id = UUID(str(professional["professional_id"]))
+    if await session.scalar(
+        select(User.id).where(User.professional_id == professional_id, User.id != user.id)
+    ):
+        raise HTTPException(409, "professional_already_linked")
+    user.professional_id = professional_id
     await session.commit()
+    onboarding_sync.invalidate_config_status(tenant.id)
     logger.info("professional_self_bound", tenant_id=str(tenant.id), user_id=str(user.id))
     return ProfessionalSelfOut(
         professional_id=user.professional_id, created=bool(professional.get("created"))
@@ -591,7 +636,7 @@ async def list_secretaries(
 )
 async def invite_secretary(
     payload: SecretaryInviteIn,
-    principal: Principal = Depends(require_doctor),
+    principal: Principal = Depends(require_team_manager),
     session: AsyncSession = Depends(get_session),
 ) -> SecretaryInviteOut:
     """Create a local `secretary` user and mint a single-use invite token
@@ -616,8 +661,24 @@ async def invite_secretary(
     """
     tenant = await _load_tenant(session, principal.tenant_id)
     email = payload.email.lower()
+    if get_settings().STAFF_ACCOUNT_CREDENTIALS_ENABLED:
+        from brain_api.schemas.team import TeamInviteInput
+        from brain_api.services import team
 
-    if await session.scalar(select(User).where(User.email == email)) is not None:
+        result = await team.invite_team_member(
+            session,
+            principal,
+            TeamInviteInput(
+                name=payload.name,
+                email=email,
+                role="secretary",
+            ),
+        )
+        return SecretaryInviteOut(user_id=result.member.user_id, invite_link=team.staff_login_url())
+
+    from brain_api.services.staff_accounts import adopt_new_user, email_registered
+
+    if await email_registered(session, email):
         raise HTTPException(status.HTTP_409_CONFLICT, "email_already_registered")
 
     raw_token = secrets.token_urlsafe(32)
@@ -634,11 +695,13 @@ async def invite_secretary(
         + timedelta(hours=get_settings().INVITE_TOKEN_EXPIRE_HOURS),
     )
     session.add(user)
+    await session.flush()
+    await adopt_new_user(session, user)
     await session.commit()
     await session.refresh(user)
 
     invite_link = f"{get_settings().FRONTEND_BASE_URL}/convite?token={raw_token}"
-    await secretaria_provisioning.send_notification_email(
+    await mailer.send_email(
         email,
         "professional_invite",
         {"name": payload.name, "clinic_name": tenant.clinic_name, "link": invite_link},

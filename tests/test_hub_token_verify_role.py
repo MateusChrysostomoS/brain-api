@@ -17,7 +17,7 @@ from tests.hub_tokens import (
     unsigned_hub_token,
 )
 from tests.test_auth_hardening import _tenant_ids
-from tests.test_rbac import ADMIN_EMAIL, ADMIN_PASSWORD, CLINIC_A, _bearer, _token
+from tests.test_rbac import ADMIN_EMAIL, ADMIN_PASSWORD, CLINIC_A, OWNER_A_EMAIL, _bearer, _token
 
 _PAIR = {"X-Internal-Api-Key": "pair-key"}
 
@@ -31,6 +31,9 @@ def _pair_key(monkeypatch):
 async def _entitled_tenant(client) -> str:
     """CLINIC_A with secretarIA on, so `active` is true for a valid hub token."""
     admin_token = await _token(client, ADMIN_EMAIL, ADMIN_PASSWORD)
+    users = (await client.get("/admin/users", headers=_bearer(admin_token))).json()["items"]
+    # main checks the actor's live membership; synthetic "user-1" is no longer valid.
+    client.hub_role_actor_id = next(user["id"] for user in users if user["email"] == OWNER_A_EMAIL)
     tenant_id = (await _tenant_ids(client, admin_token))[CLINIC_A]
     patch = await client.patch(
         f"/admin/tenants/{tenant_id}/entitlements",
@@ -60,7 +63,10 @@ async def _verify(client, token: str):
 )
 async def test_verify_returns_the_role_claims(client, role, is_owner, is_manager):
     tenant_id = await _entitled_tenant(client)
-    token = make_hub_token(role=role, is_owner=is_owner, is_manager=is_manager, tenant_id=tenant_id)
+    token = make_hub_token(
+        role=role, is_owner=is_owner, is_manager=is_manager, tenant_id=tenant_id,
+        actor_user_id=client.hub_role_actor_id,
+    )
 
     body = await _verify(client, token)
 
@@ -75,7 +81,9 @@ async def test_old_token_without_role_verifies_with_null_role(client):
     """The deploy window: a token minted before TASK-020 stays valid, with no role."""
     tenant_id = await _entitled_tenant(client)
 
-    body = await _verify(client, make_hub_token(role=None, tenant_id=tenant_id))
+    body = await _verify(client, make_hub_token(
+        role=None, tenant_id=tenant_id, actor_user_id=client.hub_role_actor_id,
+    ))
 
     assert body["active"] is True
     assert body["role"] is None
@@ -85,7 +93,9 @@ async def test_old_token_without_role_verifies_with_null_role(client):
 
 async def test_unknown_role_value_is_passed_through_for_secretaria_to_refuse(client):
     tenant_id = await _entitled_tenant(client)
-    token = forge_hub_token({"sub": tenant_id, "role": "admin", "is_manager": True})
+    token = forge_hub_token({
+        "sub": tenant_id, "act": client.hub_role_actor_id, "role": "admin", "is_manager": True,
+    })
 
     body = await _verify(client, token)
 
@@ -106,7 +116,9 @@ async def test_unknown_role_value_is_passed_through_for_secretaria_to_refuse(cli
 async def test_malformed_role_reads_as_absent_and_never_500s(client, claims):
     tenant_id = await _entitled_tenant(client)
 
-    body = await _verify(client, forge_hub_token({"sub": tenant_id, **claims}))
+    body = await _verify(client, forge_hub_token({
+        "sub": tenant_id, "act": client.hub_role_actor_id, **claims,
+    }))
 
     assert body["active"] is True
     assert body["role"] is None
@@ -116,7 +128,8 @@ async def test_malformed_role_reads_as_absent_and_never_500s(client, claims):
 async def test_non_boolean_flags_read_as_null(client, value):
     tenant_id = await _entitled_tenant(client)
     token = forge_hub_token(
-        {"sub": tenant_id, "role": "doctor", "is_owner": value, "is_manager": value}
+        {"sub": tenant_id, "act": client.hub_role_actor_id,
+         "role": "doctor", "is_owner": value, "is_manager": value}
     )
 
     body = await _verify(client, token)

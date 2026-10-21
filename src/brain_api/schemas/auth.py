@@ -52,6 +52,10 @@ class TokenResponse(BaseModel):
     name: str | None = None
     email: str | None = None
     professional_id: UUID | None = None
+    requires_password_change: bool = False
+    user_id: UUID | None = None
+    tenant_id: UUID | None = None
+    role: str | None = None
 
 
 class RefreshRequest(BaseModel):
@@ -89,6 +93,10 @@ class UserOut(BaseModel):
     name: str
     role: str
     professional_id: UUID | None = None
+    is_owner: bool = False
+    is_manager: bool = False
+    requires_password_change: bool = False
+    credential_version: int = 0
 
 
 class TenantOut(BaseModel):
@@ -147,6 +155,8 @@ class SetPasswordIn(BaseModel):
     @field_validator("new_password")
     @classmethod
     def _password_policy(cls, v: str) -> str:
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("password must not exceed 72 bytes")
         if not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
             raise ValueError("password must contain at least one letter and one digit")
         return v
@@ -173,7 +183,7 @@ class MessageOut(BaseModel):
 
 
 class PasswordResetRequestIn(BaseModel):
-    """Body for `POST /auth/password-reset/request`.
+    """Body for `POST /auth/password-reset/request` — e-mails a 6-digit code (TASK-056).
 
     The endpoint ALWAYS answers 200 with the same `MessageOut`, whether or not the
     email belongs to a user — anything else would turn this route into an account
@@ -185,15 +195,21 @@ class PasswordResetRequestIn(BaseModel):
     email: EmailStr = Field(max_length=320)
 
 
-class PasswordResetVerifyIn(BaseModel):
-    """Body for `POST /auth/password-reset/verify` — a read-only pre-flight so the UI
-    can reject a broken link before the user types a new password. Does NOT consume
-    the token."""
+class PasswordResetCodeVerifyIn(BaseModel):
+    """Body for `POST /auth/password-reset/verify-code` — exchanges the e-mailed code for
+    a single-use reset token. Exactly 6 ASCII digits; anything else is a 422 before any
+    lookup (the frontends strip spaces and dashes before sending)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    # 32-byte url-safe tokens are ~43 chars; the ceiling tolerates future tweaks.
-    token: str = Field(min_length=16, max_length=256)
+    email: EmailStr = Field(max_length=320)
+    code: str = Field(pattern=r"^[0-9]{6}$")
+
+
+class PasswordResetTokenOut(BaseModel):
+    """The single-use token `POST /auth/password-reset/confirm` consumes (15 min)."""
+
+    reset_token: str
 
 
 class PasswordResetConfirmIn(BaseModel):
@@ -213,6 +229,4 @@ class PasswordResetConfirmIn(BaseModel):
     @field_validator("new_password")
     @classmethod
     def _password_policy(cls, v: str) -> str:
-        if not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
-            raise ValueError("password must contain at least one letter and one digit")
-        return v
+        return SetPasswordIn._password_policy(v)

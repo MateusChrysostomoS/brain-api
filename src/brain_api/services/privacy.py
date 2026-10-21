@@ -51,6 +51,11 @@ from brain_api.models import (
     PrecheckAccountLink,
     PrivacyRequest,
     RefreshToken,
+    StaffAccount,
+    StaffAccountResetCode,
+    StaffAccountSession,
+    StaffMembershipInvite,
+    StaffPasswordResetCode,
     Tenant,
     User,
 )
@@ -114,18 +119,34 @@ async def _erase_brain_user(session: AsyncSession, email: str) -> dict[str, Any]
     admin account must never be wiped through this subject-erasure path.
     """
     lowered = email.strip().lower()
-    user = await session.scalar(select(User).where(User.email == lowered))
+    users = list(await session.scalars(select(User).where(User.email == lowered)))
     counts = {"users": 0, "demo_requests": 0}
-
-    if user is not None:
+    if any(user.role == ROLE_ADMIN for user in users):
+        raise HTTPException(status.HTTP_409_CONFLICT, "admin_cannot_be_erased")
+    account_ids = {user.account_id for user in users if user.account_id}
+    account_ids.update(
+        await session.scalars(select(StaffAccount.id).where(StaffAccount.email == lowered))
+    )
+    for user in users:
         if user.role == ROLE_ADMIN:
             raise HTTPException(status.HTTP_409_CONFLICT, "admin_cannot_be_erased")
         await session.execute(delete(RefreshToken).where(RefreshToken.user_id == user.id))
         await session.execute(
             delete(PrecheckAccountLink).where(PrecheckAccountLink.brain_user_id == user.id)
         )
+        await session.execute(
+            delete(StaffMembershipInvite).where(StaffMembershipInvite.user_id == user.id)
+        )
+        await session.execute(
+            delete(StaffPasswordResetCode).where(StaffPasswordResetCode.user_id == user.id)
+        )
         await session.delete(user)
-        counts["users"] = 1
+        counts["users"] += 1
+    await session.flush()
+    for account_id in account_ids:
+        for model in (StaffMembershipInvite, StaffAccountResetCode, StaffAccountSession):
+            await session.execute(delete(model).where(model.account_id == account_id))
+        await session.execute(delete(StaffAccount).where(StaffAccount.id == account_id))
 
     demo_result = await session.execute(delete(DemoRequest).where(DemoRequest.email == lowered))
     counts["demo_requests"] = demo_result.rowcount or 0
@@ -170,7 +191,9 @@ async def _export_brain_user(session: AsyncSession, email: str) -> dict[str, Any
     created_at — deliberately NO `password_hash`), the tenant name, and their demo-
     request leads."""
     lowered = email.strip().lower()
-    user = await session.scalar(select(User).where(User.email == lowered))
+    users = list(await session.scalars(select(User).where(User.email == lowered).order_by(User.id)))
+    account = await session.scalar(select(StaffAccount).where(StaffAccount.email == lowered))
+    user = users[0] if len(users) == 1 else None
     user_out: dict[str, Any] | None = None
     tenant_name: str | None = None
     if user is not None:
@@ -189,8 +212,30 @@ async def _export_brain_user(session: AsyncSession, email: str) -> dict[str, Any
         await session.scalars(select(DemoRequest).where(DemoRequest.email == lowered))
     ).all()
     return {
+        "account": {
+            "id": str(account.id),
+            "email": account.email,
+            "name": account.name,
+            "preferred_user_id": (
+                str(account.preferred_user_id) if account.preferred_user_id else None
+            ),
+            "created_at": account.created_at.isoformat(),
+        }
+        if account
+        else None,
         "user": user_out,
         "tenant_name": tenant_name,
+        "memberships": [
+            {
+                "id": str(row.id),
+                "tenant_id": str(row.tenant_id) if row.tenant_id else None,
+                "email": row.email,
+                "name": row.name,
+                "role": row.role,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in users
+        ],
         "demo_requests": [_demo_request_dict(r) for r in demo_rows],
     }
 

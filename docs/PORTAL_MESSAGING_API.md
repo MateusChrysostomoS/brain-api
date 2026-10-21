@@ -115,7 +115,9 @@ HttpOnly cookie; the short-lived JWT lives in the browser's memory only, never i
 `Brain-Message-Frontend/lib/real/patient-access.ts`, header comment).
 
 Login is e-mail + one-time code (`POST /patient-access/request-otp` /
-`/verify-otp`), never a phone number — there is no WhatsApp identity on this channel. A
+`/verify-otp`), never a phone number — there is no WhatsApp identity on this channel. The
+code e-mail (`patient_access_otp`) is sent by brain-api's own SMTP (`services/mailer.py`) since
+TASK-056 (2026-10-13); before, it went through secretarIA's `/internal/notifications/email`. A
 clinic joins the account only by invite (its link, its short code, or a pasted UUID) — never
 by e-mail match. Full state machine: `docs/CHECKPOINT_portal_clinicas_convite.md`,
 `docs/CHECKPOINT_portal_sessao_pendente.md`; the account-linking security argument is the
@@ -1092,6 +1094,7 @@ e-mail address, a cookie, or a JWT from this channel.
   remembered; no header = today's behaviour. For the portal's automatic resend on mobile networks.
   In-process memory (`core/idempotency.py`), no migration, no change to any product's contract.
 - **2026-10-02** — TASK-028 (`secretarIA/docs/LACUNAS_PORTAL_2026-10-01.md` §L1). **§4.1** —
+- **2026-10-13** — TASK-056: the patient access code e-mail is sent by brain-api's own SMTP (`services/mailer.py`), no longer through secretarIA. Same template id, same `{code, ttl_minutes}`; `pending-otp/request` still answers 503 when the send is refused.
   `GET /internal/brain-message/conversations/{external_id}/messages` without `since` returns the
   NEWEST `limit` messages (oldest first) instead of the 50 oldest, so a Portal conversation past 50
   messages no longer freezes; the body gains `has_more`, and an optional `before` cursor (opaque,

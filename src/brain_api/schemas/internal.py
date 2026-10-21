@@ -32,6 +32,12 @@ class HubTokenVerifyIn(BaseModel):
     token: str = Field(min_length=1, max_length=2048)
 
 
+class StaffDeliveryUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    credential_version: int = Field(ge=0)
+    status: Literal["sent", "failed"]
+
+
 class HubTokenVerifyOut(BaseModel):
     """Introspection result: is this hub session allowed to act, and for which tenant.
 

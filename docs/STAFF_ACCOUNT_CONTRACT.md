@@ -17,7 +17,7 @@ Todas as rotas são relativas à base brain-api. Entradas de seleção/preferên
 | Método e caminho | Prova/corpo | Resultado |
 |---|---|---|
 | `POST /auth/account/login` | `{email,password}`, mesma política por bytes e orçamento de login | `AccountResponse`, ou `TokenResponse` com `requires_password_change:true` e escopo restrito de setup |
-| `POST /auth/account/resume` | cookie `__Host-staff_account` + `X-Brain-Client:web` | gira refresh pessoal, retorna o mesmo `AccountResponse`; credencial inválida/replay expira cookie e responde 401 |
+| `POST /auth/account/resume` | cookie `__Host-staff_account` + `X-Brain-Client:web` | renova a sessão pessoal NO LUGAR (mesmo `sid`/`account_sid`; só o valor do cookie gira) e retorna o mesmo `AccountResponse`. Valor recém-substituído dentro da janela de graça: 200 **sem** `Set-Cookie`. Credencial inválida/replay fora da graça expira cookie e responde 401 — ver "Renovação da sessão pessoal (TASK-065)" |
 | `GET /auth/account/memberships` | bearer `account_token` | próprios vínculos, com nome da clínica e status, sem token/payload clínico |
 | `POST /auth/account/select` | bearer pessoal + `{user_id,remember?:boolean}` | `TokenResponse` operacional do vínculo ativo; 404 `membership_not_found`, 403 `membership_revoked`, 409 `membership_pending` |
 | `PUT /auth/account/preference` | bearer pessoal + `{user_id:UUID|null}` | 204; `null` limpa; vínculo indicado precisa ser próprio e ativo |
@@ -69,6 +69,38 @@ Texto confirmado para o consumidor, após prova válida: “Seu acesso ao Portal
 Seleção pessoal retorna `refresh_token:null`. Sua renovação é `/auth/account/resume`, não `/auth/refresh`. JWT clínico não tem scope; `sub` é User.id de destino, com tenant/professional/papel/flags daquele vínculo, versão clínica e `account_sid`. Gates verificam User e sessão pessoal ao vivo. `account_token` tem `scope=staff_account`, `sub=StaffAccount.id`, `sid` e versão pessoal; não passa em staff, hub, billing ou PreCheck. Nenhum dado clínico vai nele. Nova página/F5 não recebe tokens do armazenamento: retoma cookie pessoal e recebe a resposta pessoal.
 
 Tokens pessoais e novos tickets de setup usam chaves HMAC derivadas da SECRET_KEY por propósito, distintas da assinatura operacional compartilhada. PreCheck tem validadores permissivos por sub: somente scope não bastaria. Esses validadores recusam as novas assinaturas sem alteração no irmão. A chave anterior derivada é aceita durante rotação; tickets de setup legados continuam verificáveis apenas pelo fluxo restrito do brain-api, com versão/expiração ao vivo.
+
+### Renovação da sessão pessoal (TASK-065, 2026-10-20)
+
+Mesmo desenho da sessão do paciente (`docs/CHECKPOINT_patient_session_refresh.md`). Detalhes,
+provas e ordem de deploy em `docs/CHECKPOINT_staff_session_rotation.md`.
+
+- A linha `StaffAccountSession` mantém o `id` durante toda a vida do login. `resume` gira só o
+  valor opaco: hash novo em `token_hash`, o anterior em `previous_token_hash` com `rotated_at`
+  (migração `0033_staff_session_rotation`), e `expires_at` desliza para agora +
+  `REFRESH_TOKEN_EXPIRE_DAYS` (mesma vida deslizante de antes). Consequência: `account_token` e
+  tokens clínicos (`account_sid`) emitidos antes de um `resume` — inclusive em outra aba —
+  continuam válidos até a própria expiração curta (`ACCESS_TOKEN_EXPIRE_MINUTES`).
+- Valor anterior apresentado em até `STAFF_ACCOUNT_SESSION_ROTATION_GRACE_SECONDS` (padrão 60) depois
+  da rotação: 200 com `AccountResponse` da mesma linha e **sem `Set-Cookie`** (o navegador já
+  recebeu o sucessor na resposta que girou; escrever outro cookie só criaria corrida).
+- O valor do cookie é `<id da linha>.<segredo>` (opaco para o cliente; só o hash do segredo é
+  guardado). Qualquer outro segredo apresentado para uma linha da geração viva — o anterior fora da
+  janela, um de duas ou mais renovações atrás, lixo — é sinal de reuso: encerra todas as sessões
+  pessoais, refresh e tokens clínicos da conta (`end_account_sessions`), 401 com cookie expirado.
+  Valor atual de linha revogada com a geração viva: idem, como antes.
+- Valor que não nomeia linha (malformado, id inexistente), linha expirada ou de geração antiga: 401
+  com cookie expirado, sem encerrar nada.
+- Cookie emitido antes da TASK-065 (só o segredo): aceito por hash até a primeira renovação, que já
+  devolve o formato novo.
+- Concorrência: troca por compare-and-swap (`UPDATE ... WHERE token_hash = <apresentado>`), sob o
+  lock da conta; quem perde cai na janela de graça.
+- `POST /auth/account/logout` (e o logout legado) usa o mesmo formato e reconhece o segredo atual
+  ou o recém-substituído: logout só retira acesso. Segredo errado não encerra nada no logout.
+- Logs: `staff_account_session_reuse_detected` e `staff_account_session_grace_accepted`, só com o
+  id da sessão.
+- O cliente deve manter single-flight por aba; a graça cobre requisições em voo, não um cookie
+  velho reapresentado mais de 60 s depois.
 
 Fase 3 deve limpar estado, caches, hub tokens e solicitações atrasadas ao trocar clínica/conta. Deve distinguir sessão operacional legada (renovação legada) da operacional derivada da conta (renovação pessoal). Não reinterpretar `refresh_token:null` como impersonação sem usar essa distinção. Retomada sem preferência retorna o seletor; não reutilizar o contexto anterior por conveniência.
 
@@ -125,3 +157,26 @@ F3/F5/F7 da TASK-056 permanecem baseline. F4 permanece no caminho legado não ad
 ## Nota 2026-10-18 — padrões ligados
 
 `STAFF_ACCOUNT_CREDENTIALS_ENABLED` e `STAFF_MULTI_CLINIC_ENABLED` agora têm padrão `true` (decisão do dono: a funcionalidade não depende de variável de ambiente). As variáveis continuam podendo desligar o recurso. `BRAIN_MESSAGE_PUBLIC_URL` tem padrão no frontend implantado (sobrescreva por variável em domínio próprio). Com a chave ligada, os convites legados delegam ao fluxo de equipe: `invite_link` aponta para `/login`. Os testes do fluxo legado (token em `/convite`) rodam com a fixture `legacy_staff_invites`, que desliga a chave.
+## Extensão TASK-062 — criar clínica própria (somente local)
+
+Contrato adicional implementado nas worktrees TASK-062, não publicado; fases existentes neste
+documento não foram reimplementadas. `POST /auth/account/clinics` exige bearer pessoal e body
+estrito com operação UUID/dados de C/catálogo, sem e-mail/senha/tenant/papel. E-mail é o da conta
+comprovada; cria Tenant C + User owner/manager ligado à mesma conta + entitlement inerte + intent
+numa transação compartilhada com cadastro anônimo. Não copia credenciais/Professional/acessos A/B.
+
+`GET /auth/account/clinics/{operation_id}` e `POST .../checkout` exigem a própria operação e
+propriedade C ainda válida. `AccountClinicOut` inclui sessão C com `account_sid`, sem refresh
+clínico; cookie pessoal host-only permanece. Sessão clínica antiga, preferência lembrada,
+e-mail conhecido ou ID de intent não autorizam criação/faturamento. Todos os portais podem estar
+revogados sem impedir a conta de criar C. Revogação posterior C bloqueia a própria retomada.
+
+DDL 0034 (após a 0033 da TASK-065); unique conta/operação e locks; checkout aberto reaproveitado; webhook ativa
+somente C. Intents pessoais não entram em checkout/catálogo/cortesia/status/ready/token públicos.
+Não se mistura pagamento de C com `/billing` clínico paralelo ou assinatura de A/B. Reset/counters
+globais não são reiniciados por clínica nova. Chamadores anônimos novos mantêm o contrato anterior.
+
+PreCheck recebe opcional `brain_user_id` clínico C no provision interno somente para esse intent;
+consumidor com migração 0017/guardas nativos deve preceder o emissor. Código antigo não é rollback
+seguro após criar esses dados; downgrades recusam população pessoal/mesh. Detalhes, provas e ordem
+futura em [checkpoint TASK-062](CHECKPOINT_criar_clinica_conta_existente.md).

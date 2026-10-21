@@ -130,8 +130,7 @@ def _precheck_identity(clinic_name: str, tenant_id: UUID) -> tuple[str, str]:
     Ou seja, o código opaco virou último recurso em vez de padrão — e a resposta do
     provisionamento devolve a frase EFETIVA, que é a que o bridge persiste.
     """
-    ascii_name = (unicodedata.normalize("NFKD", clinic_name)
-                  .encode("ascii", "ignore").decode())
+    ascii_name = unicodedata.normalize("NFKD", clinic_name).encode("ascii", "ignore").decode()
     base = re.sub(r"[^a-z0-9]+", "-", ascii_name.lower()).strip("-") or "clinica"
     sufixo = str(tenant_id)[:8]
     slug = f"{base[:60]}-{sufixo}"
@@ -200,23 +199,26 @@ async def ensure_precheck_provisioned(session: AsyncSession, tenant: Tenant) -> 
             doctor_password=secrets.token_urlsafe(32),
             # o telefone vive no intent (o Tenant não tem essa coluna)
             doctor_phone=intent.whatsapp_phone if intent is not None else None,
+            # New personal-account clinics use an explicit per-clinic mesh
+            # identity. Legacy anonymous/admin provisioning remains unchanged.
+            **(
+                {"brain_user_id": owner.id}
+                if intent is not None and intent.owner_account_id is not None
+                else {}
+            ),
         )
         if body is None:
             return
 
         precheck_user_id = body.get("doctor_user_id")
         if not isinstance(precheck_user_id, int):
-            logger.warning(
-                "precheck_provisioning_no_doctor_user_id", tenant_id=str(tenant.id)
-            )
+            logger.warning("precheck_provisioning_no_doctor_user_id", tenant_id=str(tenant.id))
             return
 
         # Upsert do link: a reverse-unique de precheck_user_id (0002) transforma uma
         # segunda tentativa numa violação de constraint, não num duplicado.
         link = await session.scalar(
-            select(PrecheckAccountLink).where(
-                PrecheckAccountLink.brain_user_id == owner.id
-            )
+            select(PrecheckAccountLink).where(PrecheckAccountLink.brain_user_id == owner.id)
         )
         if link is None:
             session.add(
@@ -280,9 +282,7 @@ async def ensure_products_provisioned(session: AsyncSession, tenant_id: UUID) ->
                 return
             await bridge(session, tenant)
     except Exception:  # noqa: BLE001 - fail-soft por contrato: nunca quebrar o chamador.
-        logger.warning(
-            "products_provisioning_failed", tenant_id=str(tenant_id), exc_info=True
-        )
+        logger.warning("products_provisioning_failed", tenant_id=str(tenant_id), exc_info=True)
 
 
 # --- Config-status pull + ativo transition (scope B) ------------------------------------

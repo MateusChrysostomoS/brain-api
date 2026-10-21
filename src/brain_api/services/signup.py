@@ -6,9 +6,11 @@ NO human in the loop (auth-jwt-multitenant + stripe-billing-entitlements skills)
 IMPORTANT — the "who writes what" split (this is the architectural invariant of this
 module; it used to say the webhook was the sole tenant/user/entitlement writer):
 
-- `register_signup` is the SOLE writer of the Tenant + owner User + INERT Entitlement.
-  It runs the instant the FIRST card is submitted (`POST /public/signup-intents`), with a
-  REAL password the visitor chose, and returns a real session. The tenant exists and the
+- The registration writer shared by anonymous signup and personal clinic creation
+  is the SOLE writer on these signup paths of Tenant + owner User + INERT Entitlement.
+  Anonymous signup runs at the FIRST card (`POST /public/signup-intents`) with the
+  visitor's chosen password; personal creation uses proven StaffAccount, without a
+  second password. Both return a clinical session. The tenant exists and the
   owner can log in from any device from this point on — whether or not they ever finish
   the wizard or pay. The entitlement it creates is inert (status="inactive", plan="free",
   both products OFF): "registered, nothing purchased yet".
@@ -56,7 +58,12 @@ from brain_api.core.logging import get_logger
 from brain_api.core.security import hash_password, hash_refresh_token
 from brain_api.models import Entitlement, SignupIntent, Tenant, User
 from brain_api.models.user import ROLE_DOCTOR
-from brain_api.schemas.signup import IntakeIn, OnboardingStatusOut, SignupIntentCreate
+from brain_api.schemas.signup import (
+    AccountClinicCreate,
+    IntakeIn,
+    OnboardingStatusOut,
+    SignupIntentCreate,
+)
 from brain_api.services import billing, catalog, onboarding
 
 logger = get_logger(__name__)
@@ -108,14 +115,42 @@ async def register_signup(session: AsyncSession, payload: SignupIntentCreate) ->
     if await email_registered(session, email):
         raise HTTPException(status.HTTP_409_CONFLICT, "email_already_registered")
 
+    try:
+        registration = await _write_registration(
+            session, payload, name=payload.name, email=email,
+            password_hash=hash_password(payload.password),
+        )
+        await adopt_new_user(session, registration.user)
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "email_already_registered") from None
+    await session.refresh(registration.intent)
+    await session.refresh(registration.user)
+    logger.info("signup_registered", intent_id=str(registration.intent.id),
+                tenant_id=str(registration.user.tenant_id))
+    return registration
+
+
+async def _write_registration(
+    session: AsyncSession,
+    payload: SignupIntentCreate | AccountClinicCreate,
+    *,
+    name: str,
+    email: str,
+    password_hash: str,
+    account_id: UUID | None = None,
+) -> Registration:
+    """Shared transactional writer. Never commits, grants products or creates a professional."""
     tenant = Tenant(clinic_name=payload.clinic_name)
     session.add(tenant)
     await session.flush()  # assign tenant.id
 
     user = User(
         email=email,
-        name=payload.name,
-        password_hash=hash_password(payload.password),
+        name=name,
+        password_hash=password_hash,
+        account_id=account_id,
         role=ROLE_DOCTOR,
         is_owner=True,
         is_manager=True,
@@ -138,7 +173,7 @@ async def register_signup(session: AsyncSession, payload: SignupIntentCreate) ->
     )
 
     intent = SignupIntent(
-        name=payload.name,
+        name=name,
         clinic_name=payload.clinic_name,
         email=email,
         whatsapp_phone=payload.whatsapp_phone,
@@ -148,19 +183,7 @@ async def register_signup(session: AsyncSession, payload: SignupIntentCreate) ->
         tenant_id=tenant.id,
     )
     session.add(intent)
-    try:
-        await session.flush()
-        await adopt_new_user(session, user)
-        await session.commit()
-    except IntegrityError:
-        # Raced: another registration inserted this email between the check above and this
-        # commit. The unique constraint on users.email is the real guard; map it to the
-        # same 409 the up-front check returns.
-        await session.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, "email_already_registered") from None
-    await session.refresh(intent)
-    await session.refresh(user)
-    logger.info("signup_registered", intent_id=str(intent.id), tenant_id=str(tenant.id))
+    await session.flush()
     return Registration(intent=intent, user=user)
 
 
@@ -231,7 +254,7 @@ async def update_intent_catalog(
     returns the updated row.
     """
     intent = await session.get(SignupIntent, intent_id)
-    if intent is None:
+    if intent is None or intent.owner_account_id is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "signup_intent_not_found")
     if intent.status != "pending_payment":
         raise HTTPException(status.HTTP_409_CONFLICT, "intent_not_pending")
@@ -253,7 +276,9 @@ async def update_intent_catalog(
 # --- 2. Checkout Session -------------------------------------------------------------
 
 
-async def create_checkout_session_for_intent(session: AsyncSession, intent_id: UUID) -> str:
+async def create_checkout_session_for_intent(
+    session: AsyncSession, intent_id: UUID, *, owner_account_id: UUID | None = None,
+) -> str:
     """Create a SETUP-mode Checkout Session for a pending signup intent (card capture only).
 
     Deliberately NOT `mode=subscription` anymore: Stripe's hosted page renders its own
@@ -267,8 +292,9 @@ async def create_checkout_session_for_intent(session: AsyncSession, intent_id: U
     Consequently NO `line_items` / `subscription_data` here — Stripe rejects both in setup
     mode; `billing._apply_setup_custom_text` supplies the only billing wording on the page.
 
-    `client_reference_id` / `metadata` carry the INTENT id (never a tenant — none exists
-    yet), tagged `metadata[kind]=signup_intent` so `apply_stripe_event` routes the
+    `client_reference_id` / `metadata` carry the INTENT id (not the old clinical
+    session's tenant; registration already created the intent's own new tenant),
+    tagged `metadata[kind]=signup_intent` so `apply_stripe_event` routes the
     resulting `checkout.session.completed` to `_apply_signup_intent_checkout` ->
     `provision_tenant_from_intent` instead of the existing tenant-linking path.
 
@@ -277,10 +303,19 @@ async def create_checkout_session_for_intent(session: AsyncSession, intent_id: U
     catalog/price configuration, and it must fail BEFORE a checkout URL is handed to the
     buyer — not later, at webhook time, with money-adjacent state already in flight.
     """
-    intent = await session.get(SignupIntent, intent_id)
-    if intent is None:
+    intent = await session.scalar(
+        select(SignupIntent).where(SignupIntent.id == intent_id).with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if intent is None or intent.owner_account_id != owner_account_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "signup_intent_not_found")
-    if intent.status != "pending_payment":
+    retry_failed = (
+        owner_account_id is not None
+        and intent.status == "failed"
+        and intent.stripe_subscription_id is None
+        and intent.failure_reason in {"subscription_create_failed", "stripe_customer_missing"}
+    )
+    if intent.status != "pending_payment" and not retry_failed:
         raise HTTPException(status.HTTP_409_CONFLICT, "signup_intent_not_pending")
 
     plan_id = _plan_id_of(intent.catalog_ids)
@@ -295,6 +330,25 @@ async def create_checkout_session_for_intent(session: AsyncSession, intent_id: U
     # Public return routes are derived from the single frontend base URL.
     success_url = settings.STRIPE_SIGNUP_CHECKOUT_SUCCESS_URL
     cancel_url = settings.STRIPE_SIGNUP_CHECKOUT_CANCEL_URL
+    if owner_account_id is not None:
+        ent = await session.get(Entitlement, intent.tenant_id)
+        if reason := billing.checkout_block_reason(ent):
+            raise HTTPException(409, reason)
+        if intent.stripe_session_id:
+            previous = await billing._stripe_get(
+                f"/v1/checkout/sessions/{intent.stripe_session_id}"
+            )
+            if previous.get("status") == "open" and not retry_failed:
+                return previous.get("url") or intent.checkout_url
+            if previous.get("status") != "expired" and not (
+                retry_failed and previous.get("status") == "complete"
+            ):
+                raise HTTPException(409, "checkout_payment_processing")
+            intent.checkout_attempt += 1
+        base = settings.FRONTEND_BASE_URL.strip().rstrip("/")
+        resume = f"{base}/criar-clinica?operacao={intent.operation_id}"
+        success_url = f"{resume}&pagamento=recebido"
+        cancel_url = f"{resume}&pagamento=cancelado"
     data: dict[str, str] = {
         "mode": "setup",
         # Required in setup mode and ONLY there: with no line items there is no price for
@@ -324,7 +378,17 @@ async def create_checkout_session_for_intent(session: AsyncSession, intent_id: U
     }
     billing._apply_setup_custom_text(data, selection)
 
-    payload = await billing._stripe_post("/v1/checkout/sessions", data)
+    if owner_account_id is None:
+        payload = await billing._stripe_post("/v1/checkout/sessions", data)
+    else:
+        payload = await billing._stripe_post(
+            "/v1/checkout/sessions", data,
+            idempotency_key=f"signup-checkout-{intent.id}-{intent.checkout_attempt}",
+        )
+        intent.checkout_url = payload["url"]
+        if retry_failed:
+            intent.status = "pending_payment"
+            intent.failure_reason = None
     intent.stripe_session_id = payload["id"]
     await session.commit()
     logger.info("signup_checkout_created", intent_id=str(intent.id), plan=plan_id)
@@ -347,7 +411,7 @@ async def get_onboarding_status(
     intent = await session.scalar(
         select(SignupIntent).where(SignupIntent.stripe_session_id == stripe_session_id)
     )
-    if intent is None:
+    if intent is None or intent.owner_account_id is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "signup_intent_not_found")
 
     if intent.status == "pending_payment":
@@ -367,6 +431,8 @@ async def ready_status(session: AsyncSession, intent: SignupIntent) -> Onboardin
     mas precisa exatamente do mesmo token para entrar. Duas implementações da
     emissão do token seriam duas chances de divergir num segredo de sessão.
     """
+    if intent.owner_account_id is not None:
+        raise HTTPException(404, "signup_intent_not_found")
     plan = catalog.get_plan(_plan_id_of(intent.catalog_ids))
     products = {
         "secretaria": bool(plan and plan.secretaria),
@@ -534,6 +600,7 @@ async def exchange_onboarding_token(
     )
     if (
         intent is None
+        or intent.owner_account_id is not None
         or intent.onboarding_token_used_at is not None
         or intent.onboarding_token_expires_at is None
         or _as_utc(intent.onboarding_token_expires_at) <= datetime.now(UTC)

@@ -135,6 +135,42 @@ class SignupRegisterOut(BaseModel):
     session: TokenResponse
 
 
+class AccountClinicCreate(BaseModel):
+    """Explicit creation; identity/roles are exclusively server-resolved."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: UUID
+    clinic_name: str = Field(min_length=1, max_length=255)
+    whatsapp_phone: str = Field(min_length=1, max_length=32)
+    catalog_ids: list[str] = Field(min_length=1, max_length=16)
+    intake: IntakeIn | None = None
+    precheck_template_slug: str | None = Field(
+        default=None, min_length=1, max_length=100, pattern=r"^[a-z0-9-]+$"
+    )
+
+    @field_validator("clinic_name", "whatsapp_phone")
+    @classmethod
+    def trim(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def selection(self) -> "AccountClinicCreate":
+        _validate_catalog_ids(self.catalog_ids)
+        return self
+
+
+class AccountClinicOut(SignupRegisterOut):
+    operation_id: UUID
+    clinic_name: str
+    whatsapp_phone: str
+    catalog_ids: list[str]
+    status: str
+
+
 class SignupIntentCatalogPatchIn(BaseModel):
     """Body for `PATCH /public/signup-intents/{intent_id}` — replace the catalog
     selection on a still-`pending_payment` intent (the pre-checkout add-on picker calls

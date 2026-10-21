@@ -2,6 +2,8 @@
 
 ## Continuação: main remota
 
+Na conferência final, main avançou em outra sessão para `ecdd067`; a feature também incorporou essa versão (sessão pessoal e criação de clínica). Validação adicional: 36 passed, 6 skipped em rotação de sessão, criação de clínica por HTTP e emissão/revogação de hub. Os skips não comprovam integrações externas.
+
 O dono pediu pull e novo merge após a rodada abaixo. `git pull --ff-only origin main` atualizou main para `19c9e19`; esta revisão foi incorporada novamente à feature, preservando o contrato de papel e a separação Portal secretarIA/PreCheck. A validação nova passou em 72 testes de handoff e emissão/revogação de hub. Alterações locais de instruções na pasta principal foram guardadas/reaplicadas e conferidas; nenhuma publicação. Registro atual: `C:/TECH/BRAIN/tasks/TASK-066/PULL_MAIN.md`. As observações de main/origin mais abaixo são o histórico da primeira rodada.
 
 ## Primeira rodada: main local

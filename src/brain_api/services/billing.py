@@ -66,7 +66,7 @@ import httpx
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1256,6 +1256,16 @@ async def create_checkout_session(
         )
         raise HTTPException(status.HTTP_409_CONFLICT, block)
 
+    pending_personal = await session.scalar(
+        select(SignupIntent.id).where(
+            SignupIntent.tenant_id == tenant_id,
+            SignupIntent.owner_account_id.is_not(None),
+            SignupIntent.status != "completed",
+        ).limit(1)
+    )
+    if pending_personal is not None:
+        raise HTTPException(409, "signup_checkout_required")
+
     plan = catalog.get_plan(selection.plan_id)
     # Ordinary purchases return to the account; console purchases use the public
     # return page's console branch, which skips cold-signup status polling.
@@ -2025,15 +2035,40 @@ async def _apply_signup_intent_checkout(
         logger.warning("stripe_signup_event_bad_intent_id")
         return None
 
-    intent = await session.get(SignupIntent, intent_id)
+    intent = await session.scalar(
+        select(SignupIntent).where(SignupIntent.id == intent_id).with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if intent is None:
         logger.warning("stripe_signup_event_unknown_intent", intent_id=str(intent_id))
         return None
 
+    if intent.owner_account_id is not None and obj.get("id") != intent.stripe_session_id:
+        logger.warning("stripe_signup_event_obsolete_session", intent_id=str(intent_id))
+        return None
+
+    recovered_subscription = None
+    if intent.owner_account_id is not None and intent.status != "completed":
+        ent = await session.get(Entitlement, intent.tenant_id)
+        if checkout_block_reason(ent):
+            # A subscription.created webhook can commit before this handler after
+            # a crash. Reconcile only a Stripe-verified subscription of THIS intent;
+            # an unrelated active subscription must never be replaced or charged twice.
+            candidate = await _stripe_get(f"/v1/subscriptions/{ent.stripe_subscription_id}")
+            if (candidate.get("metadata") or {}).get("signup_intent_id") != str(intent_id):
+                _fail_intent(intent, "has_active_subscription", intent_id)
+                return None
+            if candidate.get("id") != ent.stripe_subscription_id:
+                raise HTTPException(502, "signup_subscription_mismatch")
+            recovered_subscription = candidate
+
     stripe_customer_id = str(obj["customer"]) if obj.get("customer") else None
     stripe_subscription_id = str(obj["subscription"]) if obj.get("subscription") else None
     setup_intent_id = obj.get("setup_intent")
-    subscription_payload: dict[str, Any] | None = None
+    subscription_payload: dict[str, Any] | None = recovered_subscription
+    if recovered_subscription is not None:
+        stripe_subscription_id = str(recovered_subscription["id"])
+        stripe_customer_id = str(recovered_subscription["customer"])
 
     already_completed = intent.status == "completed"
     if already_completed:
@@ -2056,10 +2091,9 @@ async def _apply_signup_intent_checkout(
         # sessions would carry DIFFERENT Customers and collide on this intent's single
         # idempotency key — Stripe answers that with a permanent "Keys for idempotent
         # requests can only be used with the same parameters" error (verified live). The
-        # `already_completed` branch above absorbs that: the second event finds the intent
-        # completed and never calls Stripe at all. Only a genuinely CONCURRENT pair of
-        # completions could still race past it, which no cheap local guard fixes (it needs
-        # a row lock on the intent) and which requires the buyer to pay twice in parallel.
+        # `already_completed` absorbs that: the second event finds the intent completed
+        # and never calls Stripe. The intent row lock above serializes concurrent events;
+        # personal checkouts also reuse one open session instead of opening parallel ones.
         plan_id = signup_service._plan_id_of(intent.catalog_ids)
         addon_ids = [cid for cid in intent.catalog_ids if cid in catalog.ADDON_IDS]
         try:
@@ -2264,6 +2298,15 @@ async def apply_stripe_event(
     - invoice.payment_failed            -> status=past_due
     - invoice.paid                      -> past_due recovers to active
     """
+    if (
+        event_type == "checkout.session.completed"
+        and (obj.get("metadata") or {}).get("kind") == "signup_intent"
+        and session.bind.dialect.name == "postgresql"
+    ):
+        # Serialize the same delivery BEFORE autoflush inserts its dedup marker.
+        # Intent locks below also serialize distinct events for one payment.
+        key = int.from_bytes(hashlib.sha256(event_id.encode()).digest()[:8], signed=True)
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
     if await session.get(ProcessedStripeEvent, event_id) is not None:
         return False
     session.add(ProcessedStripeEvent(id=event_id, event_type=event_type))

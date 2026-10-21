@@ -54,7 +54,7 @@ async def redeem(session: AsyncSession, intent_id, code: str) -> SignupIntent:
     e passariam os dois.
     """
     intent = await session.get(SignupIntent, intent_id)
-    if intent is None:
+    if intent is None or intent.owner_account_id is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "signup_intent_not_found")
     if intent.status != "pending_payment":
         raise HTTPException(status.HTTP_409_CONFLICT, "intent_not_pending")

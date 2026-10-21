@@ -125,3 +125,26 @@ F3/F5/F7 da TASK-056 permanecem baseline. F4 permanece no caminho legado não ad
 ## Nota 2026-10-18 — padrões ligados
 
 `STAFF_ACCOUNT_CREDENTIALS_ENABLED` e `STAFF_MULTI_CLINIC_ENABLED` agora têm padrão `true` (decisão do dono: a funcionalidade não depende de variável de ambiente). As variáveis continuam podendo desligar o recurso. `BRAIN_MESSAGE_PUBLIC_URL` tem padrão no frontend implantado (sobrescreva por variável em domínio próprio). Com a chave ligada, os convites legados delegam ao fluxo de equipe: `invite_link` aponta para `/login`. Os testes do fluxo legado (token em `/convite`) rodam com a fixture `legacy_staff_invites`, que desliga a chave.
+## Extensão TASK-062 — criar clínica própria (somente local)
+
+Contrato adicional implementado nas worktrees TASK-062, não publicado; fases existentes neste
+documento não foram reimplementadas. `POST /auth/account/clinics` exige bearer pessoal e body
+estrito com operação UUID/dados de C/catálogo, sem e-mail/senha/tenant/papel. E-mail é o da conta
+comprovada; cria Tenant C + User owner/manager ligado à mesma conta + entitlement inerte + intent
+numa transação compartilhada com cadastro anônimo. Não copia credenciais/Professional/acessos A/B.
+
+`GET /auth/account/clinics/{operation_id}` e `POST .../checkout` exigem a própria operação e
+propriedade C ainda válida. `AccountClinicOut` inclui sessão C com `account_sid`, sem refresh
+clínico; cookie pessoal host-only permanece. Sessão clínica antiga, preferência lembrada,
+e-mail conhecido ou ID de intent não autorizam criação/faturamento. Todos os portais podem estar
+revogados sem impedir a conta de criar C. Revogação posterior C bloqueia a própria retomada.
+
+DDL 0033 após 0032; unique conta/operação e locks; checkout aberto reaproveitado; webhook ativa
+somente C. Intents pessoais não entram em checkout/catálogo/cortesia/status/ready/token públicos.
+Não se mistura pagamento de C com `/billing` clínico paralelo ou assinatura de A/B. Reset/counters
+globais não são reiniciados por clínica nova. Chamadores anônimos novos mantêm o contrato anterior.
+
+PreCheck recebe opcional `brain_user_id` clínico C no provision interno somente para esse intent;
+consumidor com migração 0017/guardas nativos deve preceder o emissor. Código antigo não é rollback
+seguro após criar esses dados; downgrades recusam população pessoal/mesh. Detalhes, provas e ordem
+futura em [checkpoint TASK-062](CHECKPOINT_criar_clinica_conta_existente.md).

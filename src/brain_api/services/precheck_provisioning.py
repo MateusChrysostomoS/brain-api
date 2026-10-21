@@ -81,6 +81,7 @@ async def provision_clinic(
     doctor_email: str,
     doctor_password: str,
     doctor_phone: str | None = None,
+    brain_user_id: UUID | None = None,
 ) -> dict[str, Any] | None:
     """`POST /internal/provision` — create (or idempotently confirm) the PreCheck clinic
     for a brain tenant.
@@ -88,6 +89,10 @@ async def provision_clinic(
     Returns the parsed body on success — the caller needs `doctor_user_id` from it, which
     is what `precheck_account_links` stores and the SSO handoff mints as `sub`. Returns
     `None` on any failure; never raises.
+
+    Optional `brain_user_id` is the trusted owner User in THIS tenant (not the
+    StaffAccount). The personal-clinic caller sends it only after the consumer's
+    native-auth guards/schema are installed. Omitting it keeps legacy semantics.
 
     PreCheck answers **201** when it created the clinic and **200** when this
     `brain_tenant_id` already had one (a Stripe webhook redelivery, or our own lazy
@@ -100,6 +105,7 @@ async def provision_clinic(
         "/internal/provision",
         json={
             "brain_tenant_id": str(tenant_id),
+            **({"brain_user_id": str(brain_user_id)} if brain_user_id is not None else {}),
             "template_slug": template_slug,
             "clinic_name": clinic_name,
             "clinic_slug": clinic_slug,
@@ -128,7 +134,5 @@ async def provision_clinic(
         detail = str(resp.json().get("detail", ""))[:120]
     except Exception:  # noqa: BLE001 - a non-JSON error body is not worth a crash
         pass
-    logger.warning(
-        "precheck_provisioning_rejected", status=resp.status_code, detail=detail
-    )
+    logger.warning("precheck_provisioning_rejected", status=resp.status_code, detail=detail)
     return None

@@ -330,6 +330,26 @@ async def test_postgres_personal_refresh_replay_does_not_kill_later_generation(p
         assert (await staff_accounts.live_session(session, fresh.id))[0].id == aid
 
 
+async def test_postgres_thief_double_rotation_cannot_escape_reuse_detection(pg):
+    """TASK-065 review H1 on real PostgreSQL, distinct connections per request."""
+    aid, _, _ = await seed_memberships(pg)
+    async with pg() as session:
+        account = await session.get(StaffAccount, aid)
+        row, victim = await staff_accounts.open_account_session(session, account)
+    async with pg() as session:
+        _, _, t1 = await staff_accounts.rotate_account_session(session, victim)
+    async with pg() as session:
+        _, _, thief = await staff_accounts.rotate_account_session(session, t1)
+    async with pg() as session:
+        with pytest.raises(HTTPException):
+            await staff_accounts.rotate_account_session(session, victim)
+    async with pg() as session:
+        with pytest.raises(HTTPException):
+            await staff_accounts.live_session(session, row.id)
+        with pytest.raises(HTTPException):
+            await staff_accounts.rotate_account_session(session, thief)
+
+
 async def test_postgres_downgrade_refuses_to_discard_multiple_memberships(pg):
     aid, uaid, ubid = await seed_memberships(pg)
     async with pg() as session:

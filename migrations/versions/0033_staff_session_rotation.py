@@ -18,8 +18,15 @@ Apresentá-lo DEPOIS da janela continua sendo o sinal de reuso.
 Puramente aditiva e anulável: nenhuma linha existente muda, sem backfill, e uma sessão
 aberta antes desta migração renova normalmente na primeira chamada.
 
-Aplicar ANTES de deployar o brain-api que a usa (`alembic upgrade head`, que também aplica a
-0032 se ela ainda não estiver aplicada) — sem ela, login/resume da conta pessoal 500am.
+O cookie passa a ser `<id da linha>.<segredo>` (só o hash do segredo é guardado); cookies
+antigos (só o segredo) continuam aceitos por hash até a primeira renovação. Nenhuma coluna
+nova para isso.
+
+Migração OBRIGATÓRIA e ANTES do deploy do brain-api que a usa (`alembic upgrade head`, que
+também aplica a 0032 se ela ainda não estiver aplicada). Sem ela, TODA leitura de
+`staff_account_sessions` falha (o modelo seleciona as colunas novas): login/resume/logout da
+conta pessoal, toda requisição clínica com `account_sid` (`api/deps.py::get_current_principal`)
+e o hub-token da secretarIA — o portal inteiro de quem usa conta pessoal responde 500.
 """
 
 from collections.abc import Sequence

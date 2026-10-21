@@ -235,16 +235,177 @@ async def test_rotation_keeps_the_row_id_and_slides_expiry(db_session):
     assert (await _principal(db_session, token)).user_id == str(a.id)
 
 
-async def test_older_value_after_two_rotations_is_refused(db_session):
-    account, _, _, _ = await seed(db_session)
-    _, t0 = await service.open_account_session(db_session, account)
+async def test_a_value_two_rotations_old_ends_the_account(db_session):
+    """Review H1: a thief who resumes twice (t0→t1→t2) must not shake off reuse detection.
+    The victim's t0 names the row, matches neither current nor previous → account ends."""
+    account, a, _, _ = await seed(db_session)
+    row, t0 = await service.open_account_session(db_session, account)
+    token = _clinical(a, row)
     _, _, t1 = await service.rotate_account_session(db_session, t0)
     _, row, t2 = await service.rotate_account_session(db_session, t1)
     with pytest.raises(HTTPException):
         await service.rotate_account_session(db_session, t0)
-    # Unknown value: refused, but it cannot be told apart from garbage, so nothing ends.
-    assert (await service.live_session(db_session, row.id))[0].id == account.id
-    assert (await service.rotate_account_session(db_session, t2))[2]
+    with pytest.raises(HTTPException):
+        await service.live_session(db_session, row.id)
+    with pytest.raises(HTTPException):
+        await _principal(db_session, token)
+    with pytest.raises(HTTPException):
+        await service.rotate_account_session(db_session, t2)
+
+
+async def test_thief_double_resume_then_victim_resume_signs_everyone_out(client):
+    _, clinical = await _login_and_select(client)
+    victim = client.cookies.get(COOKIE)
+    client.cookies.clear()
+    stolen = await _resume(client, cookie=victim)
+    thief = stolen.cookies.get(COOKIE)
+    client.cookies.clear()
+    again = await _resume(client, cookie=thief)
+    assert again.status_code == 200
+    thief = again.cookies.get(COOKIE)
+    client.cookies.clear()
+
+    assert (await _resume(client, cookie=victim)).status_code == 401
+    assert await _me(client, clinical["access_token"]) == 401
+    assert (await _resume(client, cookie=thief)).status_code == 401
+
+
+async def test_cookie_names_its_row(client):
+    body, _ = await _login_and_select(client)
+    sid = service.decode_account_token(body["account_token"])["sid"]
+    cookie = client.cookies.get(COOKIE)
+    assert cookie.startswith(f"{sid}.")
+    resumed = await _resume(client)
+    assert resumed.cookies.get(COOKIE).startswith(f"{sid}.")
+    assert resumed.cookies.get(COOKIE) != cookie
+
+
+async def test_new_format_cookie_with_a_wrong_secret_ends_the_account(db_session):
+    account, a, _, _ = await seed(db_session)
+    row, raw = await service.open_account_session(db_session, account)
+    token = _clinical(a, row)
+    with pytest.raises(HTTPException):
+        await service.rotate_account_session(db_session, f"{row.id}.garbage")
+    with pytest.raises(HTTPException):
+        await _principal(db_session, token)
+    with pytest.raises(HTTPException):
+        await service.rotate_account_session(db_session, raw)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    ["not-a-uuid.secret", "{sid}.", ".secret", "{sid}.a.b", "{other}.secret", "", "garbage"],
+)
+async def test_malformed_or_unknown_cookie_is_a_plain_401(db_session, shape):
+    """A value that cannot name a real row ends nothing (it cannot be attributed)."""
+    from uuid import uuid4
+
+    account, a, _, _ = await seed(db_session)
+    row, raw = await service.open_account_session(db_session, account)
+    token = _clinical(a, row)
+    with pytest.raises(HTTPException):
+        await service.rotate_account_session(db_session, shape.format(sid=row.id, other=uuid4()))
+    assert (await _principal(db_session, token)).user_id == str(a.id)
+    assert (await service.rotate_account_session(db_session, raw))[2]
+
+
+async def _legacy_session(db_session, account, legacy: str):
+    """A row as written before TASK-065: the cookie is the bare secret, no row id."""
+    from uuid import uuid4
+
+    from brain_api.core.security import hash_refresh_token
+    from brain_api.models import StaffAccountSession
+
+    row = StaffAccountSession(
+        id=uuid4(),
+        account_id=account.id,
+        token_hash=hash_refresh_token(legacy),
+        credential_version=account.credential_version,
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    db_session.add(row)
+    await db_session.commit()
+    return row
+
+
+async def test_legacy_cookie_resumes_and_comes_back_in_the_new_format(db_session, monkeypatch):
+    from brain_api.core.security import generate_refresh_token
+
+    account, a, _, _ = await seed(db_session)
+    legacy = generate_refresh_token()
+    row = await _legacy_session(db_session, account, legacy)
+    token = _clinical(a, row)
+
+    _, rotated, new_raw = await service.rotate_account_session(db_session, legacy)
+    assert rotated.id == row.id
+    assert service.parse_cookie_value(new_raw) == (row.id, new_raw.split(".", 1)[1])
+    assert (await _principal(db_session, token)).user_id == str(a.id)
+    # The legacy value is now the previous one: grace inside the window...
+    assert (await service.rotate_account_session(db_session, legacy))[2] is None
+    # ...and reuse after it.
+    monkeypatch.setattr(get_settings(), "STAFF_ACCOUNT_SESSION_ROTATION_GRACE_SECONDS", 0)
+    with pytest.raises(HTTPException):
+        await service.rotate_account_session(db_session, legacy)
+    with pytest.raises(HTTPException):
+        await _principal(db_session, token)
+
+
+async def test_legacy_cookie_resumes_over_http_and_gets_the_new_format(client):
+    from uuid import UUID
+
+    from brain_api.core.database import get_session
+    from brain_api.core.security import generate_refresh_token, hash_refresh_token
+    from brain_api.main import app
+    from brain_api.models import StaffAccountSession
+
+    body, clinical = await _login_and_select(client)
+    sid = service.decode_account_token(body["account_token"])["sid"]
+    legacy = generate_refresh_token()
+    # Rewrite this sign-in as a pre-TASK-065 row: same id, bare-secret hash.
+    async for session in app.dependency_overrides[get_session]():
+        row = await session.get(StaffAccountSession, UUID(sid))
+        row.token_hash = hash_refresh_token(legacy)
+        await session.commit()
+    client.cookies.clear()
+    resumed = await _resume(client, cookie=legacy)
+    assert resumed.status_code == 200
+    assert resumed.cookies.get(COOKIE).startswith(f"{sid}.")
+    assert await _me(client, clinical["access_token"]) == 200
+
+
+async def test_logout_ignores_a_cookie_it_cannot_prove(client):
+    """Logout parses like resume; a wrong secret or malformed value ends nothing."""
+    from uuid import uuid4
+
+    body, clinical = await _login_and_select(client)
+    sid = service.decode_account_token(body["account_token"])["sid"]
+    good = client.cookies.get(COOKIE)
+    client.cookies.clear()
+    for bad in (f"{sid}.garbage", "not-a-uuid.x", f"{uuid4()}.x", "garbage"):
+        out = await client.post("/auth/account/logout", headers={"Cookie": f"{COOKIE}={bad}"})
+        assert out.status_code == 204
+        assert await _me(client, clinical["access_token"]) == 200
+    out = await client.post("/auth/account/logout", headers={"Cookie": f"{COOKIE}={good}"})
+    assert out.status_code == 204
+    assert await _me(client, clinical["access_token"]) == 401
+
+
+async def test_reuse_and_grace_log_session_ids_only(db_session, capsys, monkeypatch):
+    account, _, _, _ = await seed(db_session)
+    row, t0 = await service.open_account_session(db_session, account)
+    _, _, t1 = await service.rotate_account_session(db_session, t0)
+    capsys.readouterr()
+    assert (await service.rotate_account_session(db_session, t0))[2] is None
+    monkeypatch.setattr(get_settings(), "STAFF_ACCOUNT_SESSION_ROTATION_GRACE_SECONDS", 0)
+    with pytest.raises(HTTPException):
+        await service.rotate_account_session(db_session, t0)
+    out = capsys.readouterr().out
+    assert "staff_account_session_grace_accepted" in out
+    assert "staff_account_session_reuse_detected" in out
+    assert str(row.id) in out
+    for secret in (t0, t1, t0.split(".", 1)[1], t1.split(".", 1)[1]):
+        assert secret not in out
+    assert account.email not in out and str(account.id) not in out
 
 
 async def test_password_reset_after_rotation_kills_tokens_and_cookie(db_session):

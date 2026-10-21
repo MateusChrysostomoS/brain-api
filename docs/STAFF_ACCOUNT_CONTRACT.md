@@ -84,16 +84,21 @@ provas e ordem de deploy em `docs/CHECKPOINT_staff_session_rotation.md`.
 - Valor anterior apresentado em até `STAFF_ACCOUNT_SESSION_ROTATION_GRACE_SECONDS` (padrão 60) depois
   da rotação: 200 com `AccountResponse` da mesma linha e **sem `Set-Cookie`** (o navegador já
   recebeu o sucessor na resposta que girou; escrever outro cookie só criaria corrida).
-- Valor anterior fora da janela: sinal de reuso — encerra todas as sessões pessoais, refresh e
-  tokens clínicos da conta (`end_account_sessions`), 401 com cookie expirado. Valor atual de linha
-  revogada com a geração viva: idem, como antes.
-- Valor de duas ou mais gerações atrás, desconhecido, expirado ou de geração antiga: 401 com cookie
-  expirado, **sem** encerrar a conta (não é distinguível de lixo — só um valor anterior é guardado,
-  como no paciente).
+- O valor do cookie é `<id da linha>.<segredo>` (opaco para o cliente; só o hash do segredo é
+  guardado). Qualquer outro segredo apresentado para uma linha da geração viva — o anterior fora da
+  janela, um de duas ou mais renovações atrás, lixo — é sinal de reuso: encerra todas as sessões
+  pessoais, refresh e tokens clínicos da conta (`end_account_sessions`), 401 com cookie expirado.
+  Valor atual de linha revogada com a geração viva: idem, como antes.
+- Valor que não nomeia linha (malformado, id inexistente), linha expirada ou de geração antiga: 401
+  com cookie expirado, sem encerrar nada.
+- Cookie emitido antes da TASK-065 (só o segredo): aceito por hash até a primeira renovação, que já
+  devolve o formato novo.
 - Concorrência: troca por compare-and-swap (`UPDATE ... WHERE token_hash = <apresentado>`), sob o
   lock da conta; quem perde cai na janela de graça.
-- `POST /auth/account/logout` (e o logout legado) também reconhece o valor recém-substituído do
-  cookie: logout só retira acesso.
+- `POST /auth/account/logout` (e o logout legado) usa o mesmo formato e reconhece o segredo atual
+  ou o recém-substituído: logout só retira acesso. Segredo errado não encerra nada no logout.
+- Logs: `staff_account_session_reuse_detected` e `staff_account_session_grace_accepted`, só com o
+  id da sessão.
 - O cliente deve manter single-flight por aba; a graça cobre requisições em voo, não um cookie
   velho reapresentado mais de 60 s depois.
 

@@ -29,6 +29,14 @@ class StaffAccount(Base):
 
 
 class StaffAccountSession(Base):
+    """One personal sign-in, renewed IN PLACE (TASK-065).
+
+    The `id` never changes for the life of the sign-in: the account token's `sid` and every
+    clinical token's `account_sid` name it. A resume rotates only the opaque cookie value:
+    `token_hash` gets the new value, the replaced one moves to `previous_token_hash` with
+    `rotated_at`, and stays acceptable for `STAFF_ACCOUNT_SESSION_ROTATION_GRACE_SECONDS`.
+    """
+
     __tablename__ = "staff_account_sessions"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -36,6 +44,8 @@ class StaffAccountSession(Base):
         ForeignKey("staff_accounts.id", ondelete="CASCADE"), index=True
     )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    previous_token_hash: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     credential_version: Mapped[int] = mapped_column(Integer)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

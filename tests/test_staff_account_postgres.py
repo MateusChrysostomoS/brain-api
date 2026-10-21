@@ -294,7 +294,7 @@ async def test_postgres_legacy_migration_proofs(pg):
     await engine.dispose()
 
 
-async def test_postgres_personal_refresh_replay_does_not_kill_later_generation(pg):
+async def test_postgres_personal_refresh_replay_does_not_kill_later_generation(pg, monkeypatch):
     aid, _, _ = await seed_memberships(pg)
     async with pg() as session:
         account = await session.get(StaffAccount, aid)
@@ -307,13 +307,23 @@ async def test_postgres_personal_refresh_replay_does_not_kill_later_generation(p
             except HTTPException:
                 return None
 
+    # TASK-065: two resumes in flight with one cookie on distinct connections both succeed
+    # on the SAME row; exactly one rotated (the other landed in the grace window).
     results = await asyncio.gather(rotate(), rotate())
-    assert sum(result is not None for result in results) == 1
-    winner = next(result for result in results if result)
+    assert all(result is not None for result in results)
+    assert results[0][1].id == results[1][1].id
+    issued = [result[2] for result in results if result[2]]
+    assert len(issued) == 1
     async with pg() as session:
+        assert (await staff_accounts.live_session(session, results[0][1].id))[0].id == aid
+        # The replaced value after the window is theft and ends the account; a later
+        # sign-in (new generation) is unaffected by replaying the dead value again.
+        monkeypatch.setattr(get_settings(), "STAFF_ACCOUNT_SESSION_ROTATION_GRACE_SECONDS", 0)
         with pytest.raises(HTTPException):
-            await staff_accounts.live_session(session, winner[1].id)
-        account = await session.get(StaffAccount, aid)
+            await staff_accounts.rotate_account_session(session, raw)
+        with pytest.raises(HTTPException):
+            await staff_accounts.live_session(session, results[0][1].id)
+        account = await session.get(StaffAccount, aid, populate_existing=True)
         fresh, _ = await staff_accounts.open_account_session(session, account)
         with pytest.raises(HTTPException):
             await staff_accounts.rotate_account_session(session, raw)
@@ -339,9 +349,11 @@ async def test_postgres_downgrade_refuses_to_discard_multiple_memberships(pg):
     async with pg() as session:
         assert (await session.get(User, uaid)).access_revoked_at
         assert (await session.get(User, ubid)).account_id == aid
+        # The refused downgrade rolls back as one transaction: still at head (0033 since
+        # TASK-065, whose own downgrade ran first inside that transaction).
         assert (
             await session.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0032_staff_membership_email"
+            == "0033_staff_session_rotation"
         )
 
 

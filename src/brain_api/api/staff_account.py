@@ -220,21 +220,19 @@ async def resume(
         raise HTTPException(
             401, "Invalid or expired token", headers={"set-cookie": expired.headers["set-cookie"]}
         ) from None
-    set_cookie(response, raw)
+    # `raw is None`: the cookie was the value a resume moments ago replaced (another tab or
+    # a renewal in flight, inside the grace window). The browser already holds the successor
+    # from that answer; writing another cookie here would only race it (same as the patient).
+    if raw is not None:
+        set_cookie(response, raw)
     response.headers["Cache-Control"] = "no-store"
     return await response_body(session, account, row)
 
 
 @router.post("/logout", status_code=204)
 async def logout(request: Request, session: AsyncSession = Depends(get_session)):
-    from sqlalchemy import select
-
-    from brain_api.core.security import hash_refresh_token
-
-    row = await session.scalar(
-        select(StaffAccountSession).where(
-            StaffAccountSession.token_hash == hash_refresh_token(request.cookies.get(COOKIE, ""))
-        )
+    row: StaffAccountSession | None = await service.find_cookie_session(
+        session, request.cookies.get(COOKIE, "")
     )
     authorization = request.headers.get("authorization", "")
     bearer_account = None

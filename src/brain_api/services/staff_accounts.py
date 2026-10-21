@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from jose import jwt
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_api.config import get_settings
@@ -304,14 +304,47 @@ async def remember_membership(session: AsyncSession, account: StaffAccount, user
     await session.commit()
 
 
-async def rotate_account_session(session: AsyncSession, raw: str):
+def _cookie_value_matches(presented: str):
+    """A cookie names its row by the CURRENT value or the one the last resume replaced."""
+    return or_(
+        StaffAccountSession.token_hash == presented,
+        StaffAccountSession.previous_token_hash == presented,
+    )
+
+
+async def rotate_account_session(
+    session: AsyncSession, raw: str
+) -> tuple[StaffAccount, StaffAccountSession, str | None]:
+    """Renew the personal sign-in a cookie names — IN PLACE — or raise 401 (TASK-065).
+
+    The row keeps its `id` (the account token's `sid` and every clinical token's
+    `account_sid` name it, across every tab of the person); what rotates is the VALUE: a
+    fresh opaque token replaces `token_hash`, the old hash moves to `previous_token_hash`
+    with `rotated_at`, and `expires_at` slides to now + REFRESH_TOKEN_EXPIRE_DAYS (the same
+    sliding lifetime the old new-row-per-resume gave). Outcomes for a presented value
+    (mirrors `services/portal/patient_access.py::rotate_patient_session`):
+
+    1. the CURRENT value of a live row → rotate by compare-and-swap (`UPDATE ... WHERE
+       token_hash = <presented>`, only rowcount 1 counts) and return the new raw value;
+    2. the PREVIOUS value, rotated less than STAFF_ACCOUNT_SESSION_ROTATION_GRACE_SECONDS ago
+       (a renewal already in flight, another tab, or the loser of the swap) → accept without
+       rotating again; the third element is `None` and the caller sets NO cookie;
+    3. the PREVIOUS value after that window → reuse/theft signal: every session and clinical
+       token of the account ends (`end_account_sessions`) and 401;
+    4. the current value of a REVOKED row with the live generation → reuse signal, as before.
+    Anything else (unknown, expired, an older generation, a dead account) → plain 401.
+    """
+    presented = hash_refresh_token(raw)
+    settings = get_settings()
     row = await session.scalar(
         select(StaffAccountSession)
-        .where(StaffAccountSession.token_hash == hash_refresh_token(raw))
+        .where(_cookie_value_matches(presented))
         .execution_options(populate_existing=True)
     )
     if not row:
         raise HTTPException(401, "Invalid or expired token")
+    # The account lock serializes this with credential changes and with a concurrent resume
+    # of the same account on PostgreSQL; the swap below is what decides on any database.
     account = await session.scalar(
         select(StaffAccount)
         .where(StaffAccount.id == row.account_id)
@@ -324,28 +357,59 @@ async def rotate_account_session(session: AsyncSession, raw: str):
         .with_for_update()
         .execution_options(populate_existing=True)
     )
+    now = datetime.now(UTC)
     if (
         not account
-        or aware(row.expires_at) <= datetime.now(UTC)
+        or aware(row.expires_at) <= now
         or row.credential_version != account.credential_version
     ):
         raise HTTPException(401, "Invalid or expired token")
+    if row.token_hash == presented:
+        if row.revoked_at:
+            await end_account_sessions(session, row.account_id)
+            await session.commit()
+            raise HTTPException(401, "Invalid or expired token")
+        account, row = await live_session(session, row.id)
+        new_raw = generate_refresh_token()
+        swapped = await session.execute(
+            update(StaffAccountSession)
+            .where(
+                StaffAccountSession.id == row.id,
+                StaffAccountSession.token_hash == presented,
+                StaffAccountSession.revoked_at.is_(None),
+            )
+            .values(
+                token_hash=hash_refresh_token(new_raw),
+                previous_token_hash=presented,
+                rotated_at=now,
+                expires_at=now + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if swapped.rowcount == 1:
+            await session.commit()
+            await session.refresh(row)
+            return account, row, new_raw
+        # Lost the race to another resume of this same value. No rollback on purpose: the
+        # re-read below must see the winner's write (and under a shared connection a
+        # rollback would discard it). Decide grace-vs-theft on FRESH attributes only.
+        row = await session.scalar(
+            select(StaffAccountSession)
+            .where(StaffAccountSession.id == row.id)
+            .execution_options(populate_existing=True)
+        )
+    if row is None or row.previous_token_hash != presented:
+        raise HTTPException(401, "Invalid or expired token")
+    grace = timedelta(seconds=settings.STAFF_ACCOUNT_SESSION_ROTATION_GRACE_SECONDS)
+    if row.rotated_at is not None and aware(row.rotated_at) + grace > now:
+        account, row = await live_session(session, row.id)
+        await session.commit()  # nothing to write; releases the row/account locks
+        return account, row, None
     if row.revoked_at:
-        await end_account_sessions(session, row.account_id)
-        await session.commit()
         raise HTTPException(401, "Invalid or expired token")
-    account, row = await live_session(session, row.id)
-    now = datetime.now(UTC)
-    spent = await session.execute(
-        update(StaffAccountSession)
-        .where(StaffAccountSession.id == row.id, StaffAccountSession.revoked_at.is_(None))
-        .values(revoked_at=now)
-        .execution_options(synchronize_session=False)
-    )
-    if spent.rowcount != 1:
-        await session.rollback()
-        raise HTTPException(401, "Invalid or expired token")
-    return account, *(await open_account_session(session, account))
+    await end_account_sessions(session, row.account_id)
+    await session.commit()
+    raise HTTPException(401, "Invalid or expired token")
 
 
 async def accept_invite(
@@ -391,12 +455,21 @@ async def end_account_sessions(
     )
 
 
+async def find_cookie_session(session: AsyncSession, raw: str) -> StaffAccountSession | None:
+    """The row a cookie names by its current or just-replaced value (no liveness check)."""
+    if not raw:
+        return None
+    return await session.scalar(
+        select(StaffAccountSession).where(_cookie_value_matches(hash_refresh_token(raw)))
+    )
+
+
 async def end_cookie_account(session: AsyncSession, raw: str):
     if not raw:
         return
-    row = await session.scalar(
-        select(StaffAccountSession).where(StaffAccountSession.token_hash == hash_refresh_token(raw))
-    )
+    # The just-replaced value counts too: a tab logging out while another resumed must
+    # still sign the person out (logout can only take access away).
+    row = await find_cookie_session(session, raw)
     if not row or aware(row.expires_at) <= datetime.now(UTC):
         return
     account = await session.scalar(

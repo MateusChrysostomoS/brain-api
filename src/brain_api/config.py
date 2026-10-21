@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     # rotated on every use; a presented-again (already-rotated) token revokes the
     # user's whole refresh family (reuse = theft signal).
     REFRESH_TOKEN_EXPIRE_DAYS: int = 14
+    # Personal staff session (`__Host-staff_account`, POST /auth/account/resume, TASK-065):
+    # the session row is renewed IN PLACE (stable id — every clinical token names it by
+    # `account_sid`), and the value a resume just replaced stays valid for this many
+    # seconds, answered without a new cookie. Two portal tabs (or two renewals in flight)
+    # present the same cookie; without this window the second one read as theft and ended
+    # the whole account. Presenting the replaced value AFTER the window is still the
+    # reuse/theft signal. Same design as PATIENT_SESSION_ROTATION_GRACE_SECONDS.
+    STAFF_ACCOUNT_SESSION_ROTATION_GRACE_SECONDS: int = 60
     # Whether the HttpOnly refresh COOKIE (core/cookies.py) carries a Max-Age.
     # True (default): a persistent cookie that lives as long as the refresh token
     # itself, so a reload or a new tab resumes the session silently. False: a

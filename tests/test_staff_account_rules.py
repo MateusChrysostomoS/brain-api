@@ -117,7 +117,7 @@ async def test_recovery_attempts_reissue_expiry_replay_and_quota(db_session):
     assert await verify_password_reset_code(db_session, account.email, current) is None
 
 
-async def test_account_cookie_csrf_rotation_and_replay(client):
+async def test_account_cookie_csrf_rotation_and_replay(client, monkeypatch):
     client.base_url = "https://test"
     result = await client.post(
         "/auth/account/login",
@@ -132,19 +132,26 @@ async def test_account_cookie_csrf_rotation_and_replay(client):
     resumed = await client.post("/auth/account/resume", headers={"X-Brain-Client": "web"})
     assert resumed.status_code == 200
     assert client.cookies.get("__Host-staff_account") != original
+    # TASK-065: the session row is renewed in place, so a token bound to it before the
+    # resume (another tab's) stays valid until its own short expiry.
     old_proof = {"Authorization": f"Bearer {result.json()['account_token']}"}
-    assert (await client.get("/auth/account/memberships", headers=old_proof)).status_code == 401
-    replay = await client.post(
-        "/auth/account/resume",
-        headers={
-            "X-Brain-Client": "web",
-            "Cookie": f"__Host-staff_account={original}",
-        },
-    )
+    assert (await client.get("/auth/account/memberships", headers=old_proof)).status_code == 200
+    replay_headers = {
+        "X-Brain-Client": "web",
+        "Cookie": f"__Host-staff_account={original}",
+    }
+    # Inside the grace window the replaced value is a renewal in flight: accepted, no cookie.
+    in_flight = await client.post("/auth/account/resume", headers=replay_headers)
+    assert in_flight.status_code == 200
+    assert "set-cookie" not in in_flight.headers
+    # After it, the same value is the reuse signal and ends the whole account.
+    monkeypatch.setattr(get_settings(), "STAFF_ACCOUNT_SESSION_ROTATION_GRACE_SECONDS", 0)
+    replay = await client.post("/auth/account/resume", headers=replay_headers)
     assert replay.status_code == 401
     assert "Max-Age=0" in replay.headers["set-cookie"]
     proof = {"Authorization": f"Bearer {resumed.json()['account_token']}"}
     assert (await client.get("/auth/account/memberships", headers=proof)).status_code == 401
+    assert (await client.get("/auth/account/memberships", headers=old_proof)).status_code == 401
 
 
 async def test_refresh_cannot_be_issued_from_password_proof_before_reset(db_session):

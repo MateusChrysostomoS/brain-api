@@ -1309,6 +1309,38 @@ async def poll_thread_messages(
     return RelayOut(product=product, payload=result, at=datetime.now(UTC))
 
 
+@router.get(
+    "/insurance-overview",
+    response_model=RelayOut,
+    summary="The clinic's convenio rules, as the patient may see them",
+    description=(
+        "TASK-053 (owner decision 2026-10-12). Opened from the convenio list in the Portal "
+        "chat: for each convenio the payment text, the clinic's own note on an 'Outro' plan "
+        "and whether the Pix deposit applies. The clinic is the session's - no parameter names "
+        "it. The payload is secretarIA's, passed through; it never carries ids, doctors or "
+        "patient data. Read-only."
+    ),
+    responses={
+        401: {"description": "Missing or invalid patient session."},
+        403: {"description": "The clinic does not offer the Secretaria on this channel."},
+        502: {"description": "The product backend failed or is misconfigured."},
+        503: {"description": "That product's leg of the mesh is unconfigured or degraded."},
+    },
+)
+async def get_insurance_overview(
+    patient: MessagePatient = Depends(get_thread_patient),
+    session: AsyncSession = Depends(get_session),
+) -> RelayOut:
+    ent = await resolve_entitlement(session, patient.tenant_id)
+    message_switchboard.require_product(ent, message_switchboard.PRODUCT_SECRETARIA)
+    # Release the pooled connection before the upstream hop, like the poll.
+    await session.close()
+    payload = await message_switchboard.insurance_overview(tenant_id=patient.tenant_id)
+    return RelayOut(
+        product=message_switchboard.PRODUCT_SECRETARIA, payload=payload, at=datetime.now(UTC)
+    )
+
+
 @router.post(
     "/threads/{product}/messages/read",
     response_model=RelayOut,

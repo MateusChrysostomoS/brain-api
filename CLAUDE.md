@@ -8,6 +8,8 @@ Continuação TASK-055: convite médico preserva recusas de plano que viravam 50
 
 TASK-054: equipe e primeiro acesso com senha temporária; implementação local, sem publicação: [checkpoint](docs/CHECKPOINT_equipe_primeiro_acesso.md).
 
+TASK-067 s06 (TASK-052 Task 16): `GET /internal/tenants/{id}/staff-roles` → papéis distintos dos membros ATIVOS (`services/team.active_staff_roles`), 404 para clínica desconhecida; consumidor: secretarIA `services/brain_staff.py` (prazo da liberação com sinal pago). Contrato em `CONTRACTS.md` (tabela do `professional-emails`). LOCAL, sem publicação.
+
 Plano preparado (2026-10-08): [avisos ao médico, entrada por lembrete e QA R6](../z_prompts/PROMPT_CORRECAO_EMAIL_MEDICO_ENTRADA_LEMBRETE_R6.md). Participação condicional do gateway na propagação do contexto/autenticação; nenhuma correção aplicada nesta rodada.
 
 ## Plano preparado — TASK-036

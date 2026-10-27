@@ -293,3 +293,13 @@ class InternalProfessionalEmailsOut(BaseModel):
     """
 
     items: list[InternalProfessionalEmailOut]
+
+
+class InternalStaffRolesOut(BaseModel):
+    """`GET /internal/tenants/{tenant_id}/staff-roles` response (TASK-052 Task 16).
+
+    The distinct roles (`users.role`, sorted) of the tenant's ACTIVE members — only roles,
+    never a person: secretarIA needs to know whether the clinic has a working `secretary`.
+    """
+
+    roles: list[str]

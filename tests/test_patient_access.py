@@ -1531,3 +1531,70 @@ async def test_refresh_logs_ids_only(pclient, caplog, capsys):
     )
     assert PATIENT_EMAIL not in app_logs
     assert "patient_session_refreshed" in console
+
+
+# --- TASK-053 (owner decision 2026-10-12): the patient's convenio rules -------------------
+
+
+async def test_insurance_overview_relays_to_secretaria_with_the_sessions_clinic(
+    pclient, monkeypatch
+):
+    """The clinic is the TOKEN's: a tenant_id in the query is ignored, the right key goes out."""
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    payload = {"deposit": {"enabled": False, "percent": None}, "plans": []}
+    calls = _spy_transport(monkeypatch, payload=payload)
+    body = (await _login(client, sessionmaker, seed.both)).json()
+
+    resp = await client.get(
+        f"/patient-access/insurance-overview?tenant_id={seed.only_secretaria}",
+        headers=_bearer(body["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["product"] == "secretaria"
+    assert resp.json()["payload"] == payload
+    (call,) = calls
+    assert call["method"] == "GET"
+    assert call["url"] == "/internal/brain-message/insurance-overview"
+    assert call["params"] == {"tenant_id": str(seed.both)}
+    assert call["headers"]["X-Internal-Api-Key"] == "secretaria-key-AAA"
+    assert call["json"] is None
+
+
+async def test_insurance_overview_needs_a_patient_session(pclient, monkeypatch):
+    client, _, _ = pclient
+    _configure_mesh(monkeypatch)
+    calls = _spy_transport(monkeypatch, payload={})
+    assert (await client.get("/patient-access/insurance-overview")).status_code == 401
+    bad = await client.get("/patient-access/insurance-overview", headers=_bearer("not-a-token"))
+    assert bad.status_code == 401
+    assert calls == []
+
+
+async def test_insurance_overview_is_refused_when_the_channel_is_off_and_calls_nothing(
+    pclient, monkeypatch
+):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    calls = _spy_transport(monkeypatch, payload={})
+    body = (await _login(client, sessionmaker, seed.both)).json()
+    async with sessionmaker() as session, session.begin():
+        (await session.get(Tenant, seed.both)).brain_message_enabled = False
+
+    resp = await client.get(
+        "/patient-access/insurance-overview", headers=_bearer(body["access_token"])
+    )
+    assert resp.status_code == 403
+    assert calls == []
+
+
+async def test_insurance_overview_never_forwards_the_upstream_error_body(pclient, monkeypatch):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    _spy_transport(monkeypatch, status_code=500, payload={"detail": "SECRET upstream internals"})
+    body = (await _login(client, sessionmaker, seed.both)).json()
+    resp = await client.get(
+        "/patient-access/insurance-overview", headers=_bearer(body["access_token"])
+    )
+    assert resp.status_code == 502
+    assert "SECRET" not in resp.text

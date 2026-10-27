@@ -652,6 +652,21 @@ async def mark_read(
     return await _call(product, "POST", "/internal/brain-message/messages/read", json=body)
 
 
+async def insurance_overview(*, tenant_id: UUID) -> dict[str, Any]:
+    """The clinic's convenio rules as a patient may see them (TASK-053, owner decision 2026-10-12).
+
+    `GET /internal/brain-message/insurance-overview` on secretarIA, scoped by the SESSION's
+    tenant (the caller passes `patient.tenant_id`, never input). secretarIA's answer carries
+    no id, doctor or patient data by construction; it passes through untouched, like the poll.
+    """
+    return await _call(
+        PRODUCT_SECRETARIA,
+        "GET",
+        "/internal/brain-message/insurance-overview",
+        params={"tenant_id": str(tenant_id)},
+    )
+
+
 # A new product implements the same internal heartbeat and transcript typing fields,
 # then joins by adding its route here (docs/PORTAL_MESSAGING_API.md, "Typing").
 TYPING_PRODUCTS: dict[str, str] = {PRODUCT_SECRETARIA: "/internal/brain-message/typing"}

@@ -1203,3 +1203,15 @@ Visita com e-mail digitado nunca entra na lista (decisão do dono). Visita em qu
 (`VISIT_RETENTION_ENABLED`), com `VISIT_RETENTION_DRY_RUN` ligado para a primeira rodada. Ordem de
 deploy: migrações `0027` e `0028` → `secretaria_api` (rota nova) → brain-api. Estado e provas em
 `docs/CHECKPOINT_retencao_visitas_portal.md`.
+
+## Regras de pagamento dos convênios (TASK-053, 2026-10-12; implementado na TASK-067 sessão 02, local)
+
+`GET /patient-access/insurance-overview` — token da clínica OU de visita (`get_thread_patient`). A clínica é a da
+sessão; nenhum parâmetro a nomeia (um `?tenant_id=` é ignorado). Exige a Secretaria contratada no canal
+(`403` senão, sem nenhuma chamada à secretarIA). Resposta `RelayOut{product: "secretaria", payload, at}`; `payload`
+vem da secretarIA (`GET /internal/brain-message/insurance-overview?tenant_id=`), repassado sem mudança:
+`{deposit: {enabled, percent|null}, plans: [{name, payment_text, clinic_note|null, deposit: charged|not_charged|varies}]}`.
+Nunca leva id, profissional, nota interna do catálogo nem dado de paciente. Somente leitura. Erros do upstream viram
+`502`/`503` genéricos (corpo do upstream nunca repassado). O Portal abre isto a partir da lista de convênios do chat
+(Brain-Message-Frontend, TASK-053 Task 12c — tela ainda NÃO feita). Ordem de deploy: secretarIA (API) → brain-api → front;
+um brain-api publicado antes da secretarIA responde `502` genérico nessa rota, nada mais quebra.

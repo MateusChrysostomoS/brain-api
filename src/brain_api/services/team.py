@@ -457,3 +457,32 @@ async def restore_member_access(
             await deliver_invitation(session, user, invitation, tenant, raw_invitation, url)
         ).member
     return member_out(user)
+
+
+async def active_staff_roles(session: AsyncSession, tenant_id: UUID) -> list[str]:
+    """Distinct `role`s of the tenant's members who can act now, sorted; never a person.
+
+    "Active" = the team screen's own state (`member_out` == "active": not revoked, no
+    pending first access, invite or membership) AND, for a linked personal account, the
+    account rule `require_remaining_manager` already applies (not disabled, not waiting
+    for its first password). Read live, every call (TASK-052 Task 16: secretarIA asks
+    whether the clinic has a working secretary; nothing is cached on either side).
+    """
+    rows = await session.scalars(
+        select(User.role)
+        .distinct()
+        .outerjoin(StaffAccount, StaffAccount.id == User.account_id)
+        .where(
+            User.tenant_id == tenant_id,
+            User.access_revoked_at.is_(None),
+            User.requires_password_change.is_(False),
+            User.membership_pending.is_(False),
+            User.invite_token_hash.is_(None),
+            or_(
+                User.account_id.is_(None),
+                StaffAccount.disabled_at.is_(None)
+                & StaffAccount.requires_password_change.is_(False),
+            ),
+        )
+    )
+    return sorted({role for role in rows.all() if role})

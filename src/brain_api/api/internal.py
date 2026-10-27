@@ -41,6 +41,7 @@ from brain_api.schemas.internal import (
     InternalOnboardingTenantOut,
     InternalProfessionalEmailOut,
     InternalProfessionalEmailsOut,
+    InternalStaffRolesOut,
     PrecheckHandoffIn,
     PrecheckHandoffOut,
     StaffDeliveryUpdate,
@@ -52,6 +53,7 @@ from brain_api.services.entitlements import ACTIVE_STATUSES, resolve_entitlement
 from brain_api.services.hub_scope import AGENDA_SCOPE_OWN, resolve_agenda_scope
 from brain_api.services.precheck_handoff import request_handoff, request_portal_handoff
 from brain_api.services.staff_first_access import aware
+from brain_api.services.team import active_staff_roles
 from brain_api.services.usage import record_usage
 
 logger = get_logger(__name__)
@@ -335,6 +337,33 @@ async def internal_professional_emails(
             if email
         ]
     )
+
+
+@router.get(
+    "/tenants/{tenant_id}/staff-roles",
+    response_model=InternalStaffRolesOut,
+    summary="Distinct roles of a tenant's active members (internal)",
+    responses={**_INTERNAL_RESPONSES, 404: {"description": "Unknown tenant."}},
+)
+async def internal_staff_roles(
+    tenant_id: Annotated[UUID, Path(description="Tenant UUID — the only scope.")],
+    session: AsyncSession = Depends(get_session),
+) -> InternalStaffRolesOut:
+    """Which roles this clinic has among the members who can act NOW (TASK-052 Task 16).
+
+    secretarIA's release of a PAID slot (`services/brain_staff.fetch_has_secretary`)
+    picks the patient's decision deadline from the CLINIC's closing time when the clinic
+    has a working `secretary`, else from the consultation doctor's. The hub token of whoever
+    releases cannot answer it (it names who acts, not who the clinic has), so it is read
+    here, live, from the identity authority (`services/team.active_staff_roles`).
+
+    An unknown tenant is `404 tenant_not_found`, unlike `professional-emails`' empty list:
+    "no secretary" (`False`) and "unknown" (`None`) are different answers to the caller,
+    even though both fall back to the doctor's closing time today.
+    """
+    if await session.get(Tenant, tenant_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "tenant_not_found")
+    return InternalStaffRolesOut(roles=await active_staff_roles(session, tenant_id))
 
 
 @router.post(

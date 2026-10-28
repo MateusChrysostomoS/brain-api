@@ -263,7 +263,9 @@ async def update_intent_catalog(
         raise HTTPException(status.HTTP_409_CONFLICT, "plan_change_not_allowed")
 
     for addon_id in catalog_ids:
-        if addon_id in catalog.ADDON_IDS and billing.price_id_for(addon_id) is None:
+        if addon_id in catalog.ADDON_IDS and (
+            addon_id not in catalog.SELLABLE_ADDON_IDS or billing.price_id_for(addon_id) is None
+        ):
             raise HTTPException(status.HTTP_409_CONFLICT, "addon_not_available")
 
     intent.catalog_ids = _normalize_catalog_ids(catalog_ids)
@@ -530,7 +532,9 @@ async def provision_tenant_from_intent(
     onboarding.provision_defaults(tenant, intent.intake, now)
 
     plan_id = _plan_id_of(intent.catalog_ids)
-    addon_ids = [cid for cid in intent.catalog_ids if cid in catalog.ADDON_IDS]
+    # Only sellable add-ons: a retired one stored on an older intent was never charged
+    # (billing.validate_selection drops it), so it must not switch the flag on either.
+    addon_ids = [cid for cid in intent.catalog_ids if cid in catalog.SELLABLE_ADDON_IDS]
     state = catalog.compute_entitlement_state(plan_id, {aid: True for aid in addon_ids})
 
     ent = await session.get(Entitlement, tenant.id)

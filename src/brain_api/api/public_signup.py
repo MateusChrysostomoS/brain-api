@@ -276,10 +276,17 @@ async def checkout_config() -> CheckoutConfigOut:
     returns nothing secret; a pricing-page view must never be able to eat into the
     shared `_limiter` budget that the actual intent/checkout/status flow depends on.
     `addons` reuses `billing.price_id_for` (settings-only lookup, no DB, no Stripe call)
-    over `catalog.ADDON_IDS` in stable alphabetical order.
+    over `catalog.ADDON_IDS` in stable alphabetical order. An add-on retired from sale
+    (`catalog.SELLABLE_ADDON_IDS`) stays listed but always `available=false`.
     """
     addons = [
-        AddonAvailabilityOut(id=addon_id, available=billing.price_id_for(addon_id) is not None)
+        AddonAvailabilityOut(
+            id=addon_id,
+            available=(
+                addon_id in catalog.SELLABLE_ADDON_IDS
+                and billing.price_id_for(addon_id) is not None
+            ),
+        )
         for addon_id in sorted(catalog.ADDON_IDS)
     ]
     return CheckoutConfigOut(

@@ -1389,6 +1389,34 @@ async def test_checkout_config_addons_reflect_price_map_availability(client):
     assert unavailable == set(catalog.ADDON_IDS) - available
 
 
+async def test_retired_pix_deposit_is_not_offered_nor_accepted_even_when_priced(
+    client, monkeypatch
+):
+    """The sinal via Pix is core in secretarIA since 2026-10-28 and left sale: even with a
+    Stripe price still configured, checkout-config reports it unavailable and the add-on
+    PATCH refuses it."""
+    priced = '{"pix_deposit": "price_pix", "analytics_bi_advanced": "price_bi_adv"}'
+    monkeypatch.setattr(
+        billing_service, "get_settings", lambda: SimpleNamespace(STRIPE_PRICE_MAP=priced)
+    )
+    assert "pix_deposit" in catalog.ADDON_IDS  # keyset unchanged for consumers
+    assert "pix_deposit" not in catalog.SELLABLE_ADDON_IDS
+
+    addons = (await client.get("/public/checkout-config")).json()["addons"]
+    available = {a["id"] for a in addons if a["available"]}
+    assert available == {"analytics_bi_advanced"}
+
+    intent_id = await _register(
+        client, email="patch.retired@example.com", catalog_ids=["secretaria_basico"]
+    )
+    resp = await client.patch(
+        f"/public/signup-intents/{intent_id}",
+        json={"catalog_ids": ["secretaria_basico", "pix_deposit"]},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "addon_not_available"
+
+
 async def test_checkout_config_is_not_rate_limited(client, monkeypatch):
     """Unlike the three signup routes, this endpoint deliberately does NOT share the
     signup `_limiter` bucket — exhausting it must not affect checkout-config reads."""

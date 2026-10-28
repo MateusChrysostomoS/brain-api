@@ -406,6 +406,10 @@ def validate_selection(plan_id: str, addon_ids: list[str] | None) -> CheckoutSel
     for addon_id in addon_ids or []:
         if addon_id not in catalog.ADDON_IDS:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"unknown_addon:{addon_id}")
+        if addon_id not in catalog.SELLABLE_ADDON_IDS:
+            # Retired from sale (e.g. pix_deposit, core since 2026-10-28): dropped, not
+            # refused, so a signup intent stored before the retirement still checks out.
+            continue
         if addon_id not in plan.included_addons and addon_id not in addons:
             addons.append(addon_id)
 

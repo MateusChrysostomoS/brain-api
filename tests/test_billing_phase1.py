@@ -288,6 +288,20 @@ def test_validate_selection_fully_metered_plan_passes_without_direct_price(monke
     assert selection.addon_ids == ()
 
 
+def test_validate_selection_drops_a_retired_addon_even_when_priced(monkeypatch):
+    """pix_deposit left sale on 2026-10-28 (sinal is core in secretarIA). Even with a
+    Stripe price still in the map, it is DROPPED — not refused — so a signup intent stored
+    before the retirement still checks out, just without the R$79 line item."""
+    price_map = _FULLY_METERED_PRICE_MAP[:-1] + ', "pix_deposit": "price_pix"}'
+    monkeypatch.setattr(
+        billing_service,
+        "get_settings",
+        lambda: _extended_fake_settings(STRIPE_PRICE_MAP=price_map),
+    )
+    selection = billing_service.validate_selection("secretaria_basico", ["pix_deposit"])
+    assert selection.addon_ids == ()
+
+
 def test_validate_selection_neither_direct_nor_companion_raises_price_not_configured(
     monkeypatch,
 ):

@@ -177,6 +177,10 @@ class AddonDef:
     description: str
     limit_grants: dict[str, int] = field(default_factory=dict)
     stripe_price_id: str | None = None  # TODO(billing round): real Stripe price id
+    #: False = retired from sale: the id stays in the `entitlements.addons` keyset (row
+    #: shape and consumers stay stable, and a Stripe price already on a live subscription
+    #: still reverse-maps), but no checkout, signup or add-on update may sell it again.
+    sellable: bool = True
 
 
 @dataclass(frozen=True)
@@ -246,15 +250,15 @@ ADDONS: dict[str, AddonDef] = {
             id=ADDON_PIX_DEPOSIT,
             name="Pix deposit",
             description=(
-                "Appointment deposit (sinal) via Pix on WhatsApp: dynamic QR charge at "
-                "booking, refund-window policy, retention on late cancel/no-show. Fixed "
-                "price per clinic."
+                "RETIRED from sale (2026-10-28): the appointment deposit (sinal) is a "
+                "core secretarIA capability, gated only by the clinic's own payment "
+                "settings — not by this flag."
             ),
-            # Intentionally no limit_grants: a flat Stripe line item, not scaled per
-            # unit — the PSP fee (~R$1.99 at Asaas) is paid by the CLINIC on its OWN
-            # PSP account, so it is not our cost and is not metered.
-            # Renamed from `pix_whatsapp` to `pix_deposit` (2026-07-21, pre-launch,
-            # no live subscribers — no data migration needed).
+            # Retired 2026-10-28 (owner's decision): secretarIA stopped reading this flag
+            # (secretarIA docs/CHECKPOINT_sinal_padrao.md). Kept in ADDON_IDS so rows and
+            # the secretarIA entitlements client keep the same keyset, and so a Stripe
+            # price already on a subscription still reverse-maps in the webhook.
+            sellable=False,
         ),
         AddonDef(
             id=ADDON_ANALYTICS_BI,
@@ -283,6 +287,9 @@ ADDONS: dict[str, AddonDef] = {
 
 #: The formal `entitlements.addons` keyset. Every materialized row carries ALL of these.
 ADDON_IDS: frozenset[str] = frozenset(ADDONS)
+
+#: Add-ons that may still be SOLD (checkout, signup, add-on update, checkout-config).
+SELLABLE_ADDON_IDS: frozenset[str] = frozenset(a.id for a in ADDONS.values() if a.sellable)
 
 # PreCheck billing round (2026-08-01): these two quotas are read from Settings ONCE, at
 # catalog import time, rather than hardcoded like every other base_limit in this module.
@@ -340,8 +347,9 @@ PLANS: dict[str, PlanDef] = {
             # active professionals, billable patients, and reminders sent outside the
             # 24h window (billing.py's METERED_*_SUFFIX / STRIPE_PRICE_MAP companions).
             # Replaces the old ferro/bronze_1/bronze_2 tier ladder (2026-07-22) — every
-            # secretarIA tenant is on this ONE plan; analytics_bi_advanced and
-            # pix_deposit are optional flat add-ons layered on top, not separate tiers.
+            # secretarIA tenant is on this ONE plan; analytics_bi_advanced is an
+            # optional flat add-on layered on top, not a separate tier (the sinal/Pix
+            # deposit is core since 2026-10-28, no longer sold).
             base_limits={LIMIT_PROFESSIONALS: 1, LIMIT_UNITS: 1, LIMIT_MESSAGES: 400},
         ),
         PlanDef(

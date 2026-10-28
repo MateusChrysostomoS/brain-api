@@ -423,9 +423,11 @@ outside the 24h window — 24h/1h appointment reminders are now a CORE capabilit
 every plan, billed per-send via the `reminders` Stripe meter, §13.5, not part of this
 add-on), `verified_identity` (Meta Verified for Business), `multi_professional`
 (+1 professional per unit), `multi_unit` (+1 unit per unit), `ehr` (iClinic/Doctoralia/
-Memed/Conexa), `pix_deposit` (appointment deposit/sinal via Pix on WhatsApp — dynamic
-charge + refund-window/retention lifecycle; renamed from `pix_whatsapp` 2026-07-21
-pre-launch with no live subscribers; no limit grants, one flat line item),
+Memed/Conexa), `pix_deposit` (**retired from sale 2026-10-28** — the sinal via Pix is a
+core secretarIA capability gated only by the clinic's own payment settings, and
+secretarIA no longer reads this flag; the key stays in the keyset, `catalog.AddonDef.
+sellable=False` makes checkout drop it, the signup add-on PATCH refuse it with
+`addon_not_available`, and `GET /public/checkout-config` report it `available: false`),
 `analytics_bi` (BI summary), `analytics_bi_advanced` (fixed-price advanced BI
 dashboard — a **distinct** key, NOT implied by `analytics_bi`; no limit grants, bills
 as one flat line item), `human_backup_24_7`.

@@ -252,6 +252,36 @@ class ProfessionalCapacityOut(BaseModel):
     max_allowed: int = ADMIN_MAX_PROFESSIONALS
 
 
+# --- Clinic operational e-mail (lives in secretarIA, `Tenant.contact_email`) ----
+
+
+class AdminContactEmailIn(BaseModel):
+    """`PATCH /admin/tenants/{id}/contact-email`. The key is REQUIRED (no default): `null`
+    or a blank string clears the e-mail, an absent key is a 422 so a client bug can never
+    silently erase it. The value is trimmed and lowercased before validation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    contact_email: EmailStr | None = Field(max_length=320)
+
+    @field_validator("contact_email", mode="before")
+    @classmethod
+    def _normalize(cls, v: object) -> object:
+        if isinstance(v, str):
+            v = v.strip().lower()
+            return v or None
+        return v
+
+
+class AdminContactEmailOut(BaseModel):
+    """The clinic's operational e-mail as secretarIA holds it (`null` = none registered)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: UUID
+    contact_email: str | None
+
+
 # --- Users -----------------------------------------------------------------
 
 

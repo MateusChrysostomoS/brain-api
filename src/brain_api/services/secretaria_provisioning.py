@@ -24,6 +24,7 @@ mapping has to live at the call site.
 The key is NEVER logged (structlog `redact_secrets` also blanks it defensively).
 """
 
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -216,6 +217,68 @@ async def create_professional(
         logger.warning("secretaria_create_professional_failed", upstream_status=resp.status_code)
         return None
     return resp.json()
+
+
+@dataclass(frozen=True)
+class ContactEmailResult:
+    """Tagged outcome of a contact-email call; `contact_email` is set only for `OK`.
+
+    `status` is one of `CONTACT_EMAIL_*` — business outcomes, not raw HTTP codes."""
+
+    status: str
+    contact_email: str | None = None
+
+
+CONTACT_EMAIL_OK = "ok"
+CONTACT_EMAIL_NOT_FOUND = "not_found"  # secretaria has no row for this tenant
+CONTACT_EMAIL_INVALID = "invalid"  # secretaria refused the address (422)
+CONTACT_EMAIL_UNAVAILABLE = "unavailable"  # unconfigured/unreachable/401/403/5xx/bad body
+
+
+def _contact_email_result(resp: httpx.Response | None, *, tenant_id: UUID) -> ContactEmailResult:
+    """Fold a secretaria answer into a `ContactEmailResult`. Never logs the address."""
+    if resp is None:
+        return ContactEmailResult(CONTACT_EMAIL_UNAVAILABLE)
+    if resp.status_code == 404:
+        return ContactEmailResult(CONTACT_EMAIL_NOT_FOUND)
+    if resp.status_code == 422:
+        return ContactEmailResult(CONTACT_EMAIL_INVALID)
+    if resp.status_code != 200:
+        logger.warning(
+            "secretaria_contact_email_failed",
+            tenant_id=str(tenant_id),
+            upstream_status=resp.status_code,
+        )
+        return ContactEmailResult(CONTACT_EMAIL_UNAVAILABLE)
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict) or "contact_email" not in body:
+        logger.warning("secretaria_contact_email_bad_body", tenant_id=str(tenant_id))
+        return ContactEmailResult(CONTACT_EMAIL_UNAVAILABLE)
+    value = body["contact_email"]
+    if value is not None and not isinstance(value, str):
+        logger.warning("secretaria_contact_email_bad_body", tenant_id=str(tenant_id))
+        return ContactEmailResult(CONTACT_EMAIL_UNAVAILABLE)
+    return ContactEmailResult(CONTACT_EMAIL_OK, value)
+
+
+async def get_contact_email(tenant_id: UUID) -> ContactEmailResult:
+    """`GET /internal/tenants/{id}/contact-email` — the clinic's operational e-mail."""
+    resp = await _request("GET", f"/internal/tenants/{tenant_id}/contact-email")
+    return _contact_email_result(resp, tenant_id=tenant_id)
+
+
+async def set_contact_email(tenant_id: UUID, contact_email: str | None) -> ContactEmailResult:
+    """`PATCH /internal/tenants/{id}/contact-email` — set it, or clear it with `None`.
+    The address is sent in the body only; it is never logged here."""
+    resp = await _request(
+        "PATCH",
+        f"/internal/tenants/{tenant_id}/contact-email",
+        json={"contact_email": contact_email},
+    )
+    return _contact_email_result(resp, tenant_id=tenant_id)
 
 
 async def activate_tenant(tenant_id: UUID) -> dict[str, Any] | None:

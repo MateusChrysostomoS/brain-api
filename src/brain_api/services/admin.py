@@ -38,6 +38,7 @@ from brain_api.models.user import (
     ROLE_TENANT_STAFF,
 )
 from brain_api.schemas.admin import (
+    AdminContactEmailOut,
     AdminDemoRequestOut,
     AdminTenantCreateIn,
     AdminTenantCreateOut,
@@ -49,7 +50,7 @@ from brain_api.schemas.admin import (
     EntitlementPatchIn,
     ImpersonationTokenOut,
 )
-from brain_api.services import catalog, secretaria_client
+from brain_api.services import catalog, secretaria_client, secretaria_provisioning
 
 logger = get_logger(__name__)
 
@@ -364,6 +365,50 @@ async def create_tenant(
 
     await onboarding_sync.ensure_products_provisioned(session, out.tenant_id)
     return out
+
+
+_CONTACT_EMAIL_ERRORS = {
+    secretaria_provisioning.CONTACT_EMAIL_NOT_FOUND: (
+        status.HTTP_404_NOT_FOUND,
+        "secretaria_tenant_not_found",
+    ),
+    secretaria_provisioning.CONTACT_EMAIL_INVALID: (
+        422,
+        "invalid_contact_email",
+    ),
+    secretaria_provisioning.CONTACT_EMAIL_UNAVAILABLE: (
+        status.HTTP_502_BAD_GATEWAY,
+        "secretaria_unavailable",
+    ),
+}
+
+
+def _contact_email_out(
+    tenant_id: UUID, result: secretaria_provisioning.ContactEmailResult
+) -> AdminContactEmailOut:
+    if result.status != secretaria_provisioning.CONTACT_EMAIL_OK:
+        code, detail = _CONTACT_EMAIL_ERRORS[result.status]
+        raise HTTPException(code, detail)
+    return AdminContactEmailOut(tenant_id=tenant_id, contact_email=result.contact_email)
+
+
+async def get_contact_email(session: AsyncSession, tenant_id: UUID) -> AdminContactEmailOut:
+    """The clinic's operational e-mail, read live from secretarIA. 404 `Tenant not found`
+    if brain-api has no such tenant (secretarIA is not called)."""
+    if await session.get(Tenant, tenant_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Tenant not found")
+    return _contact_email_out(tenant_id, await secretaria_provisioning.get_contact_email(tenant_id))
+
+
+async def set_contact_email(
+    session: AsyncSession, tenant_id: UUID, contact_email: str | None
+) -> AdminContactEmailOut:
+    """Set (or clear, with `None`) the clinic's operational e-mail in secretarIA. Nothing is
+    stored in brain-api. Same 404 / mapped errors as `get_contact_email`."""
+    if await session.get(Tenant, tenant_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Tenant not found")
+    result = await secretaria_provisioning.set_contact_email(tenant_id, contact_email)
+    return _contact_email_out(tenant_id, result)
 
 
 async def get_entitlement(session: AsyncSession, tenant_id: UUID) -> EntitlementAdminOut:

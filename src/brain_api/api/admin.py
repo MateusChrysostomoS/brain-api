@@ -19,6 +19,8 @@ from brain_api.config import get_settings
 from brain_api.core.database import get_session
 from brain_api.core.logging import get_logger
 from brain_api.schemas.admin import (
+    AdminContactEmailIn,
+    AdminContactEmailOut,
     AdminDemoRequestOut,
     AdminDemoRequestPatchIn,
     AdminTenantCreateIn,
@@ -215,6 +217,55 @@ async def put_professional_capacity(
     return await professional_capacity.set_capacity(
         session, tenant_id, body.max_professionals, actor_user_id=principal.user_id
     )
+
+
+_CONTACT_EMAIL_RESPONSES = {
+    404: {
+        "description": "`Tenant not found`, or `secretaria_tenant_not_found` (no secretarIA row)."
+    },
+    502: {"description": "`secretaria_unavailable`."},
+}
+
+
+@router.get(
+    "/tenants/{tenant_id}/contact-email",
+    response_model=AdminContactEmailOut,
+    summary="Read a clinic's operational e-mail (held by secretarIA)",
+    responses=_CONTACT_EMAIL_RESPONSES,
+)
+async def get_contact_email(
+    tenant_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> AdminContactEmailOut:
+    """`contact_email` is `null` when the clinic has none registered."""
+    return await admin_service.get_contact_email(session, tenant_id)
+
+
+@router.patch(
+    "/tenants/{tenant_id}/contact-email",
+    response_model=AdminContactEmailOut,
+    summary="Set or clear a clinic's operational e-mail (held by secretarIA)",
+    responses={
+        **_CONTACT_EMAIL_RESPONSES,
+        422: {"description": "Body without the key, invalid e-mail, or `invalid_contact_email`."},
+    },
+)
+async def patch_contact_email(
+    tenant_id: UUID,
+    body: AdminContactEmailIn,
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_session),
+) -> AdminContactEmailOut:
+    """Trimmed + lowercased; `null`/blank clears it. Stored in secretarIA only. The log
+    carries the actor, the tenant and whether it was cleared — never the address."""
+    result = await admin_service.set_contact_email(session, tenant_id, body.contact_email)
+    logger.info(
+        "admin_contact_email_updated",
+        actor_user_id=principal.user_id,
+        tenant_id=str(tenant_id),
+        cleared=body.contact_email is None,
+    )
+    return result
 
 
 # --- Users -----------------------------------------------------------------

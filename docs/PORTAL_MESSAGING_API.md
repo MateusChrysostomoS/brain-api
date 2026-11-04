@@ -486,15 +486,23 @@ secretarIA already uses for WhatsApp (`secretaria/src/secretaria/models/message.
     { "id": "cancel|9f21ab3e",  "title": "Cancelar",  "description": null }
   ],
   "button_label": null,              // "list" only
-  "section_title": null              // "list" only
+  "section_title": null,             // "list" only
+  "calendar": { "days": ["2026-12-14", "2027-01-05"] }  // optional, "list" only — see below
 }
 ```
 
-**Only the WhatsApp send path writes this column.** A Brain-Message patient receives the same
-options flattened into plain text by `ChannelSender.interactive_history_body` — this is a
-recorded design decision (`docs/CHECKPOINT_interactive_bubbles.md`), not a gap: the column
-exists so the **staff console** can render the real controls the patient saw on WhatsApp, and
-so a Brain-Message reply can still resolve against them (below).
+**Both send paths write this column.** `BrainMessageSender` stores the same blob the WhatsApp
+path does, and `ChannelSender.interactive_history_body` flattens the options into the plain-text
+`content` that history and the LLM read. The console and the Portal render the real controls from
+the blob, and a Brain-Message reply resolves against it (below).
+
+`calendar` is optional (`null` on a card without one, including older rows) and only the
+Brain-Message sender writes it. `days` lists every date the
+patient may pick, as `YYYY-MM-DD`, already filtered by the doctor's rules on secretarIA's side; it
+sits outside `options`, so the 10-row list cap does not apply to it. A tap on a date comes back as
+`interactive_reply_id: "day|<date>|0"`, and secretarIA accepts only dates on a recent card. This
+repo passes the field through unchanged. Details in
+`secretarIA/docs/CHECKPOINT_calendario_outra_data.md`.
 
 A tap becomes `interactive_reply_id` on the **inbound** side — the id of the button/row, not
 the label:
@@ -1121,6 +1129,10 @@ e-mail address, a cookie, or a JWT from this channel.
   `/enter` are as they were. The Portal side (no reveal on the secretarIA link, PreCheck's tab only
   after the patient wrote there) is Brain-Message-Frontend's. Branch
   `fix/portal-product-separation`, not deployed, no migration.
+- **2026-11-04** — "Outra data" calendar. **§5** gains the optional `interactive.calendar.days`
+  and corrects the old note that only WhatsApp wrote the column. No code change in this repo: the
+  blob passes through the switchboard untouched. Pair in
+  `secretarIA/docs/CHECKPOINT_calendario_outra_data.md`.
 
 ## Typing — o contrato de digitação, qualquer produto
 

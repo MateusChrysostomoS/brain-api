@@ -29,9 +29,13 @@ link/code pasted later — never by an e-mail match
 """
 
 import json
+import logging
+import re
 from datetime import UTC, datetime
+from urllib.parse import unquote_plus
 from uuid import UUID
 
+import httpx
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -160,6 +164,71 @@ _pending_attachment_limiter = SlidingWindowLimiter(
     "patient_pending_attachment",
     lambda: get_settings().PATIENT_PENDING_ATTACHMENT_RATE_LIMIT_PER_MIN,
 )
+# An eighth, for the paged lists (TASK-082). Keyed by the patient HANDLE — the identity the session
+# names, so it holds for a pending visitor and a verified patient alike — and spent by every
+# request that reaches the route with valid input, scroll and search both.
+_options_limiter = SlidingWindowLimiter(
+    "patient_options", lambda: get_settings().PATIENT_OPTIONS_RATE_LIMIT_PER_MINUTE
+)
+
+
+# --- The search text of a paged list is never logged (TASK-082) --------------------------------
+#
+# `GET .../messages/{id}/options?q=<what the patient typed>` carries free text in a URL, because
+# that is the frozen contract (CONTRACT.md §c4/§c5) — and two loggers of THIS process print URLs:
+#   * uvicorn's access log, for the browser's own request (`GET /patient-access/.../options?q=...`);
+#   * httpx at INFO, for the hop to secretarIA (`HTTP Request: GET http://secretaria/.../options?q=...`).
+# This service runs at INFO, so without the filter below every search a patient types would sit in
+# stdout in clear, next to their patient handle, for as long as the logs are kept. A patient types
+# names, symptoms, whatever the box invites; that is PII by default, and `tenant-secrets-encryption`
+# already settled that PII does not belong in a log line.
+#
+# The filter blanks the VALUE of `q` on this route's URLs only — the line stays (status, path, the
+# other parameters), so an operator can still see that a search happened and how it ended. It
+# never raises: a log filter that breaks the request path would be worse than the leak. What it
+# cannot reach is outside this process (the reverse proxy in front of brain-api, secretarIA's own
+# access log): those are the operator's to scrub, and docs/PORTAL_MESSAGING_API.md says so.
+_SEARCH_REDACTION = "REDACTED"
+_OPTIONS_TARGET = re.compile(
+    r"^(?P<head>[^?#]*/messages/[A-Za-z0-9_-]+/options)\?(?P<query>[^#]*)(?P<fragment>#.*)?$"
+)
+
+
+def _scrub_search(arg: object) -> object:
+    """`arg` with the value of its `q` parameter blanked when it is an options-route URL.
+
+    Works on the text httpx and uvicorn both format (`httpx.URL` or a `path?query` string). The key
+    is compared after percent-decoding, so `?%71=...` — which the framework also reads as `q` — is
+    not a way around it. Anything that is not an options URL comes back untouched.
+    """
+    text = str(arg) if isinstance(arg, httpx.URL) else arg
+    if not isinstance(text, str):
+        return arg
+    match = _OPTIONS_TARGET.match(text)
+    if match is None:
+        return arg
+    pieces = []
+    for piece in match["query"].split("&"):
+        key, separator, _ = piece.partition("=")
+        blanked = separator and unquote_plus(key) == "q"
+        pieces.append(f"{key}={_SEARCH_REDACTION}" if blanked else piece)
+    return f"{match['head']}?{'&'.join(pieces)}{match['fragment'] or ''}"
+
+
+class _RedactSearchText(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if isinstance(record.args, tuple):
+                record.args = tuple(_scrub_search(arg) for arg in record.args)
+        except Exception:  # noqa: BLE001 - a log filter must never break the request path.
+            pass
+        return True
+
+
+for _logger_name in ("httpx", "uvicorn.access"):
+    _logged = logging.getLogger(_logger_name)
+    if not any(isinstance(existing, _RedactSearchText) for existing in _logged.filters):
+        _logged.addFilter(_RedactSearchText())
 
 # The e-mail template services/mailer.py renders (brain-api's own SMTP since TASK-056).
 _OTP_EMAIL_TEMPLATE = "patient_access_otp"
@@ -1565,6 +1634,100 @@ async def get_thread_media(
         headers=_media_headers(media),
         background=BackgroundTask(media.aclose),
     )
+
+
+@router.get(
+    "/threads/{product}/messages/{message_id}/options",
+    response_model=RelayOut,
+    summary="One page of the options behind a list card (scroll and search)",
+    description=(
+        "TASK-082. A Portal list card (services, doctors, convenios) carries its first page and a "
+        "`source` pointer; the rest is read here, 10 at a time, by scrolling or by typing a search "
+        "that covers the WHOLE list. The card is the `id` the poll returned; which list it is, and "
+        "for whom, was fixed server-side when it was written - the browser can name no scope, "
+        "clinic or patient, and a `tenant_id`/`external_id` in the query is ignored. 404 "
+        "`options_not_found` alike for a card that does not exist, one of another patient or "
+        "clinic, one without a pointer, and a product with no paged lists. `cursor` is the "
+        "`source.next_cursor` / previous `payload.next_cursor`, opaque - send it back as received. "
+        "`q` is trimmed and at most 40 characters, accents and case are ignored by the product; "
+        "an empty `q` is no filter. Payload: `{items: [{id, title, description}], next_cursor | "
+        "null, total}` (`total` = rows matching `q`; the fixed rows of the card are never in "
+        "`items`). `q` is never stored or logged."
+    ),
+    responses={
+        401: {"description": "Missing or invalid patient session."},
+        403: {"description": "The clinic does not offer that product on this channel."},
+        404: {"description": "`options_not_found` - one answer for every reason."},
+        422: {
+            "description": (
+                "`invalid_cursor`, `invalid_options_query` (`q` over 40 characters, or a search "
+                "the product refused), or a bad `page_size` / card id (FastAPI's own list)."
+            )
+        },
+        429: {"description": "Too many requests - per-patient budget."},
+        502: {"description": "The product backend failed or is misconfigured."},
+        503: {"description": "The product's leg of the mesh is unconfigured or degraded."},
+    },
+)
+async def get_message_options(
+    product: str = Path(description="`secretaria` - the only product with paged lists."),
+    message_id: str = Path(
+        pattern=attachments.MEDIA_ID_PATTERN,
+        description="The `id` of the list card, as the poll returned it.",
+    ),
+    page_size: int = Query(
+        default=message_switchboard.OPTIONS_PAGE_SIZE_MAX,
+        ge=1,
+        le=message_switchboard.OPTIONS_PAGE_SIZE_MAX,
+        description="Rows per page, 1-10.",
+    ),
+    cursor: str | None = Query(default=None, description="Opaque; absent for the first page."),
+    q: str | None = Query(default=None, description="Search text, trimmed, at most 40 characters."),
+    patient: MessagePatient = Depends(get_thread_patient),
+    session: AsyncSession = Depends(get_session),
+) -> RelayOut:
+    """Relay one page of a list card's options, scoped by the SESSION like every thread route.
+
+    `tenant_id` and `external_id` upstream are `patient.tenant_id` and `patient.id` — nothing the
+    browser sent — so secretarIA, which owns the card, answers 404 unless the card was written for
+    THIS patient at THIS clinic; this edge cannot see the card, so it never decides ownership, it
+    only guarantees the identity that decision is made from.
+
+    `cursor` and `q` are validated by hand (not by `Query(pattern=..., max_length=...)`) for two
+    reasons: the contract names the refusals (`invalid_cursor`, `invalid_options_query`), and
+    FastAPI's own 422 echoes the rejected `input` back — which, for `q`, would put the patient's
+    search text in a response body and in whatever records it. An empty `cursor` or `q` is the same
+    as an absent one, and nothing about either is logged.
+    """
+    if cursor and message_switchboard.OPTIONS_CURSOR.fullmatch(cursor) is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, message_switchboard.INVALID_CURSOR
+        )
+    search = (q or "").strip()
+    if len(search) > message_switchboard.OPTIONS_QUERY_MAX_CHARS:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, message_switchboard.INVALID_OPTIONS_QUERY
+        )
+    if not _options_limiter.allow(str(patient.id)):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
+
+    ent = await resolve_entitlement(session, patient.tenant_id)
+    message_switchboard.require_product(ent, product)
+    if product not in message_switchboard.OPTIONS_PRODUCTS:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, message_switchboard.OPTIONS_NOT_FOUND)
+    # Scroll fires this in bursts: release the pooled connection before the upstream hop.
+    await session.close()
+
+    payload = await message_switchboard.list_options(
+        product,
+        tenant_id=patient.tenant_id,
+        patient_ref=str(patient.id),
+        message_id=message_id,
+        page_size=page_size,
+        cursor=cursor or None,
+        q=search or None,
+    )
+    return RelayOut(product=product, payload=payload, at=datetime.now(UTC))
 
 
 def _greet_if_secretaria(

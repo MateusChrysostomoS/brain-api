@@ -29,13 +29,9 @@ link/code pasted later — never by an e-mail match
 """
 
 import json
-import logging
-import re
 from datetime import UTC, datetime
-from urllib.parse import unquote_plus
 from uuid import UUID
 
-import httpx
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -103,6 +99,7 @@ from brain_api.schemas.portal.patient_access import (
     PatientAttachmentForm,
     PatientEnterIn,
     PatientMessageIn,
+    PatientOptionsIn,
     PatientReadMarkIn,
     PatientTypingIn,
     PendingProgressOut,
@@ -171,64 +168,6 @@ _options_limiter = SlidingWindowLimiter(
     "patient_options", lambda: get_settings().PATIENT_OPTIONS_RATE_LIMIT_PER_MINUTE
 )
 
-
-# --- The search text of a paged list is never logged (TASK-082) --------------------------------
-#
-# `GET .../messages/{id}/options?q=<what the patient typed>` carries free text in a URL, because
-# that is the frozen contract (CONTRACT.md §c4/§c5) — and two loggers of THIS process print URLs:
-#   * uvicorn's access log, for the browser's own request (`GET /patient-access/.../options?q=...`);
-#   * httpx at INFO, for the hop to secretarIA (`HTTP Request: GET http://secretaria/.../options?q=...`).
-# This service runs at INFO, so without the filter below every search a patient types would sit in
-# stdout in clear, next to their patient handle, for as long as the logs are kept. A patient types
-# names, symptoms, whatever the box invites; that is PII by default, and `tenant-secrets-encryption`
-# already settled that PII does not belong in a log line.
-#
-# The filter blanks the VALUE of `q` on this route's URLs only — the line stays (status, path, the
-# other parameters), so an operator can still see that a search happened and how it ended. It
-# never raises: a log filter that breaks the request path would be worse than the leak. What it
-# cannot reach is outside this process (the reverse proxy in front of brain-api, secretarIA's own
-# access log): those are the operator's to scrub, and docs/PORTAL_MESSAGING_API.md says so.
-_SEARCH_REDACTION = "REDACTED"
-_OPTIONS_TARGET = re.compile(
-    r"^(?P<head>[^?#]*/messages/[A-Za-z0-9_-]+/options)\?(?P<query>[^#]*)(?P<fragment>#.*)?$"
-)
-
-
-def _scrub_search(arg: object) -> object:
-    """`arg` with the value of its `q` parameter blanked when it is an options-route URL.
-
-    Works on the text httpx and uvicorn both format (`httpx.URL` or a `path?query` string). The key
-    is compared after percent-decoding, so `?%71=...` — which the framework also reads as `q` — is
-    not a way around it. Anything that is not an options URL comes back untouched.
-    """
-    text = str(arg) if isinstance(arg, httpx.URL) else arg
-    if not isinstance(text, str):
-        return arg
-    match = _OPTIONS_TARGET.match(text)
-    if match is None:
-        return arg
-    pieces = []
-    for piece in match["query"].split("&"):
-        key, separator, _ = piece.partition("=")
-        blanked = separator and unquote_plus(key) == "q"
-        pieces.append(f"{key}={_SEARCH_REDACTION}" if blanked else piece)
-    return f"{match['head']}?{'&'.join(pieces)}{match['fragment'] or ''}"
-
-
-class _RedactSearchText(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            if isinstance(record.args, tuple):
-                record.args = tuple(_scrub_search(arg) for arg in record.args)
-        except Exception:  # noqa: BLE001 - a log filter must never break the request path.
-            pass
-        return True
-
-
-for _logger_name in ("httpx", "uvicorn.access"):
-    _logged = logging.getLogger(_logger_name)
-    if not any(isinstance(existing, _RedactSearchText) for existing in _logged.filters):
-        _logged.addFilter(_RedactSearchText())
 
 # The e-mail template services/mailer.py renders (brain-api's own SMTP since TASK-056).
 _OTP_EMAIL_TEMPLATE = "patient_access_otp"
@@ -1636,7 +1575,7 @@ async def get_thread_media(
     )
 
 
-@router.get(
+@router.post(
     "/threads/{product}/messages/{message_id}/options",
     response_model=RelayOut,
     summary="One page of the options behind a list card (scroll and search)",
@@ -1650,9 +1589,11 @@ async def get_thread_media(
         "clinic, one without a pointer, and a product with no paged lists. `cursor` is the "
         "`source.next_cursor` / previous `payload.next_cursor`, opaque - send it back as received. "
         "`q` is trimmed and at most 40 characters, accents and case are ignored by the product; "
-        "an empty `q` is no filter. Payload: `{items: [{id, title, description}], next_cursor | "
-        "null, total}` (`total` = rows matching `q`; the fixed rows of the card are never in "
-        "`items`). `q` is never stored or logged."
+        "an empty `q` is no filter. Everything goes in the JSON body `{cursor, page_size, q}`, "
+        "never in the URL: `q` is what the patient typed, and every proxy on the way logs URLs. "
+        "Payload: `{items: [{id, title, description}], next_cursor | null, total}` (`total` = "
+        "rows matching `q`; the fixed rows of the card are never in `items`). `q` is never "
+        "stored or logged."
     ),
     responses={
         401: {"description": "Missing or invalid patient session."},
@@ -1670,19 +1611,12 @@ async def get_thread_media(
     },
 )
 async def get_message_options(
+    body: PatientOptionsIn,
     product: str = Path(description="`secretaria` - the only product with paged lists."),
     message_id: str = Path(
         pattern=attachments.MEDIA_ID_PATTERN,
         description="The `id` of the list card, as the poll returned it.",
     ),
-    page_size: int = Query(
-        default=message_switchboard.OPTIONS_PAGE_SIZE_MAX,
-        ge=1,
-        le=message_switchboard.OPTIONS_PAGE_SIZE_MAX,
-        description="Rows per page, 1-10.",
-    ),
-    cursor: str | None = Query(default=None, description="Opaque; absent for the first page."),
-    q: str | None = Query(default=None, description="Search text, trimmed, at most 40 characters."),
     patient: MessagePatient = Depends(get_thread_patient),
     session: AsyncSession = Depends(get_session),
 ) -> RelayOut:
@@ -1699,6 +1633,7 @@ async def get_message_options(
     search text in a response body and in whatever records it. An empty `cursor` or `q` is the same
     as an absent one, and nothing about either is logged.
     """
+    cursor, q, page_size = body.cursor, body.q, body.page_size
     if cursor and message_switchboard.OPTIONS_CURSOR.fullmatch(cursor) is None:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, message_switchboard.INVALID_CURSOR

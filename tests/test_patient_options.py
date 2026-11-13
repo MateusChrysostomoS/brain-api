@@ -23,6 +23,7 @@ import base64
 import json
 import logging
 import uuid
+from urllib.parse import unquote
 
 import httpx
 import pytest
@@ -48,9 +49,23 @@ UPSTREAM = "/internal/brain-message/messages/{card}/options"
 SENTINEL = "zq9-termo-secreto"  # a search text no other string in the app can contain
 
 
-def _url(card, product="secretaria", **query) -> str:
-    qs = "&".join(f"{k}={v}" for k, v in query.items())
-    return f"/patient-access/threads/{product}/messages/{card}/options" + (f"?{qs}" if qs else "")
+def _url(card, product="secretaria") -> str:
+    return f"/patient-access/threads/{product}/messages/{card}/options"
+
+
+async def _ask(client, card, product="secretaria", headers=None, **body):
+    """POST the options request, everything in the JSON body - never in the URL.
+
+    String values are written percent-encoded in the cases below (how they were first typed as
+    query strings); they are decoded here, so each case still means the same literal text.
+    """
+    payload = {k: unquote(v) if isinstance(v, str) else v for k, v in body.items()}
+    return await client.post(_url(card, product), json=payload, headers=headers or {})
+
+
+def _sent(call) -> dict:
+    """What brain-api sent upstream: the JSON body of the hop (the URL carries no input)."""
+    return json.loads(call["body"] or b"{}")
 
 
 # --- the fake secretarIA ---------------------------------------------------------------------
@@ -87,11 +102,13 @@ def _secretaria(cards: dict[str, tuple[uuid.UUID, str, list[dict]]]):
             return httpx.Response(status, json={"detail": {"code": code}}, request=request)
 
         card_id = request.url.path.split("/")[-2]
-        params = dict(request.url.params)
+        if request.method != "POST" or request.url.query:
+            return refuse(405, "method_not_allowed")
+        params = json.loads(request.content or b"{}")
         if "tenant_id" not in params or "external_id" not in params:
             return refuse(422, "missing_scope")
         try:
-            page_size = int(params.get("page_size", "10"))
+            page_size = int(params.get("page_size", 10))
         except ValueError:
             return refuse(422, "invalid_page_size")
         if not 1 <= page_size <= 10:
@@ -136,7 +153,7 @@ async def test_own_card_is_relayed_with_the_sessions_clinic_and_handle(pclient, 
     card = str(uuid.uuid4())
     calls = _mesh(monkeypatch, _secretaria({card: (seed.both, me["patient_ref"], _catalogue())}))
 
-    resp = await client.get(_url(card), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, card, headers=_bearer(me["access_token"]))
 
     assert resp.status_code == 200, resp.text
     out = resp.json()
@@ -144,14 +161,15 @@ async def test_own_card_is_relayed_with_the_sessions_clinic_and_handle(pclient, 
     assert [i["id"] for i in out["payload"]["items"]] == [f"svc|Serviço {i:02d}" for i in range(10)]
     assert out["payload"]["total"] == 25 and out["payload"]["next_cursor"]
     (call,) = calls
-    assert (call["method"], call["path"]) == ("GET", UPSTREAM.format(card=card))
-    assert call["params"] == {
+    assert (call["method"], call["path"]) == ("POST", UPSTREAM.format(card=card))
+    assert _sent(call) == {
         "tenant_id": str(seed.both),
         "external_id": me["patient_ref"],
-        "page_size": "10",
+        "page_size": 10,
     }
     assert call["headers"]["X-Internal-Api-Key"] == "secretaria-key-AAA"
-    assert call["body"] == b""
+    # The hop's URL carries nothing at all: no ids, no cursor, no search.
+    assert call["params"] == {}
 
 
 async def test_the_cursor_is_opaque_and_goes_on_exactly_as_received(pclient, monkeypatch):
@@ -162,13 +180,11 @@ async def test_the_cursor_is_opaque_and_goes_on_exactly_as_received(pclient, mon
     calls = _mesh(monkeypatch, _secretaria({card: (seed.both, me["patient_ref"], _catalogue())}))
     headers = _bearer(me["access_token"])
 
-    first = (await client.get(_url(card), headers=headers)).json()["payload"]
-    second = await client.get(_url(card, cursor=first["next_cursor"]), headers=headers)
-    last = await client.get(
-        _url(card, cursor=second.json()["payload"]["next_cursor"]), headers=headers
-    )
+    first = (await _ask(client, card, headers=headers)).json()["payload"]
+    second = await _ask(client, card, cursor=first["next_cursor"], headers=headers)
+    last = await _ask(client, card, cursor=second.json()["payload"]["next_cursor"], headers=headers)
 
-    assert calls[1]["params"]["cursor"] == first["next_cursor"]
+    assert _sent(calls[1])["cursor"] == first["next_cursor"]
     assert [i["id"] for i in second.json()["payload"]["items"]][0] == "svc|Serviço 10"
     assert [i["id"] for i in last.json()["payload"]["items"]][-1] == "svc|Serviço 24"
     assert last.json()["payload"]["next_cursor"] is None
@@ -181,14 +197,17 @@ async def test_search_text_is_trimmed_and_page_size_is_forwarded(pclient, monkey
     card = str(uuid.uuid4())
     calls = _mesh(monkeypatch, _secretaria({card: (seed.both, me["patient_ref"], _catalogue())}))
 
-    resp = await client.get(
-        _url(card, q="%20%20servi%C3%A7o%2012%20%20", page_size=3),
+    resp = await _ask(
+        client,
+        card,
+        q="%20%20servi%C3%A7o%2012%20%20",
+        page_size=3,
         headers=_bearer(me["access_token"]),
     )
 
     assert resp.status_code == 200, resp.text
-    assert calls[0]["params"]["q"] == "serviço 12"
-    assert calls[0]["params"]["page_size"] == "3"
+    assert _sent(calls[0])["q"] == "serviço 12"
+    assert _sent(calls[0])["page_size"] == 3
     assert [i["id"] for i in resp.json()["payload"]["items"]] == ["svc|Serviço 12"]
 
 
@@ -200,10 +219,10 @@ async def test_an_empty_search_is_no_filter_and_is_not_forwarded(pclient, monkey
     card = str(uuid.uuid4())
     calls = _mesh(monkeypatch, _secretaria({card: (seed.both, me["patient_ref"], _catalogue())}))
 
-    resp = await client.get(_url(card, q=q, cursor=""), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, card, q=q, cursor="", headers=_bearer(me["access_token"]))
 
     assert resp.status_code == 200, resp.text
-    assert "q" not in calls[0]["params"] and "cursor" not in calls[0]["params"]
+    assert "q" not in _sent(calls[0]) and "cursor" not in _sent(calls[0])
     assert resp.json()["payload"]["total"] == 25
 
 
@@ -214,18 +233,37 @@ async def test_forty_characters_after_trimming_is_the_ceiling_and_is_accepted(pc
     card = str(uuid.uuid4())
     calls = _mesh(monkeypatch, _secretaria({card: (seed.both, me["patient_ref"], _catalogue())}))
 
-    resp = await client.get(
-        _url(card, q="%20" * 5 + "a" * 40 + "%20" * 5), headers=_bearer(me["access_token"])
+    resp = await _ask(
+        client, card, q="%20" * 5 + "a" * 40 + "%20" * 5, headers=_bearer(me["access_token"])
     )
 
     assert resp.status_code == 200, resp.text
-    assert calls[0]["params"]["q"] == "a" * 40
+    assert _sent(calls[0])["q"] == "a" * 40
 
 
 # --- 2) Identity: the browser can name nothing -----------------------------------------------
 
 
-async def test_a_clinic_patient_or_scope_named_by_the_browser_changes_nothing(pclient, monkeypatch):
+@pytest.mark.parametrize(
+    "named", [{"tenant_id": "other"}, {"external_id": "other"}, {"scope": "x"}, {"kind": "x"}]
+)
+async def test_a_clinic_patient_or_scope_named_by_the_browser_is_refused(
+    pclient, monkeypatch, named
+):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+    card = str(uuid.uuid4())
+    calls = _mesh(monkeypatch, _secretaria({card: (seed.both, me["patient_ref"], _catalogue())}))
+
+    resp = await _ask(client, card, headers=_bearer(me["access_token"]), **named)
+
+    assert resp.status_code == 422, resp.text
+    assert calls == []
+
+
+async def test_identity_named_in_the_url_changes_nothing(pclient, monkeypatch):
+    """A query string on the POST is not input: the clinic and patient are the session's."""
     client, sessionmaker, seed = pclient
     _configure_mesh(monkeypatch)
     me = await _patient(client, sessionmaker, seed.both)
@@ -233,22 +271,20 @@ async def test_a_clinic_patient_or_scope_named_by_the_browser_changes_nothing(pc
     card = str(uuid.uuid4())
     calls = _mesh(monkeypatch, _secretaria({card: (seed.both, me["patient_ref"], _catalogue())}))
 
-    resp = await client.get(
-        _url(
-            card,
-            tenant_id=seed.only_secretaria,
-            external_id=other["patient_ref"],
-            scope="professional_id%3Dx",
-            kind="insurance",
-        ),
+    resp = await client.post(
+        _url(card),
+        params={"tenant_id": str(seed.only_secretaria), "external_id": other["patient_ref"]},
+        json={},
         headers=_bearer(me["access_token"]),
     )
 
     assert resp.status_code == 200, resp.text
     (call,) = calls
-    assert call["params"]["tenant_id"] == str(seed.both)
-    assert call["params"]["external_id"] == me["patient_ref"]
-    assert set(call["params"]) == {"tenant_id", "external_id", "page_size"}
+    assert _sent(call) == {
+        "tenant_id": str(seed.both),
+        "external_id": me["patient_ref"],
+        "page_size": 10,
+    }
 
 
 async def test_another_patients_card_in_the_same_clinic_is_the_404_of_a_card_that_never_was(
@@ -262,14 +298,14 @@ async def test_another_patients_card_in_the_same_clinic_is_the_404_of_a_card_tha
     card = str(uuid.uuid4())
     calls = _mesh(monkeypatch, _secretaria({card: (seed.both, owner["patient_ref"], _catalogue())}))
 
-    stolen = await client.get(_url(card), headers=_bearer(intruder["access_token"]))
-    missing = await client.get(_url(uuid.uuid4()), headers=_bearer(intruder["access_token"]))
+    stolen = await _ask(client, card, headers=_bearer(intruder["access_token"]))
+    missing = await _ask(client, uuid.uuid4(), headers=_bearer(intruder["access_token"]))
 
     assert (stolen.status_code, stolen.json()) == (404, {"detail": "options_not_found"})
     assert (missing.status_code, missing.json()) == (404, {"detail": "options_not_found"})
     # The upstream was asked as the INTRUDER, never as the owner: that is what makes it 404.
-    assert calls[0]["params"]["external_id"] == intruder["patient_ref"]
-    assert owner["patient_ref"] not in json.dumps([c["params"] for c in calls])
+    assert _sent(calls[0])["external_id"] == intruder["patient_ref"]
+    assert owner["patient_ref"] not in json.dumps([_sent(c) for c in calls])
 
 
 async def test_another_clinics_card_is_a_404(pclient, monkeypatch):
@@ -281,11 +317,11 @@ async def test_another_clinics_card_is_a_404(pclient, monkeypatch):
     card = str(uuid.uuid4())
     calls = _mesh(monkeypatch, _secretaria({card: (seed.both, at_a["patient_ref"], _catalogue())}))
 
-    resp = await client.get(_url(card), headers=_bearer(at_b["access_token"]))
+    resp = await _ask(client, card, headers=_bearer(at_b["access_token"]))
 
     assert (resp.status_code, resp.json()) == (404, {"detail": "options_not_found"})
-    assert calls[0]["params"]["tenant_id"] == str(seed.only_secretaria)
-    assert str(seed.both) not in json.dumps(calls[0]["params"])
+    assert _sent(calls[0])["tenant_id"] == str(seed.only_secretaria)
+    assert str(seed.both) not in json.dumps(_sent(calls[0]))
 
 
 async def test_a_token_pairing_a_patient_with_another_clinic_reaches_nothing(pclient, monkeypatch):
@@ -301,7 +337,7 @@ async def test_a_token_pairing_a_patient_with_another_clinic_reaches_nothing(pcl
     )
     calls = _mesh(monkeypatch, _secretaria({}))
 
-    resp = await client.get(_url(uuid.uuid4()), headers=_bearer(forged))
+    resp = await _ask(client, uuid.uuid4(), headers=_bearer(forged))
 
     assert resp.status_code == 401, resp.text
     assert calls == []
@@ -316,10 +352,10 @@ async def test_a_pending_visitor_reads_the_options_of_its_own_card(pclient, monk
         monkeypatch, _secretaria({card: (seed.both, opened["patient_ref"], _catalogue())})
     )
 
-    resp = await client.get(_url(card), headers=_bearer(opened["pending_token"]))
+    resp = await _ask(client, card, headers=_bearer(opened["pending_token"]))
 
     assert resp.status_code == 200, resp.text
-    assert (calls[0]["params"]["tenant_id"], calls[0]["params"]["external_id"]) == (
+    assert (_sent(calls[0])["tenant_id"], _sent(calls[0])["external_id"]) == (
         str(seed.both),
         opened["patient_ref"],
     )
@@ -345,7 +381,7 @@ async def test_a_malformed_cursor_is_a_422_that_names_it(pclient, monkeypatch, q
     me = await _patient(client, sessionmaker, seed.both)
     calls = _mesh(monkeypatch, _secretaria({}))
 
-    resp = await client.get(_url(uuid.uuid4(), **query), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, uuid.uuid4(), **query, headers=_bearer(me["access_token"]))
 
     assert (resp.status_code, resp.json()) == (422, {"detail": "invalid_cursor"})
     assert calls == []
@@ -357,9 +393,9 @@ async def test_a_cursor_of_exactly_two_hundred_characters_is_still_forwarded(pcl
     me = await _patient(client, sessionmaker, seed.both)
     calls = _mesh(monkeypatch, _secretaria({}))
 
-    await client.get(_url(uuid.uuid4(), cursor="A" * 200), headers=_bearer(me["access_token"]))
+    await _ask(client, uuid.uuid4(), cursor="A" * 200, headers=_bearer(me["access_token"]))
 
-    assert calls[0]["params"]["cursor"] == "A" * 200
+    assert _sent(calls[0])["cursor"] == "A" * 200
 
 
 @pytest.mark.parametrize("q", ["a" * 41, "%20" + "a" * 41 + "%20", "%C3%A1" * 41])
@@ -369,7 +405,7 @@ async def test_a_search_over_forty_characters_is_a_422_and_is_not_echoed(pclient
     me = await _patient(client, sessionmaker, seed.both)
     calls = _mesh(monkeypatch, _secretaria({}))
 
-    resp = await client.get(_url(uuid.uuid4(), q=q), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, uuid.uuid4(), q=q, headers=_bearer(me["access_token"]))
 
     assert (resp.status_code, resp.json()) == (422, {"detail": "invalid_options_query"})
     assert "aaaa" not in resp.text and "%C3" not in resp.text
@@ -383,8 +419,8 @@ async def test_a_page_size_outside_one_to_ten_is_a_422(pclient, monkeypatch, pag
     me = await _patient(client, sessionmaker, seed.both)
     calls = _mesh(monkeypatch, _secretaria({}))
 
-    resp = await client.get(
-        _url(uuid.uuid4(), page_size=page_size), headers=_bearer(me["access_token"])
+    resp = await _ask(
+        client, uuid.uuid4(), page_size=page_size, headers=_bearer(me["access_token"])
     )
 
     assert resp.status_code == 422, resp.text
@@ -398,7 +434,7 @@ async def test_a_malformed_card_id_is_a_422(pclient, monkeypatch, card):
     me = await _patient(client, sessionmaker, seed.both)
     calls = _mesh(monkeypatch, _secretaria({}))
 
-    resp = await client.get(_url(card), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, card, headers=_bearer(me["access_token"]))
 
     assert resp.status_code == 422, resp.text
     assert calls == []
@@ -414,7 +450,7 @@ async def test_without_a_patient_session_nothing_is_fetched(pclient, monkeypatch
     calls = _mesh(monkeypatch, _secretaria({}))
     headers = {"Authorization": authorization} if authorization else {}
 
-    resp = await client.get(_url(uuid.uuid4()), headers=headers)
+    resp = await _ask(client, uuid.uuid4(), headers=headers)
 
     assert resp.status_code == 401, resp.text
     assert calls == []
@@ -426,7 +462,7 @@ async def test_authentication_is_checked_before_the_input(pclient, monkeypatch):
     _configure_mesh(monkeypatch)
     calls = _mesh(monkeypatch, _secretaria({}))
 
-    resp = await client.get(_url("bad.id", page_size=99, q="a" * 99))
+    resp = await _ask(client, "bad.id", page_size=99, q="a" * 99)
 
     assert resp.status_code == 401, resp.text
     assert calls == []
@@ -442,7 +478,7 @@ async def test_a_clinic_with_the_channel_off_is_refused_before_any_network_call(
     async with sessionmaker() as session, session.begin():
         (await session.get(Tenant, seed.both)).brain_message_enabled = False
 
-    resp = await client.get(_url(uuid.uuid4()), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, uuid.uuid4(), headers=_bearer(me["access_token"]))
 
     assert (resp.status_code, resp.json()) == (403, {"detail": "product_unavailable"})
     assert calls == []
@@ -457,7 +493,7 @@ async def test_a_product_the_clinic_does_not_have_is_a_403_without_network(
     me = await _patient(client, sessionmaker, seed.only_secretaria)
     calls = _mesh(monkeypatch, _secretaria({}))
 
-    resp = await client.get(_url(uuid.uuid4(), product), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, uuid.uuid4(), product, headers=_bearer(me["access_token"]))
 
     assert (resp.status_code, resp.json()) == (403, {"detail": "product_unavailable"})
     assert calls == []
@@ -471,7 +507,7 @@ async def test_precheck_has_no_paged_lists_so_its_answer_is_a_404_without_networ
     me = await _patient(client, sessionmaker, seed.both)  # this clinic HAS precheck
     calls = _mesh(monkeypatch, _secretaria({}))
 
-    resp = await client.get(_url(uuid.uuid4(), "precheck"), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, uuid.uuid4(), "precheck", headers=_bearer(me["access_token"]))
 
     assert (resp.status_code, resp.json()) == (404, {"detail": "options_not_found"})
     assert calls == []
@@ -489,7 +525,7 @@ async def test_upstream_404_is_options_not_found_in_our_words(pclient, monkeypat
         lambda r: httpx.Response(404, json={"detail": "SECRET upstream internals"}, request=r),
     )
 
-    resp = await client.get(_url(uuid.uuid4()), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, uuid.uuid4(), headers=_bearer(me["access_token"]))
 
     assert (resp.status_code, resp.json()) == (404, {"detail": "options_not_found"})
     assert "SECRET" not in resp.text
@@ -519,7 +555,7 @@ async def test_upstream_422_is_one_of_our_two_codes_never_its_own_body(
 
     _mesh(monkeypatch, answer)
 
-    resp = await client.get(_url(uuid.uuid4()), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, uuid.uuid4(), headers=_bearer(me["access_token"]))
 
     assert (resp.status_code, resp.json()) == (422, {"detail": ours})
     assert "SECRET" not in resp.text
@@ -547,7 +583,7 @@ async def test_every_other_upstream_failure_keeps_its_existing_opaque_answer(
         lambda r: httpx.Response(upstream_status, json={"detail": "SECRET internals"}, request=r),
     )
 
-    resp = await client.get(_url(uuid.uuid4()), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, uuid.uuid4(), headers=_bearer(me["access_token"]))
 
     assert (resp.status_code, resp.json()) == (ours_status, {"detail": ours})
     assert "SECRET" not in resp.text
@@ -565,7 +601,7 @@ async def test_an_unreachable_secretaria_is_a_clean_502(pclient, monkeypatch):
 
     _mesh(monkeypatch, down)
 
-    resp = await client.get(_url(uuid.uuid4()), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, uuid.uuid4(), headers=_bearer(me["access_token"]))
 
     assert (resp.status_code, resp.json()) == (502, {"detail": "product_unreachable"})
     assert "SECRET" not in resp.text and "secretaria:8000" not in resp.text
@@ -575,7 +611,7 @@ async def test_an_unconfigured_secretaria_is_a_503_not_a_502(pclient, monkeypatc
     client, sessionmaker, seed = pclient
     me = await _patient(client, sessionmaker, seed.both)  # the mesh is NOT configured here
 
-    resp = await client.get(_url(uuid.uuid4()), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, uuid.uuid4(), headers=_bearer(me["access_token"]))
 
     assert (resp.status_code, resp.json()) == (503, {"detail": "product_channel_unconfigured"})
 
@@ -607,7 +643,7 @@ async def test_the_pooled_connection_is_released_before_the_upstream_hop(pclient
     _mesh(monkeypatch, spying_answer)
     events.clear()
 
-    resp = await client.get(_url(card), headers=_bearer(me["access_token"]))
+    resp = await _ask(client, card, headers=_bearer(me["access_token"]))
 
     assert resp.status_code == 200, resp.text
     assert events.index("db_close") < events.index("upstream_call"), events
@@ -636,15 +672,15 @@ async def test_the_budget_is_per_patient_and_the_extra_request_is_a_429_without_
     monkeypatch.setattr(router_mod._options_limiter, "_limit_getter", lambda: 2)
 
     statuses = [
-        (await client.get(_url(card_a), headers=_bearer(a["access_token"]))).status_code
+        (await _ask(client, card_a, headers=_bearer(a["access_token"]))).status_code
         for _ in range(3)
     ]
-    other_patient = await client.get(_url(card_b), headers=_bearer(b["access_token"]))
+    other_patient = await _ask(client, card_b, headers=_bearer(b["access_token"]))
 
     assert statuses == [200, 200, 429]
     assert other_patient.status_code == 200, "B must not pay for A's scrolling"
     assert len(calls) == 3  # A's third request never left brain-api
-    third = await client.get(_url(card_a), headers=_bearer(a["access_token"]))
+    third = await _ask(client, card_a, headers=_bearer(a["access_token"]))
     assert (third.status_code, third.json()) == (429, {"detail": "Too many requests"})
 
 
@@ -668,8 +704,8 @@ async def test_the_search_text_never_reaches_the_applications_own_logs(
     caplog.set_level(logging.DEBUG)
     capsys.readouterr()
 
-    ok = await client.get(_url(card, q=SENTINEL), headers=_bearer(me["access_token"]))
-    refused = await client.get(_url(card, q=SENTINEL * 5), headers=_bearer(me["access_token"]))
+    ok = await _ask(client, card, q=SENTINEL, headers=_bearer(me["access_token"]))
+    refused = await _ask(client, card, q=SENTINEL * 5, headers=_bearer(me["access_token"]))
 
     assert (ok.status_code, refused.status_code) == (200, 422)
     out = capsys.readouterr()
@@ -678,16 +714,19 @@ async def test_the_search_text_never_reaches_the_applications_own_logs(
     assert SENTINEL not in ok.text and SENTINEL not in refused.text
 
 
-async def test_httpx_does_not_print_the_search_text_of_the_outbound_hop(monkeypatch, caplog):
-    """httpx logs `HTTP Request: GET <whole url>` at INFO, query string included, and this service
-    runs at INFO. The hop is made by the REAL client here (a mock transport under it), so what
-    is asserted is what httpx really printed — and that the line is still there for operators."""
+async def test_the_search_text_never_rides_in_a_url_on_either_hop(monkeypatch, caplog):
+    """Every proxy and server logs URLs (the Portal's nginx, the reverse proxy, uvicorn, httpx).
+
+    So the text travels in a BODY on both hops. The outbound hop is made by the REAL client here
+    (a mock transport under it): its URL carries nothing, the body carries the text, and the line
+    httpx prints at INFO cannot contain it.
+    """
     _configure_mesh(monkeypatch)
     real = httpx.AsyncClient
-    seen_by_upstream: list[str] = []
+    seen: list[httpx.Request] = []
 
     def handler(request):
-        seen_by_upstream.append(str(request.url))
+        seen.append(request)
         return httpx.Response(200, json={"items": [], "next_cursor": None, "total": 0})
 
     monkeypatch.setattr(
@@ -706,41 +745,26 @@ async def test_httpx_does_not_print_the_search_text_of_the_outbound_hop(monkeypa
         q=SENTINEL,
     )
 
-    assert f"q={SENTINEL}" in seen_by_upstream[0], "the upstream must still get the real text"
+    (request,) = seen
+    assert request.method == "POST" and request.url.query == b""
+    assert json.loads(request.content)["q"] == SENTINEL, "the upstream must still get the text"
     logged = "\n".join(r.getMessage() for r in caplog.records if r.name == "httpx")
-    assert "HTTP Request: GET" in logged and "/options" in logged and "page_size=10" in logged
+    assert "HTTP Request: POST" in logged and "/options" in logged
     assert SENTINEL not in logged
 
 
-def _access_line(path_and_query: str) -> None:
-    """One uvicorn access line, logged the way uvicorn's own access logger call logs it."""
-    logging.getLogger("uvicorn.access").info(
-        '%s - "%s %s HTTP/%s" %d', "10.0.0.9:51234", "GET", path_and_query, "1.1", 200
-    )
+async def test_there_is_no_url_form_of_the_patients_route(pclient, monkeypatch):
+    """A GET with `?q=` does not exist, and a `q` in the POST's query string is not read."""
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+    card = str(uuid.uuid4())
+    calls = _mesh(monkeypatch, _secretaria({card: (seed.both, me["patient_ref"], _catalogue())}))
+    headers = _bearer(me["access_token"])
 
+    as_get = await client.get(_url(card), params={"q": SENTINEL}, headers=headers)
+    in_url = await client.post(_url(card), params={"q": SENTINEL}, json={}, headers=headers)
 
-def test_the_access_log_of_the_browsers_request_does_not_print_the_search_text(caplog):
-    caplog.set_level(logging.INFO, logger="uvicorn.access")
-    card = uuid.uuid4()
-    _access_line(
-        f"/patient-access/threads/secretaria/messages/{card}/options"
-        f"?cursor=abc_-&q={SENTINEL}%20mais&page_size=10"
-    )
-    _access_line(f"/patient-access/threads/secretaria/messages/{card}/options?q={SENTINEL}")
-
-    lines = [r.getMessage() for r in caplog.records if r.name == "uvicorn.access"]
-    assert len(lines) == 2
-    assert all(SENTINEL not in line for line in lines)
-    assert "cursor=abc_-" in lines[0] and "page_size=10" in lines[0]
-    assert lines[0].startswith('10.0.0.9:51234 - "GET /patient-access/threads/secretaria')
-    assert lines[0].endswith('HTTP/1.1" 200')
-
-
-def test_the_redaction_touches_only_the_options_route(caplog):
-    caplog.set_level(logging.INFO, logger="uvicorn.access")
-    _access_line("/patient-access/clinics/lookup?q=keep-me&x=1")
-    _access_line("/patient-access/threads/secretaria/messages?since=2026-01-01&limit=5")
-
-    lines = [r.getMessage() for r in caplog.records if r.name == "uvicorn.access"]
-    assert "q=keep-me&x=1" in lines[0]
-    assert "since=2026-01-01&limit=5" in lines[1]
+    assert as_get.status_code == 405
+    assert in_url.status_code == 200 and in_url.json()["payload"]["total"] == 25
+    assert all("q" not in _sent(c) for c in calls)

@@ -244,6 +244,26 @@ class PatientReadMarkIn(BaseModel):
         return self
 
 
+class PatientOptionsIn(BaseModel):
+    """Body of `POST /patient-access/threads/{product}/messages/{message_id}/options` (TASK-082).
+
+    A BODY, not a query string: `q` is what the patient typed, and every proxy and server on
+    the way (the Portal's nginx, the reverse proxy, uvicorn) writes URLs to its access log.
+
+    `cursor` and `q` carry NO validation rule here on purpose: the route checks them by hand so
+    the refusals are the contract's codes (`invalid_cursor`, `invalid_options_query`) and so
+    FastAPI's own 422 - which echoes the rejected `input` - can never print the search text.
+    Like `PatientMessageIn`, it names NO tenant and NO patient: `extra="forbid"` refuses a
+    body that tries.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cursor: str | None = None
+    page_size: int = Field(default=10, ge=1, le=10)
+    q: str | None = None
+
+
 class MessageOut(BaseModel):
     """A generic one-line message body (mirrors `schemas/auth.py::MessageOut`)."""
 

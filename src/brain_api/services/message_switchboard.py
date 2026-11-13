@@ -728,7 +728,7 @@ async def list_options(
 ) -> dict[str, Any]:
     """One page of the options behind a Portal list card (TASK-082, CONTRACT.md §c4/§c5).
 
-    `GET /internal/brain-message/messages/{message_id}/options` on secretarIA, which rebuilds the
+    `POST /internal/brain-message/messages/{message_id}/options` on secretarIA, which rebuilds the
     list from the pointer it stored on the card and answers `{items, next_cursor, total}`, passed
     on untouched like the poll. Who may read the card is secretarIA's decision and it makes it
     from the pair this function sends — `tenant_id` and `external_id` are the SESSION's, so a
@@ -736,25 +736,25 @@ async def list_options(
     names the card, a cursor and a few characters of text; it can name no scope, no clinic, no kind.
 
     `q` is a patient's free text and is NEVER logged here — `_call` logs the path and status only,
-    and the URL line httpx itself prints is scrubbed in `api/portal/patient_access.py` (the
-    exposure and its filter are documented there, next to the route that creates it).
+    and everything travels in the JSON BODY, so the URL httpx prints at INFO (and any proxy on the
+    way logs) carries no ids, no cursor and no search text.
     """
     if product not in OPTIONS_PRODUCTS or not attachments.is_media_id(message_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, OPTIONS_NOT_FOUND)
-    params: dict[str, Any] = {
+    body: dict[str, Any] = {
         "tenant_id": str(tenant_id),
         "external_id": patient_ref,
         "page_size": page_size,
     }
     if cursor:
-        params["cursor"] = cursor
+        body["cursor"] = cursor
     if q:
-        params["q"] = q
+        body["q"] = q
     return await _call(
         product,
-        "GET",
+        "POST",
         f"/internal/brain-message/messages/{message_id}/options",
-        params=params,
+        json=body,
         translate=_options_refusal,
     )
 

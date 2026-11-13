@@ -539,16 +539,20 @@ PreCheck's own rendered-question shape is channel-neutral by design
 **not** a WhatsApp payload: n8n folds the Meta interactive shape for its channel; Brain-Message
 renders its own controls from the same flow data.
 
-### 5.1 Paged option lists — `GET /patient-access/threads/{product}/messages/{message_id}/options`
+### 5.1 Paged option lists — `POST /patient-access/threads/{product}/messages/{message_id}/options`
 
 TASK-082 (frozen contract: `tasks/TASK-082/CONTRACT.md` §c4/§c5, BRAIN root). A list card whose
 `interactive.source` is present carries only its first page; the rest of the list is read here, **ten rows
 at a time**, by scrolling and by a search that covers the **whole** list. The Portal never chooses what the
 list is: it names the card (the `id` the poll returned), a cursor and a few characters of text.
 
+**A POST with a JSON body `{cursor?, page_size?, q?}` — never a query string.** `q` is what the patient
+typed, and every hop on the way writes URLs to an access log (the Portal's nginx, the reverse proxy,
+uvicorn, httpx). With everything in the body, no URL on either hop carries a search, an id or a cursor.
+
 *State (2026-11-12): built and tested in this repo (`task/TASK-082-options-proxy`), not merged, not
-deployed. The secretarIA route it forwards to (`GET /internal/brain-message/messages/{id}/options`) is built
-by a parallel session; this edge was proved against a fake upstream that follows the contract, including the
+deployed. The secretarIA route it forwards to is built
+by a parallel session (`POST /internal/brain-message/messages/{id}/options`, body-only); this edge was proved against a fake upstream that follows the contract, including the
 ownership rule — the end-to-end proof is the integration session's.*
 
 | Part | Rule |
@@ -556,18 +560,18 @@ ownership rule — the end-to-end proof is the integration session's.*
 | Authentication | Clinic **or** pending bearer (`get_thread_patient`), checked before anything else: 401 |
 | `product` | Must be a product the clinic has on this channel, else 403 `product_unavailable` (same as every thread route). Owned but without paged lists (`precheck`) → 404 `options_not_found`, no network call. Only `secretaria` pages lists (`message_switchboard.OPTIONS_PRODUCTS`) |
 | `message_id` | `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` (the media-id pattern), else 422 (FastAPI's list) |
-| `page_size` | Integer 1–10, default 10, else 422 (FastAPI's list) |
-| `cursor` | Optional and **opaque** — send back exactly what `source.next_cursor` / the previous `payload.next_cursor` said. Only its alphabet and length are checked: `^[A-Za-z0-9_-]{1,200}$`, else 422 `invalid_cursor`. Empty = absent |
-| `q` | Optional search text. Trimmed; more than **40** characters after trimming → 422 `invalid_options_query`. Empty after trimming = no filter, and it is not forwarded. Accents, case and emoji are the product's business (secretarIA clamps at 60 as a safety net) |
-| Anything else | `tenant_id`, `external_id`, `scope`, `kind`… in the query are **ignored**, never forwarded |
+| `page_size` | Body. Integer 1–10, default 10, else 422 (FastAPI's list) |
+| `cursor` | Body. Optional and **opaque** — send back exactly what `source.next_cursor` / the previous `payload.next_cursor` said. Only its alphabet and length are checked: `^[A-Za-z0-9_-]{1,200}$`, else 422 `invalid_cursor`. Empty = absent |
+| `q` | Body. Optional search text. Trimmed; more than **40** characters after trimming → 422 `invalid_options_query`. Empty after trimming = no filter, and it is not forwarded. Accents, case and emoji are the product's business (secretarIA clamps at 60 as a safety net) |
+| Anything else | A `tenant_id`, `external_id`, `scope`, `kind`… in the body → 422 (`extra="forbid"`, like every patient body); in the query string → **ignored**. Never forwarded |
 
 Checks run in this order, so each answer says only what the caller may know: 401 → 422 for `message_id` /
 `page_size` → 422 `invalid_cursor` → 422 `invalid_options_query` → 429 → 403 → 404 (product). `cursor` and `q`
-are validated by hand rather than by FastAPI's `Query(...)` constraints because FastAPI's 422 echoes the
+are validated by hand rather than by field constraints on the body model (`PatientOptionsIn`) because FastAPI's 422 echoes the
 rejected value back, and for `q` that would put the patient's search text into a response body.
 
-**What goes upstream.** `GET {SECRETARIA}/internal/brain-message/messages/{message_id}/options` with
-`X-Internal-Api-Key` and the query `tenant_id` = the **session's** clinic, `external_id` = the **session's**
+**What goes upstream.** `POST {SECRETARIA}/internal/brain-message/messages/{message_id}/options` with
+`X-Internal-Api-Key` and the JSON body `tenant_id` = the **session's** clinic, `external_id` = the **session's**
 patient, `page_size`, and `cursor` / `q` only when present. Nothing the browser sent can change the first
 two, so a card that is another patient's, another clinic's or unknown is the same upstream 404
 (`options_not_found`) — ownership is secretarIA's decision, taken from the identity this edge guarantees.
@@ -593,13 +597,11 @@ The card's fixed rows (`source.pinned_ids`) are never in `items`.
 | 429 | `Too many requests` | **60 per minute per patient** (`PATIENT_OPTIONS_RATE_LIMIT_PER_MINUTE`; 0 disables; in-process and fail-open like every limiter here). Keyed by the patient handle, so a pending visitor and a verified patient are throttled alike and one patient's scrolling never spends another's budget |
 | 502 / 503 | `product_unreachable`, `product_error` / `product_channel_unconfigured`, `product_temporarily_unavailable` | As §8.1. An upstream 401/403 (shared key wrong) or 429 is the opaque 502, never the patient's own 401/429 |
 
-**The search text is never stored or logged.** `q` travels in a URL — the frozen contract's choice — and two
-loggers of this process print URLs: uvicorn's access log (the browser's own request) and httpx at INFO (the
-hop to secretarIA). `api/portal/patient_access.py` installs a log filter on both that blanks the value of `q`
-on `…/messages/{id}/options` URLs and nothing else (the line stays, with its status and the other
-parameters); `tests/test_patient_options.py` proves it against the real httpx logger. What this repo cannot
-reach: the reverse proxy in front of brain-api and secretarIA's own access log both receive the same query
-string — an operator must scrub `q` there (or the contract must move `q` to a body) before the lists go live.
+**The search text is never stored or logged.** It travels only in request bodies (browser → brain-api →
+secretarIA), so no access log on the way — the Portal's nginx, the reverse proxy, uvicorn, httpx's URL line —
+receives it. `tests/test_patient_options.py` proves the outbound hop's URL is bare and that a GET form
+does not exist. (An earlier draft sent `q` in the URL and filtered the logs of this process; that left the
+proxies, so the contract moved `q` to a body on 2026-11-12, at the owner's request.)
 Handlers log tenant ids and counts, never `q`, not even its length next to a patient id.
 
 **Deploy order and compatibility.** secretarIA (API **and** worker) → brain-api → Brain-Message-Frontend; no
@@ -1214,13 +1216,13 @@ e-mail address, a cookie, or a JWT from this channel.
   and corrects the old note that only WhatsApp wrote the column. No code change in this repo: the
   blob passes through the switchboard untouched. Pair in
   `secretarIA/docs/CHECKPOINT_calendario_outra_data.md`.
-- **2026-11-12** — TASK-082 (paged option lists, Portal): **§5.1** — `GET /patient-access/threads/{product}/messages/{message_id}/options`
-  forwards to secretarIA's `GET /internal/brain-message/messages/{id}/options` with the session's clinic and
+- **2026-11-12** — TASK-082 (paged option lists, Portal): **§5.1** — `POST /patient-access/threads/{product}/messages/{message_id}/options`
+  (JSON body, never a query string) forwards to secretarIA's `POST /internal/brain-message/messages/{id}/options` with the session's clinic and
   patient (a tenant/scope named by the browser is ignored); `cursor` opaque, `page_size` ≤ 10, `q` ≤ 40 once
   trimmed; 404 `options_not_found`, 422 `invalid_cursor` / `invalid_options_query`; 429 at 60/min/patient
   (`PATIENT_OPTIONS_RATE_LIMIT_PER_MINUTE`). `message_switchboard._call` gains a per-route `translate` hook
-  (upstream 404/422 for THIS route only; every other 4xx is still the opaque 502). The search text is
-  scrubbed from uvicorn's access log and httpx's URL line. **§5** gains the optional `interactive.source`;
+  (upstream 404/422 for THIS route only; every other 4xx is still the opaque 502). The search text
+  travels only in bodies, so no access log on the way can hold it. **§5** gains the optional `interactive.source`;
   **§8.1** gains the 404 row. Built, committed locally, not deployed, no migration.
 
 ## Typing — o contrato de digitação, qualquer produto

@@ -768,3 +768,303 @@ async def test_there_is_no_url_form_of_the_patients_route(pclient, monkeypatch):
     assert as_get.status_code == 405
     assert in_url.status_code == 200 and in_url.json()["payload"]["total"] == 25
     assert all("q" not in _sent(c) for c in calls)
+
+
+# --- 8) Fix round F2 (2026-11-13, D12): the route's hardening --------------------------------
+
+
+async def _raw(client, card, token, content: bytes, content_type="application/json"):
+    """POST a body exactly as written - for shapes `_ask`'s dict cannot express."""
+    return await client.post(
+        _url(card),
+        content=content,
+        headers={**_bearer(token), "Content-Type": content_type},
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"q": {"a": "zq9-termo-secreto"}}',
+        b'{"q": ["zq9-termo-secreto"]}',
+        b'{"q": 12345, "cursor": "zq9-termo-secreto"}',
+        b'{"cursor": ["zq9-termo-secreto"]}',
+        b'["zq9-termo-secreto"]',
+        b'"zq9-termo-secreto"',
+        b"42",
+        b'{"page_size": "zq9-termo-secreto"}',
+        b'{"zq9-termo-secreto": "zq9-termo-secreto"}',
+        b'{"q": "zq9-termo-secreto',
+        b"zq9-termo-secreto",
+    ],
+    ids=[
+        "q-object",
+        "q-list",
+        "q-number",
+        "cursor-list",
+        "array",
+        "string",
+        "number",
+        "page-size-text",
+        "unknown-key",
+        "truncated-json",
+        "not-json",
+    ],
+)
+async def test_a_wrong_shaped_body_is_a_422_that_never_echoes_anything_it_was_sent(
+    pclient, monkeypatch, raw
+):
+    """FastAPI's own 422 prints `input` - the rejected value, or the whole body - back."""
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+    calls = _mesh(monkeypatch, _secretaria({}))
+
+    resp = await _raw(client, uuid.uuid4(), me["access_token"], raw)
+
+    assert resp.status_code == 422, resp.text
+    assert SENTINEL not in resp.text and "input" not in resp.text
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "code"),
+    [
+        (b'{"q": {"a": 1}}', "invalid_options_query"),
+        (b'{"q": 5}', "invalid_options_query"),
+        (b'{"cursor": ["x"]}', "invalid_cursor"),
+        (b'{"cursor": 7}', "invalid_cursor"),
+        (b'{"page_size": "abc"}', "invalid_options_request"),
+        (b'{"tenant_id": "x"}', "invalid_options_request"),
+        (b"[1]", "invalid_options_request"),
+    ],
+)
+async def test_a_wrong_shaped_body_is_told_apart_by_the_field_at_fault_only(
+    pclient, monkeypatch, raw, code
+):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+    _mesh(monkeypatch, _secretaria({}))
+
+    resp = await _raw(client, uuid.uuid4(), me["access_token"], raw)
+
+    assert (resp.status_code, resp.json()) == (422, {"detail": code})
+
+
+async def test_the_options_schema_is_still_documented_for_the_body(pclient):
+    """Taking the body as `Any` must not make /openapi.json forget what the route accepts."""
+    client, _sessionmaker, _seed = pclient
+
+    spec = (await client.get("/openapi.json")).json()
+
+    op = spec["paths"]["/patient-access/threads/{product}/messages/{message_id}/options"]["post"]
+    schema = op["requestBody"]["content"]["application/json"]["schema"]
+    assert set(schema["properties"]) == {"cursor", "page_size", "q"}
+
+
+def _nfd(n: int) -> str:
+    return "é" * n  # "é" written as two code points
+
+
+@pytest.mark.parametrize("letters", [20, 21, 40])
+async def test_letters_typed_in_nfd_are_measured_as_letters_and_forwarded_composed(
+    pclient, monkeypatch, letters
+):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+    calls = _mesh(monkeypatch, _secretaria({}))
+
+    resp = await _ask(client, uuid.uuid4(), q=_nfd(letters), headers=_bearer(me["access_token"]))
+
+    assert resp.status_code != 422, resp.text
+    assert _sent(calls[0])["q"] == "é" * letters
+
+
+@pytest.mark.parametrize("q", ["é" * 41, _nfd(41)], ids=["nfc-41", "nfd-41"])
+async def test_forty_one_letters_are_refused_whichever_way_they_were_written(
+    pclient, monkeypatch, q
+):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+    calls = _mesh(monkeypatch, _secretaria({}))
+
+    resp = await _ask(client, uuid.uuid4(), q=q, headers=_bearer(me["access_token"]))
+
+    assert (resp.status_code, resp.json()) == (422, {"detail": "invalid_options_query"})
+    assert calls == []
+
+
+async def test_a_decomposed_search_is_composed_before_it_is_trimmed(pclient, monkeypatch):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+    calls = _mesh(monkeypatch, _secretaria({}))
+
+    await _ask(client, uuid.uuid4(), q="  " + _nfd(2) + " ", headers=_bearer(me["access_token"]))
+
+    assert _sent(calls[0])["q"] == "éé"
+
+
+async def test_only_items_cursor_and_total_reach_the_browser(pclient, monkeypatch):
+    """An upstream that grows a field (a `scope`, a clinic id...) must not widen what we send."""
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+
+    def answer(request):
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": "svc|A",
+                        "title": "A",
+                        "description": "d",
+                        "tenant_id": "LEAK-1",
+                        "scope": {"list": "tenant"},
+                    }
+                ],
+                "next_cursor": "abc",
+                "total": 1,
+                "scope": {"list": "tenant"},
+                "tenant_id": "LEAK-2",
+            },
+            request=request,
+        )
+
+    _mesh(monkeypatch, answer)
+
+    resp = await _ask(client, uuid.uuid4(), headers=_bearer(me["access_token"]))
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert set(body["payload"]) == {"items", "next_cursor", "total"}
+    assert body["payload"]["items"] == [{"id": "svc|A", "title": "A", "description": "d"}]
+    assert "LEAK" not in resp.text and "scope" not in resp.text
+
+
+async def test_a_last_page_keeps_its_null_cursor_and_an_item_without_a_description(
+    pclient, monkeypatch
+):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+    _mesh(
+        monkeypatch,
+        lambda r: httpx.Response(
+            200,
+            json={"items": [{"id": "x", "title": "X"}], "next_cursor": None, "total": 1},
+            request=r,
+        ),
+    )
+
+    resp = await _ask(client, uuid.uuid4(), headers=_bearer(me["access_token"]))
+
+    assert resp.json()["payload"] == {
+        "items": [{"id": "x", "title": "X"}],
+        "next_cursor": None,
+        "total": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    "upstream",
+    [{"items": "nope", "total": 0}, {"total": 0}, ["x"], {"items": ["not-a-dict"], "total": 1}],
+    ids=["items-not-a-list", "no-items", "not-an-object", "item-not-an-object"],
+)
+async def test_an_upstream_page_that_breaks_the_contract_is_the_opaque_502(
+    pclient, monkeypatch, upstream
+):
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+    _mesh(monkeypatch, lambda r: httpx.Response(200, json=upstream, request=r))
+
+    resp = await _ask(client, uuid.uuid4(), headers=_bearer(me["access_token"]))
+
+    assert (resp.status_code, resp.json()) == (502, {"detail": "product_error"})
+
+
+def _events(logs, name):
+    return [e for e in logs if e["event"] == name]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        lambda r: httpx.Response(404, json={"detail": "Not Found"}, request=r),
+        lambda r: httpx.Response(404, content=b"<html>SECRET</html>", request=r),
+        lambda r: httpx.Response(404, json={"detail": {"code": "something_else"}}, request=r),
+    ],
+    ids=["fastapi-plain-404", "html-404", "other-code"],
+)
+async def test_an_upstream_404_that_is_not_a_missing_card_is_logged_loudly_but_answered_the_same(
+    pclient, monkeypatch, answer
+):
+    """An old secretarIA with no such route, or a wrong proxy path, looks exactly like someone
+    else's card to the patient - the log is the only place a deploy-order mistake shows."""
+    from structlog.testing import capture_logs
+
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+    _mesh(monkeypatch, answer)
+
+    with capture_logs() as logs:
+        resp = await _ask(client, uuid.uuid4(), q=SENTINEL, headers=_bearer(me["access_token"]))
+
+    assert (resp.status_code, resp.json()) == (404, {"detail": "options_not_found"})
+    (event,) = _events(logs, "switchboard_options_upstream_404_unexpected")
+    assert event["log_level"] == "warning" and event["status"] == 404
+    assert isinstance(event["code_present"], bool)
+    assert "SECRET" not in str(logs) and SENTINEL not in str(logs)
+
+
+async def test_an_upstream_options_not_found_is_the_normal_case_and_stays_quiet(
+    pclient, monkeypatch
+):
+    from structlog.testing import capture_logs
+
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+    _mesh(
+        monkeypatch,
+        lambda r: httpx.Response(404, json={"detail": {"code": "options_not_found"}}, request=r),
+    )
+
+    with capture_logs() as logs:
+        resp = await _ask(client, uuid.uuid4(), headers=_bearer(me["access_token"]))
+
+    assert resp.status_code == 404
+    assert _events(logs, "switchboard_options_upstream_404_unexpected") == []
+    assert [e for e in logs if e["log_level"] in ("warning", "error")] == []
+
+
+@pytest.mark.parametrize(
+    ("upstream_code", "mapped"),
+    [("invalid_cursor", "invalid_cursor"), ("anything_else", "invalid_options_query")],
+)
+async def test_the_422_code_that_was_mapped_is_logged_without_the_search(
+    pclient, monkeypatch, upstream_code, mapped
+):
+    from structlog.testing import capture_logs
+
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+    _mesh(
+        monkeypatch,
+        lambda r: httpx.Response(422, json={"detail": {"code": upstream_code}}, request=r),
+    )
+
+    with capture_logs() as logs:
+        resp = await _ask(client, uuid.uuid4(), q=SENTINEL, headers=_bearer(me["access_token"]))
+
+    assert (resp.status_code, resp.json()) == (422, {"detail": mapped})
+    (event,) = _events(logs, "switchboard_options_upstream_422")
+    assert event["mapped"] == mapped and event["status"] == 422
+    assert SENTINEL not in str(logs)

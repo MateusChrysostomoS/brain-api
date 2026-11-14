@@ -560,15 +560,20 @@ ownership rule — the end-to-end proof is the integration session's.*
 | Authentication | Clinic **or** pending bearer (`get_thread_patient`), checked before anything else: 401 |
 | `product` | Must be a product the clinic has on this channel, else 403 `product_unavailable` (same as every thread route). Owned but without paged lists (`precheck`) → 404 `options_not_found`, no network call. Only `secretaria` pages lists (`message_switchboard.OPTIONS_PRODUCTS`) |
 | `message_id` | `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` (the media-id pattern), else 422 (FastAPI's list) |
-| `page_size` | Body. Integer 1–10, default 10, else 422 (FastAPI's list) |
-| `cursor` | Body. Optional and **opaque** — send back exactly what `source.next_cursor` / the previous `payload.next_cursor` said. Only its alphabet and length are checked: `^[A-Za-z0-9_-]{1,200}$`, else 422 `invalid_cursor`. Empty = absent |
-| `q` | Body. Optional search text. Trimmed; more than **40** characters after trimming → 422 `invalid_options_query`. Empty after trimming = no filter, and it is not forwarded. Accents, case and emoji are the product's business (secretarIA clamps at 60 as a safety net) |
-| Anything else | A `tenant_id`, `external_id`, `scope`, `kind`… in the body → 422 (`extra="forbid"`, like every patient body); in the query string → **ignored**. Never forwarded |
+| `page_size` | Body. Integer 1–10, **default 10 when the key is absent**; a JSON `null`, a non-integer or a value outside 1–10 → 422 `invalid_options_request` (the Portal omits the key rather than sending `null`) |
+| `cursor` | Body. Optional and **opaque** — send back exactly what `source.next_cursor` / the previous `payload.next_cursor` said. Only its alphabet and length are checked: `^[A-Za-z0-9_-]{1,200}$`, else 422 `invalid_cursor`. A `null` or an **empty string `""` = absent** (not a 422); any other type (number, list, object) → 422 `invalid_cursor` |
+| `q` | Body. Optional search text. **Composed to NFC first** (so 40 letters written as base letter + combining accent count as 40, and the product receives the composed form), then trimmed; more than **40** characters → 422 `invalid_options_query`. A `null`, or empty after trimming = no filter, and it is not forwarded. Any other type → 422 `invalid_options_query`. Accents, case and emoji are the product's business (secretarIA clamps at 60 as a safety net) |
+| Anything else | A `tenant_id`, `external_id`, `scope`, `kind`… in the body → 422 `invalid_options_request` (unknown keys are refused, like every patient body); a body that is not a JSON object (an array, a string, a number, not JSON at all) → the same; in the query string → **ignored**. Never forwarded |
 
-Checks run in this order, so each answer says only what the caller may know: 401 → 422 for `message_id` /
-`page_size` → 422 `invalid_cursor` → 422 `invalid_options_query` → 429 → 403 → 404 (product). `cursor` and `q`
-are validated by hand rather than by field constraints on the body model (`PatientOptionsIn`) because FastAPI's 422 echoes the
-rejected value back, and for `q` that would put the patient's search text into a response body.
+Checks run in this order, so each answer says only what the caller may know: 401 → 422 for `message_id` (FastAPI's
+list) → 422 for the body (`invalid_options_request` / `invalid_cursor` / `invalid_options_query` by field type) →
+422 `invalid_cursor` (alphabet/length) → 422 `invalid_options_query` (length) → 429 → 403 → 404 (product).
+
+**The body is read by hand, not declared as a parameter** (`_options_body`; the schema is still published in
+`/openapi.json` through `openapi_extra`). FastAPI's own 422 echoes `input` back — the rejected value, or the
+**entire body** when it is not an object — and for `q` that would put the patient's search text into a response
+body. The 422 here carries one of our codes and **nothing the caller sent**; a wrong-shaped body names no field
+beyond the code (`tests/test_patient_options.py`, section 8, probes a dozen shapes with a sentinel string).
 
 **What goes upstream.** `POST {SECRETARIA}/internal/brain-message/messages/{message_id}/options` with
 `X-Internal-Api-Key` and the JSON body `tenant_id` = the **session's** clinic, `external_id` = the **session's**
@@ -577,7 +582,11 @@ two, so a card that is another patient's, another clinic's or unknown is the sam
 (`options_not_found`) — ownership is secretarIA's decision, taken from the identity this edge guarantees.
 The pooled DB connection is released before the hop (scroll fires this in bursts).
 
-**Response.** `RelayOut{product: "secretaria", payload, at}` with `payload` secretarIA's, passed through:
+**Response.** `RelayOut{product: "secretaria", payload, at}`. Unlike the poll, `payload` is **not** passed through
+untouched: it is rebuilt from an allowlist (`message_switchboard._options_page`) — exactly `{items, next_cursor,
+total}`, each item exactly `{id, title, description}` (a key an item lacks is simply absent). A field secretarIA
+adds later (a `scope`, a clinic id…) never reaches the browser; a page that is not an object with an `items`
+list of objects is a contract break and answers the opaque 502 `product_error`.
 
 ```jsonc
 { "items": [ { "id": "svc|Consulta de rotina", "title": "Consulta de rotina", "description": "" } ],
@@ -591,9 +600,10 @@ The card's fixed rows (`source.pinned_ids`) are never in `items`.
 |---|---|---|
 | 401 | — | Missing/invalid/expired patient session |
 | 403 | `product_unavailable` | Product not offered on this channel (or channel off) |
-| 404 | `options_not_found` | **One answer for every reason**: unknown id, another patient's card, another clinic's, an inbound message, a card without `source`, a product without paged lists — and any upstream 404, including a secretarIA that predates the route |
-| 422 | `invalid_cursor` / `invalid_options_query` | See the table above. An **upstream** 422 becomes `invalid_cursor` when secretarIA's `detail.code` says so (the client drops the cursor and starts the list again), otherwise `invalid_options_query`. The upstream body is never echoed |
-| 422 | (FastAPI list) | Bad `message_id` or `page_size` |
+| 404 | `options_not_found` | **One answer for every reason**: unknown id, another patient's card, another clinic's, an inbound message, a card without `source`, a product without paged lists — and any upstream 404, including a secretarIA that predates the route. The patient cannot tell these apart; the operator can: an upstream 404 whose `detail.code` is **not** `options_not_found` (no route, wrong base URL or proxy path) is logged at **WARNING** as `switchboard_options_upstream_404_unexpected` (`status`, `code_present` — never the body, never `q`). Seeing it in production means a deploy-order mistake, not a patient asking for someone else's card |
+| 422 | `invalid_cursor` / `invalid_options_query` | See the table above. An **upstream** 422 becomes `invalid_cursor` when secretarIA's `detail.code` says so (the client drops the cursor and starts the list again), otherwise `invalid_options_query`; the mapped code is logged (`switchboard_options_upstream_422`, `status`, `mapped`). The upstream body is never echoed |
+| 422 | `invalid_options_request` | The body is not `{cursor?, page_size?, q?}`: not JSON, not an object, an unknown key, a bad `page_size`. Nothing the caller sent is echoed |
+| 422 | (FastAPI list) | Bad `message_id` only |
 | 429 | `Too many requests` | **60 per minute per patient** (`PATIENT_OPTIONS_RATE_LIMIT_PER_MINUTE`; 0 disables; in-process and fail-open like every limiter here). Keyed by the patient handle, so a pending visitor and a verified patient are throttled alike and one patient's scrolling never spends another's budget |
 | 502 / 503 | `product_unreachable`, `product_error` / `product_channel_unconfigured`, `product_temporarily_unavailable` | As §8.1. An upstream 401/403 (shared key wrong) or 429 is the opaque 502, never the patient's own 401/429 |
 
@@ -801,7 +811,7 @@ place before this document.
 | 401 | Missing/invalid/expired patient session | Clinic or pending token |
 | 403 | `product_unavailable` | Clinic does not have that product, or the Brain-Message channel is off — **one answer for both**, so a session cannot enumerate what a clinic pays for |
 | 404 | `options_not_found` | Only on `.../messages/{id}/options` (§5.1): one answer for every reason a list card cannot be read (unknown, another patient's or clinic's, no pointer, product without paged lists) |
-| 422 | Malformed body | `extra="forbid"`, field length/shape violations (FastAPI validation); `invalid_cursor` / `invalid_options_query` on §5.1 |
+| 422 | Malformed body | `extra="forbid"`, field length/shape violations (FastAPI validation); `invalid_cursor` / `invalid_options_query` / `invalid_options_request` on §5.1 (its 422 never echoes the body) |
 | 429 | Rate limited | Per-IP/per-address/per-account limiters, route-dependent (`patient_access.py` header comments name each budget); uploads have their own per-patient budget |
 | 409 / 413 / 415 / 429 (+ some 404/422) | Attachment refusals | `{"detail": {"code", "message"}}` — full table in §7.4 |
 | 502 | `product_unreachable` / `product_error` | The product's leg is down, or answered something brain-api could not parse/trust. **Never** the same code as 403 — a missing tab and a real outage must read differently to a support call. **In production the browser never sees this JSON:** EasyPanel's gateway replaces any 502 the app sends with its own HTML "Service is not reachable" page (observed 2026-09-18/19; a 503 passes through intact) — a client must treat a non-JSON 502 as this row, and an operator must read brain-api's log (`switchboard_upstream_error status=...`) before assuming a crash |
@@ -1224,6 +1234,12 @@ e-mail address, a cookie, or a JWT from this channel.
   (upstream 404/422 for THIS route only; every other 4xx is still the opaque 502). The search text
   travels only in bodies, so no access log on the way can hold it. **§5** gains the optional `interactive.source`;
   **§8.1** gains the 404 row. Built, committed locally, not deployed, no migration.
+- **2026-11-13** — TASK-082 fix round F2 (D12), **§5.1** hardened, no route or contract change for a well-formed
+  caller: a wrong-shaped body is a 422 that echoes nothing (new code `invalid_options_request`; `cursor` / `q` of a
+  wrong type name their own code); `q` is NFC-composed before it is trimmed and measured, and forwarded composed;
+  `payload` is an allowlist `{items, next_cursor, total}` with items `{id, title, description}`; an upstream 404
+  without `detail.code == "options_not_found"` is logged at WARNING and the mapped 422 code is logged. `cursor: ""`
+  = absent and `page_size: null` → 422 are now stated in the table (review finding 11: accepted as is).
 
 ## Typing — o contrato de digitação, qualquer produto
 

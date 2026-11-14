@@ -70,11 +70,17 @@ OPTIONS_PRODUCTS: frozenset[str] = frozenset({PRODUCT_SECRETARIA})
 OPTIONS_PAGE_SIZE_MAX = 10
 OPTIONS_QUERY_MAX_CHARS = 40
 OPTIONS_CURSOR = re.compile(r"[A-Za-z0-9_-]{1,200}")
-#: The three answers this route adds. One 404 for every reason a card may not be read (unknown id,
+#: The four answers this route adds. One 404 for every reason a card may not be read (unknown id,
 #: another patient's, another clinic's, a card with no pointer, a product without lists).
+#: `invalid_options_request` is a body that is not the shape of `{cursor, page_size, q}` at all
+#: (a wrong type for `page_size`, an unknown key, an array): it names no field and echoes nothing.
 OPTIONS_NOT_FOUND = "options_not_found"
 INVALID_OPTIONS_QUERY = "invalid_options_query"
+INVALID_OPTIONS_REQUEST = "invalid_options_request"
 INVALID_CURSOR = "invalid_cursor"
+#: What one row of a page may carry to the browser (D12 b) — secretarIA's page is passed through an
+#: allowlist, so a field it grows later (a scope, a clinic id...) never reaches the patient.
+_OPTIONS_ITEM_FIELDS = ("id", "title", "description")
 
 # secretarIA's inbound scheme (secretaria api/internal.py: APIKeyHeader X-Internal-Api-Key).
 _SECRETARIA_KEY_HEADER = "X-Internal-Api-Key"
@@ -707,13 +713,50 @@ def _options_refusal(resp: httpx.Response) -> HTTPException | None:
     this edge let it through. A refused CURSOR is told apart, because the client's answer to it is
     different (drop the cursor and start the list again); every other 422 is the search itself.
     Anything else (401/403 = a wrong shared key, 429...) is an operator fact: the opaque 502.
+
+    Two things are logged here, because the patient's answer hides them (D12 a). A 404 whose
+    `detail.code` is not `options_not_found` is NOT "that card is not yours": it is a secretarIA
+    that predates the route, or a wrong base URL / proxy path — a deploy-order mistake that would
+    otherwise look exactly like a patient asking for someone else's card — so it is a WARNING.
+    And the 422 code that was mapped is logged, so "bad cursor" and "bad search" can be told apart
+    afterwards. Never the body, never `q`: status, a boolean and our own code only.
     """
     if resp.status_code == status.HTTP_404_NOT_FOUND:
+        upstream_code = _refusal_code(resp)
+        if upstream_code != OPTIONS_NOT_FOUND:
+            logger.warning(
+                "switchboard_options_upstream_404_unexpected",
+                status=resp.status_code,
+                code_present=upstream_code is not None,
+            )
         return HTTPException(status.HTTP_404_NOT_FOUND, OPTIONS_NOT_FOUND)
     if resp.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
         code = INVALID_CURSOR if _refusal_code(resp) == INVALID_CURSOR else INVALID_OPTIONS_QUERY
+        logger.info("switchboard_options_upstream_422", status=resp.status_code, mapped=code)
         return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, code)
     return None
+
+
+def _options_page(payload: Any) -> dict[str, Any]:
+    """The page the browser may see: only `{items, next_cursor, total}`.
+
+    Each item is only `{id, title, description}`. An allowlist, not a pass-through (D12 b):
+    secretarIA owns the page, but it is not trusted to stay narrow — an upstream bug that adds a
+    field (a `scope`, a clinic id) must not reach the patient's browser. A page that is not that
+    shape at all is a contract break: the opaque 502.
+    """
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        logger.error("switchboard_options_page_malformed")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "product_error")
+    return {
+        "items": [
+            {field: item[field] for field in _OPTIONS_ITEM_FIELDS if field in item}
+            for item in items
+        ],
+        "next_cursor": payload.get("next_cursor"),
+        "total": payload.get("total"),
+    }
 
 
 async def list_options(
@@ -729,8 +772,9 @@ async def list_options(
     """One page of the options behind a Portal list card (TASK-082, CONTRACT.md §c4/§c5).
 
     `POST /internal/brain-message/messages/{message_id}/options` on secretarIA, which rebuilds the
-    list from the pointer it stored on the card and answers `{items, next_cursor, total}`, passed
-    on untouched like the poll. Who may read the card is secretarIA's decision and it makes it
+    list from the pointer it stored on the card and answers `{items, next_cursor, total}`, which is
+    passed on through an allowlist (`_options_page`) — unlike the poll, nothing else it says gets
+    through. Who may read the card is secretarIA's decision and it makes it
     from the pair this function sends — `tenant_id` and `external_id` are the SESSION's, so a
     card of another patient or clinic is the same 404 as one that never existed. The browser
     names the card, a cursor and a few characters of text; it can name no scope, no clinic, no kind.
@@ -750,13 +794,14 @@ async def list_options(
         body["cursor"] = cursor
     if q:
         body["q"] = q
-    return await _call(
+    page = await _call(
         product,
         "POST",
         f"/internal/brain-message/messages/{message_id}/options",
         json=body,
         translate=_options_refusal,
     )
+    return _options_page(page)
 
 
 # A new product implements the same internal heartbeat and transcript typing fields,

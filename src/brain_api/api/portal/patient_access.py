@@ -29,7 +29,9 @@ link/code pasted later — never by an e-mail match
 """
 
 import json
+import unicodedata
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from fastapi import (
@@ -1575,6 +1577,34 @@ async def get_thread_media(
     )
 
 
+def _options_body(raw: bytes) -> PatientOptionsIn:
+    """The options request body, or ONE 422 that names the field at fault and echoes nothing.
+
+    FastAPI's own 422 carries `input` — the rejected value, or the entire body when it is not an
+    object. This one carries only our code: `invalid_cursor` / `invalid_options_query` when that
+    field is the wrong type, `invalid_options_request` for everything else (not JSON, not an
+    object, an unknown key, a `page_size` outside 1-10 or not an integer). Nothing here is logged.
+    """
+    refused = HTTPException(
+        status.HTTP_422_UNPROCESSABLE_ENTITY, message_switchboard.INVALID_OPTIONS_REQUEST
+    )
+    try:
+        parsed: Any = json.loads(raw)
+    except ValueError:  # not JSON, not UTF-8 (JSONDecodeError and UnicodeDecodeError are both)
+        raise refused from None
+    try:
+        return PatientOptionsIn.model_validate(parsed)
+    except ValidationError as exc:
+        fields = {err["loc"][0] for err in exc.errors(include_input=False) if err["loc"]}
+        if "cursor" in fields:
+            code = message_switchboard.INVALID_CURSOR
+        elif "q" in fields:
+            code = message_switchboard.INVALID_OPTIONS_QUERY
+        else:
+            raise refused from None
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, code) from None
+
+
 @router.post(
     "/threads/{product}/messages/{message_id}/options",
     response_model=RelayOut,
@@ -1588,13 +1618,20 @@ async def get_thread_media(
         "`options_not_found` alike for a card that does not exist, one of another patient or "
         "clinic, one without a pointer, and a product with no paged lists. `cursor` is the "
         "`source.next_cursor` / previous `payload.next_cursor`, opaque - send it back as received. "
-        "`q` is trimmed and at most 40 characters, accents and case are ignored by the product; "
-        "an empty `q` is no filter. Everything goes in the JSON body `{cursor, page_size, q}`, "
-        "never in the URL: `q` is what the patient typed, and every proxy on the way logs URLs. "
-        "Payload: `{items: [{id, title, description}], next_cursor | null, total}` (`total` = "
-        "rows matching `q`; the fixed rows of the card are never in `items`). `q` is never "
-        "stored or logged."
+        "`q` is composed (NFC), trimmed and at most 40 characters, accents and case are ignored "
+        "by the product; an empty `q` is no filter. Everything goes in the JSON body "
+        "`{cursor, page_size, q}`, never in the URL: `q` is what the patient typed, and every "
+        "proxy on the way logs URLs. Payload: `{items: [{id, title, description}], "
+        "next_cursor | null, total}` and nothing else (`total` = rows matching `q`; the fixed "
+        "rows of the card are never in `items`). `q` is never stored or logged."
     ),
+    # The body is read by hand (see the handler), so FastAPI cannot document it from a parameter.
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {"application/json": {"schema": PatientOptionsIn.model_json_schema()}},
+        }
+    },
     responses={
         401: {"description": "Missing or invalid patient session."},
         403: {"description": "The clinic does not offer that product on this channel."},
@@ -1602,7 +1639,8 @@ async def get_thread_media(
         422: {
             "description": (
                 "`invalid_cursor`, `invalid_options_query` (`q` over 40 characters, or a search "
-                "the product refused), or a bad `page_size` / card id (FastAPI's own list)."
+                "the product refused), `invalid_options_request` (the body is not the shape "
+                "above - never echoed), or a bad card id (FastAPI's own list)."
             )
         },
         429: {"description": "Too many requests - per-patient budget."},
@@ -1611,7 +1649,7 @@ async def get_thread_media(
     },
 )
 async def get_message_options(
-    body: PatientOptionsIn,
+    request: Request,
     product: str = Path(description="`secretaria` - the only product with paged lists."),
     message_id: str = Path(
         pattern=attachments.MEDIA_ID_PATTERN,
@@ -1627,18 +1665,25 @@ async def get_message_options(
     THIS patient at THIS clinic; this edge cannot see the card, so it never decides ownership, it
     only guarantees the identity that decision is made from.
 
-    `cursor` and `q` are validated by hand (not by `Query(pattern=..., max_length=...)`) for two
-    reasons: the contract names the refusals (`invalid_cursor`, `invalid_options_query`), and
-    FastAPI's own 422 echoes the rejected `input` back — which, for `q`, would put the patient's
-    search text in a response body and in whatever records it. An empty `cursor` or `q` is the same
+    The BODY is read and validated by hand, not declared as a parameter, for two reasons: the
+    contract names the refusals (`invalid_cursor`, `invalid_options_query`), and FastAPI's own 422
+    echoes the rejected `input` back — the offending value, or the whole body for a wrong-shaped
+    one — which, for `q`, would put the patient's search text in a response body and in whatever
+    records it. Here a body that is not `{cursor?, page_size?, q?}` is one 422 code that names the
+    field at fault and nothing it was sent (`_options_body`). An empty `cursor` or `q` is the same
     as an absent one, and nothing about either is logged.
+
+    `q` is composed to NFC FIRST, then trimmed and measured: forty letters written as base letter +
+    combining accent are forty letters, not eighty code points, and the product receives the one
+    composed form whichever way the keyboard or the OS wrote it.
     """
+    body = _options_body(await request.body())
     cursor, q, page_size = body.cursor, body.q, body.page_size
     if cursor and message_switchboard.OPTIONS_CURSOR.fullmatch(cursor) is None:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, message_switchboard.INVALID_CURSOR
         )
-    search = (q or "").strip()
+    search = unicodedata.normalize("NFC", q or "").strip()
     if len(search) > message_switchboard.OPTIONS_QUERY_MAX_CHARS:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, message_switchboard.INVALID_OPTIONS_QUERY

@@ -852,6 +852,46 @@ async def test_a_wrong_shaped_body_is_told_apart_by_the_field_at_fault_only(
     assert (resp.status_code, resp.json()) == (422, {"detail": code})
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [b"[" * 100_000, b'{"q": ' + b"[" * 100_000],
+    ids=["nested-array", "nested-under-q"],
+)
+async def test_a_body_nested_past_the_recursion_limit_is_refused_not_a_500(
+    pclient, monkeypatch, raw
+):
+    """F4 N1: `json.loads` raises RecursionError, not ValueError - it must not escape as a 500."""
+    client, sessionmaker, seed = pclient
+    _configure_mesh(monkeypatch)
+    me = await _patient(client, sessionmaker, seed.both)
+    calls = _mesh(monkeypatch, _secretaria({}))
+
+    resp = await _raw(client, uuid.uuid4(), me["access_token"], raw)
+
+    assert (resp.status_code, resp.json()) == (422, {"detail": "invalid_options_request"})
+    assert calls == []
+
+
+async def test_a_client_that_goes_away_mid_body_is_a_400_not_a_500():
+    """F4 N1: a disconnect while the body is read is Starlette's ClientDisconnect - map it to the
+    same 400 the sibling text route answers, never let it escape as a 500."""
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    from brain_api.api.portal import patient_access
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    request = Request({"type": "http", "method": "POST", "headers": []}, receive)
+
+    with pytest.raises(HTTPException) as refused:
+        await patient_access._options_raw(request)
+
+    assert refused.value.status_code == 400
+    assert refused.value.detail == patient_access._BODY_UNREADABLE
+
+
 async def test_the_options_schema_is_still_documented_for_the_body(pclient):
     """Taking the body as `Any` must not make /openapi.json forget what the route accepts."""
     client, _sessionmaker, _seed = pclient

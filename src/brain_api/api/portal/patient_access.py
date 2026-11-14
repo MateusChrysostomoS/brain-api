@@ -1590,7 +1590,10 @@ def _options_body(raw: bytes) -> PatientOptionsIn:
     )
     try:
         parsed: Any = json.loads(raw)
-    except ValueError:  # not JSON, not UTF-8 (JSONDecodeError and UnicodeDecodeError are both)
+    except (ValueError, RecursionError):
+        # Not JSON, not UTF-8 (JSONDecodeError and UnicodeDecodeError are both ValueError), a
+        # number past Python's digit limit, or nesting past the recursion limit: one refusal,
+        # never a 500 and a traceback (F4 N1).
         raise refused from None
     try:
         return PatientOptionsIn.model_validate(parsed)
@@ -1603,6 +1606,18 @@ def _options_body(raw: bytes) -> PatientOptionsIn:
         else:
             raise refused from None
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, code) from None
+
+
+async def _options_raw(request: Request) -> bytes:
+    """The options request's raw body; a client gone mid-body is the sibling text route's 400.
+
+    Reading the body by hand drops FastAPI's own guard, which answered a `ClientDisconnect` with
+    this 400 — without this it would escape as a 500 (F4 N1).
+    """
+    try:
+        return await request.body()
+    except ClientDisconnect:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _BODY_UNREADABLE) from None
 
 
 @router.post(
@@ -1677,7 +1692,7 @@ async def get_message_options(
     combining accent are forty letters, not eighty code points, and the product receives the one
     composed form whichever way the keyboard or the OS wrote it.
     """
-    body = _options_body(await request.body())
+    body = _options_body(await _options_raw(request))
     cursor, q, page_size = body.cursor, body.q, body.page_size
     if cursor and message_switchboard.OPTIONS_CURSOR.fullmatch(cursor) is None:
         raise HTTPException(

@@ -602,7 +602,8 @@ The card's fixed rows (`source.pinned_ids`) are never in `items`.
 | 403 | `product_unavailable` | Product not offered on this channel (or channel off) |
 | 404 | `options_not_found` | **One answer for every reason**: unknown id, another patient's card, another clinic's, an inbound message, a card without `source`, a product without paged lists — and any upstream 404, including a secretarIA that predates the route. The patient cannot tell these apart; the operator can: an upstream 404 whose `detail.code` is **not** `options_not_found` (no route, wrong base URL or proxy path) is logged at **WARNING** as `switchboard_options_upstream_404_unexpected` (`status`, `code_present` — never the body, never `q`). Seeing it in production means a deploy-order mistake, not a patient asking for someone else's card |
 | 422 | `invalid_cursor` / `invalid_options_query` | See the table above. An **upstream** 422 becomes `invalid_cursor` when secretarIA's `detail.code` says so (the client drops the cursor and starts the list again), otherwise `invalid_options_query`; the mapped code is logged (`switchboard_options_upstream_422`, `status`, `mapped`). The upstream body is never echoed |
-| 422 | `invalid_options_request` | The body is not `{cursor?, page_size?, q?}`: not JSON, not an object, an unknown key, a bad `page_size`. Nothing the caller sent is echoed |
+| 422 | `invalid_options_request` | The body is not `{cursor?, page_size?, q?}`: not JSON, not an object, an unknown key, a bad `page_size`, JSON nested past the parser's recursion limit. Nothing the caller sent is echoed |
+| 400 | `There was an error parsing the body` | The client went away while the body was being read (same answer as §5's text route; never a 500) |
 | 422 | (FastAPI list) | Bad `message_id` only |
 | 429 | `Too many requests` | **60 per minute per patient** (`PATIENT_OPTIONS_RATE_LIMIT_PER_MINUTE`; 0 disables; in-process and fail-open like every limiter here). Keyed by the patient handle, so a pending visitor and a verified patient are throttled alike and one patient's scrolling never spends another's budget |
 | 502 / 503 | `product_unreachable`, `product_error` / `product_channel_unconfigured`, `product_temporarily_unavailable` | As §8.1. An upstream 401/403 (shared key wrong) or 429 is the opaque 502, never the patient's own 401/429 |
@@ -1240,6 +1241,10 @@ e-mail address, a cookie, or a JWT from this channel.
   `payload` is an allowlist `{items, next_cursor, total}` with items `{id, title, description}`; an upstream 404
   without `detail.code == "options_not_found"` is logged at WARNING and the mapped 422 code is logged. `cursor: ""`
   = absent and `page_size: null` → 422 are now stated in the table (review finding 11: accepted as is).
+- **2026-11-14** — TASK-082 F4 finding N1, **§5.1**: reading the body by hand had dropped FastAPI's own guards, so a
+  body nested past the recursion limit or a client disconnect mid-body escaped as a 500. Now: nested → 422
+  `invalid_options_request` (like any unreadable body), disconnect → 400 as on the text route. No contract change
+  for a well-formed caller.
 
 ## Typing — o contrato de digitação, qualquer produto
 

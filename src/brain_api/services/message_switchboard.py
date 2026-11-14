@@ -25,6 +25,7 @@ never be spelled the same as "the service is down" (502/503), or a support call 
 missing tab becomes unanswerable.
 """
 
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -60,6 +61,26 @@ MEDIA_PRODUCTS: frozenset[str] = frozenset({PRODUCT_SECRETARIA})
 #: (`mark_read`). PreCheck is out of this round for the same reason as attachments
 #: (z_prompts/PROMPT_BRAIN_MESSAGE_STATUS_ENTREGA_2_BRAIN_API.md, decision 1).
 READ_RECEIPT_PRODUCTS: frozenset[str] = frozenset({PRODUCT_SECRETARIA})
+#: Products whose cards page a long list server-side (`list_options`, TASK-082). PreCheck's lists
+#: are short and inline, so it has no options route to ask.
+OPTIONS_PRODUCTS: frozenset[str] = frozenset({PRODUCT_SECRETARIA})
+#: The ceilings of that route (tasks/TASK-082/CONTRACT.md §c5), owned here so the router and the
+#: relay cannot drift: a page is at most 10 rows, a search at most 40 characters once trimmed, and
+#: the cursor is opaque — only its alphabet and length are checked, never its content.
+OPTIONS_PAGE_SIZE_MAX = 10
+OPTIONS_QUERY_MAX_CHARS = 40
+OPTIONS_CURSOR = re.compile(r"[A-Za-z0-9_-]{1,200}")
+#: The four answers this route adds. One 404 for every reason a card may not be read (unknown id,
+#: another patient's, another clinic's, a card with no pointer, a product without lists).
+#: `invalid_options_request` is a body that is not the shape of `{cursor, page_size, q}` at all
+#: (a wrong type for `page_size`, an unknown key, an array): it names no field and echoes nothing.
+OPTIONS_NOT_FOUND = "options_not_found"
+INVALID_OPTIONS_QUERY = "invalid_options_query"
+INVALID_OPTIONS_REQUEST = "invalid_options_request"
+INVALID_CURSOR = "invalid_cursor"
+#: What one row of a page may carry to the browser (D12 b) — secretarIA's page is passed through an
+#: allowlist, so a field it grows later (a scope, a clinic id...) never reaches the patient.
+_OPTIONS_ITEM_FIELDS = ("id", "title", "description")
 
 # secretarIA's inbound scheme (secretaria api/internal.py: APIKeyHeader X-Internal-Api-Key).
 _SECRETARIA_KEY_HEADER = "X-Internal-Api-Key"
@@ -158,6 +179,7 @@ async def _call(
     content_headers: dict[str, str] | None = None,
     timeout: float | None = None,
     refusals: frozenset[str] = frozenset(),
+    translate: Callable[[httpx.Response], HTTPException | None] | None = None,
 ) -> Any:
     """One authenticated hop into a sibling service. Upstream bodies NEVER reach the patient.
 
@@ -175,6 +197,12 @@ async def _call(
     `attachments.PRODUCT_REFUSALS`): an upstream 4xx whose `detail.code` is one of them, at
     the status this service's own table gives it, becomes that `AttachmentRefused` — this
     service's code and sentence, still never the upstream's body.
+
+    `translate` is the same idea for a route whose 4xx are the PATIENT'S facts rather than a
+    broken mesh (`list_options`: a card that is not theirs, a search the product refused). It is
+    asked about every 4xx and either returns the `HTTPException` — this service's status and
+    code — or `None`, and `None` falls through to the opaque 502 below like any other 4xx. The
+    upstream's body is read at most for a `detail.code`, never echoed.
     """
     base, headers = _upstream(product)
     settings = get_settings()
@@ -213,6 +241,16 @@ async def _call(
             code=code,
         )
         raise attachments.AttachmentRefused(code)
+    if translate is not None and 400 <= resp.status_code < 500:
+        translated = translate(resp)
+        if translated is not None:
+            logger.info(
+                "switchboard_upstream_refused",
+                product=product,
+                path=path,
+                status=resp.status_code,
+            )
+            raise translated
     if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
         logger.warning("switchboard_upstream_degraded", product=product, path=path)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "product_temporarily_unavailable")
@@ -665,6 +703,105 @@ async def insurance_overview(*, tenant_id: UUID) -> dict[str, Any]:
         "/internal/brain-message/insurance-overview",
         params={"tenant_id": str(tenant_id)},
     )
+
+
+def _options_refusal(resp: httpx.Response) -> HTTPException | None:
+    """What a 4xx from the options route means to the PATIENT (CONTRACT.md §c5, D6).
+
+    404 is the one answer for "that card is not yours to read" — unknown, someone else's, another
+    clinic's, a card without a pointer — and 422 is a search or cursor the product refused after
+    this edge let it through. A refused CURSOR is told apart, because the client's answer to it is
+    different (drop the cursor and start the list again); every other 422 is the search itself.
+    Anything else (401/403 = a wrong shared key, 429...) is an operator fact: the opaque 502.
+
+    Two things are logged here, because the patient's answer hides them (D12 a). A 404 whose
+    `detail.code` is not `options_not_found` is NOT "that card is not yours": it is a secretarIA
+    that predates the route, or a wrong base URL / proxy path — a deploy-order mistake that would
+    otherwise look exactly like a patient asking for someone else's card — so it is a WARNING.
+    And the 422 code that was mapped is logged, so "bad cursor" and "bad search" can be told apart
+    afterwards. Never the body, never `q`: status, a boolean and our own code only.
+    """
+    if resp.status_code == status.HTTP_404_NOT_FOUND:
+        upstream_code = _refusal_code(resp)
+        if upstream_code != OPTIONS_NOT_FOUND:
+            logger.warning(
+                "switchboard_options_upstream_404_unexpected",
+                status=resp.status_code,
+                code_present=upstream_code is not None,
+            )
+        return HTTPException(status.HTTP_404_NOT_FOUND, OPTIONS_NOT_FOUND)
+    if resp.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
+        code = INVALID_CURSOR if _refusal_code(resp) == INVALID_CURSOR else INVALID_OPTIONS_QUERY
+        logger.info("switchboard_options_upstream_422", status=resp.status_code, mapped=code)
+        return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, code)
+    return None
+
+
+def _options_page(payload: Any) -> dict[str, Any]:
+    """The page the browser may see: only `{items, next_cursor, total}`.
+
+    Each item is only `{id, title, description}`. An allowlist, not a pass-through (D12 b):
+    secretarIA owns the page, but it is not trusted to stay narrow — an upstream bug that adds a
+    field (a `scope`, a clinic id) must not reach the patient's browser. A page that is not that
+    shape at all is a contract break: the opaque 502.
+    """
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        logger.error("switchboard_options_page_malformed")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "product_error")
+    return {
+        "items": [
+            {field: item[field] for field in _OPTIONS_ITEM_FIELDS if field in item}
+            for item in items
+        ],
+        "next_cursor": payload.get("next_cursor"),
+        "total": payload.get("total"),
+    }
+
+
+async def list_options(
+    product: str,
+    *,
+    tenant_id: UUID,
+    patient_ref: str,
+    message_id: str,
+    page_size: int,
+    cursor: str | None = None,
+    q: str | None = None,
+) -> dict[str, Any]:
+    """One page of the options behind a Portal list card (TASK-082, CONTRACT.md §c4/§c5).
+
+    `POST /internal/brain-message/messages/{message_id}/options` on secretarIA, which rebuilds the
+    list from the pointer it stored on the card and answers `{items, next_cursor, total}`, which is
+    passed on through an allowlist (`_options_page`) — unlike the poll, nothing else it says gets
+    through. Who may read the card is secretarIA's decision and it makes it
+    from the pair this function sends — `tenant_id` and `external_id` are the SESSION's, so a
+    card of another patient or clinic is the same 404 as one that never existed. The browser
+    names the card, a cursor and a few characters of text; it can name no scope, no clinic, no kind.
+
+    `q` is a patient's free text and is NEVER logged here — `_call` logs the path and status only,
+    and everything travels in the JSON BODY, so the URL httpx prints at INFO (and any proxy on the
+    way logs) carries no ids, no cursor and no search text.
+    """
+    if product not in OPTIONS_PRODUCTS or not attachments.is_media_id(message_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, OPTIONS_NOT_FOUND)
+    body: dict[str, Any] = {
+        "tenant_id": str(tenant_id),
+        "external_id": patient_ref,
+        "page_size": page_size,
+    }
+    if cursor:
+        body["cursor"] = cursor
+    if q:
+        body["q"] = q
+    page = await _call(
+        product,
+        "POST",
+        f"/internal/brain-message/messages/{message_id}/options",
+        json=body,
+        translate=_options_refusal,
+    )
+    return _options_page(page)
 
 
 # A new product implements the same internal heartbeat and transcript typing fields,

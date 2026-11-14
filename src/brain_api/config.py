@@ -463,6 +463,13 @@ class Settings(BaseSettings):
     # its upload rate by minting visits. Verified patients never spend it. Per process and
     # fail-open, like every limiter here; 0 disables it.
     PATIENT_PENDING_ATTACHMENT_RATE_LIMIT_PER_MIN: int = 20
+    # Per-PATIENT budget for the paged-list route `.../messages/{id}/options` (TASK-082: the
+    # Portal's scroll and search through a long list). Keyed by the identity, for the reason
+    # `PATIENT_ATTACHMENT_RATE_LIMIT_PER_MIN` is (an IP key fails behind the portal proxy). One
+    # scroll page is 10 rows and a typed search is debounced, so 60 a minute is a patient who
+    # scrolls a 600-row list or retypes a search every second — far beyond a person, well below a
+    # script. Per process and fail-open, like every limiter here; 0 disables it.
+    PATIENT_OPTIONS_RATE_LIMIT_PER_MINUTE: int = 60
     # Timeout of the two hops that carry a FILE (the multipart inbound and the media stream).
     # Longer than SECRETARIA_TIMEOUT_SECONDS because the product stores the bytes before it
     # answers; httpx applies it per network operation, not to the whole transfer.

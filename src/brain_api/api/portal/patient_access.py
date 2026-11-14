@@ -29,7 +29,9 @@ link/code pasted later — never by an e-mail match
 """
 
 import json
+import unicodedata
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from fastapi import (
@@ -99,6 +101,7 @@ from brain_api.schemas.portal.patient_access import (
     PatientAttachmentForm,
     PatientEnterIn,
     PatientMessageIn,
+    PatientOptionsIn,
     PatientReadMarkIn,
     PatientTypingIn,
     PendingProgressOut,
@@ -160,6 +163,13 @@ _pending_attachment_limiter = SlidingWindowLimiter(
     "patient_pending_attachment",
     lambda: get_settings().PATIENT_PENDING_ATTACHMENT_RATE_LIMIT_PER_MIN,
 )
+# An eighth, for the paged lists (TASK-082). Keyed by the patient HANDLE — the identity the session
+# names, so it holds for a pending visitor and a verified patient alike — and spent by every
+# request that reaches the route with valid input, scroll and search both.
+_options_limiter = SlidingWindowLimiter(
+    "patient_options", lambda: get_settings().PATIENT_OPTIONS_RATE_LIMIT_PER_MINUTE
+)
+
 
 # The e-mail template services/mailer.py renders (brain-api's own SMTP since TASK-056).
 _OTP_EMAIL_TEMPLATE = "patient_access_otp"
@@ -1565,6 +1575,154 @@ async def get_thread_media(
         headers=_media_headers(media),
         background=BackgroundTask(media.aclose),
     )
+
+
+def _options_body(raw: bytes) -> PatientOptionsIn:
+    """The options request body, or ONE 422 that names the field at fault and echoes nothing.
+
+    FastAPI's own 422 carries `input` — the rejected value, or the entire body when it is not an
+    object. This one carries only our code: `invalid_cursor` / `invalid_options_query` when that
+    field is the wrong type, `invalid_options_request` for everything else (not JSON, not an
+    object, an unknown key, a `page_size` outside 1-10 or not an integer). Nothing here is logged.
+    """
+    refused = HTTPException(
+        status.HTTP_422_UNPROCESSABLE_ENTITY, message_switchboard.INVALID_OPTIONS_REQUEST
+    )
+    try:
+        parsed: Any = json.loads(raw)
+    except (ValueError, RecursionError):
+        # Not JSON, not UTF-8 (JSONDecodeError and UnicodeDecodeError are both ValueError), a
+        # number past Python's digit limit, or nesting past the recursion limit: one refusal,
+        # never a 500 and a traceback (F4 N1).
+        raise refused from None
+    try:
+        return PatientOptionsIn.model_validate(parsed)
+    except ValidationError as exc:
+        fields = {err["loc"][0] for err in exc.errors(include_input=False) if err["loc"]}
+        if "cursor" in fields:
+            code = message_switchboard.INVALID_CURSOR
+        elif "q" in fields:
+            code = message_switchboard.INVALID_OPTIONS_QUERY
+        else:
+            raise refused from None
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, code) from None
+
+
+async def _options_raw(request: Request) -> bytes:
+    """The options request's raw body; a client gone mid-body is the sibling text route's 400.
+
+    Reading the body by hand drops FastAPI's own guard, which answered a `ClientDisconnect` with
+    this 400 — without this it would escape as a 500 (F4 N1).
+    """
+    try:
+        return await request.body()
+    except ClientDisconnect:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _BODY_UNREADABLE) from None
+
+
+@router.post(
+    "/threads/{product}/messages/{message_id}/options",
+    response_model=RelayOut,
+    summary="One page of the options behind a list card (scroll and search)",
+    description=(
+        "TASK-082. A Portal list card (services, doctors, convenios) carries its first page and a "
+        "`source` pointer; the rest is read here, 10 at a time, by scrolling or by typing a search "
+        "that covers the WHOLE list. The card is the `id` the poll returned; which list it is, and "
+        "for whom, was fixed server-side when it was written - the browser can name no scope, "
+        "clinic or patient, and a `tenant_id`/`external_id` in the query is ignored. 404 "
+        "`options_not_found` alike for a card that does not exist, one of another patient or "
+        "clinic, one without a pointer, and a product with no paged lists. `cursor` is the "
+        "`source.next_cursor` / previous `payload.next_cursor`, opaque - send it back as received. "
+        "`q` is composed (NFC), trimmed and at most 40 characters, accents and case are ignored "
+        "by the product; an empty `q` is no filter. Everything goes in the JSON body "
+        "`{cursor, page_size, q}`, never in the URL: `q` is what the patient typed, and every "
+        "proxy on the way logs URLs. Payload: `{items: [{id, title, description}], "
+        "next_cursor | null, total}` and nothing else (`total` = rows matching `q`; the fixed "
+        "rows of the card are never in `items`). `q` is never stored or logged."
+    ),
+    # The body is read by hand (see the handler), so FastAPI cannot document it from a parameter.
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {"application/json": {"schema": PatientOptionsIn.model_json_schema()}},
+        }
+    },
+    responses={
+        401: {"description": "Missing or invalid patient session."},
+        403: {"description": "The clinic does not offer that product on this channel."},
+        404: {"description": "`options_not_found` - one answer for every reason."},
+        422: {
+            "description": (
+                "`invalid_cursor`, `invalid_options_query` (`q` over 40 characters, or a search "
+                "the product refused), `invalid_options_request` (the body is not the shape "
+                "above - never echoed), or a bad card id (FastAPI's own list)."
+            )
+        },
+        429: {"description": "Too many requests - per-patient budget."},
+        502: {"description": "The product backend failed or is misconfigured."},
+        503: {"description": "The product's leg of the mesh is unconfigured or degraded."},
+    },
+)
+async def get_message_options(
+    request: Request,
+    product: str = Path(description="`secretaria` - the only product with paged lists."),
+    message_id: str = Path(
+        pattern=attachments.MEDIA_ID_PATTERN,
+        description="The `id` of the list card, as the poll returned it.",
+    ),
+    patient: MessagePatient = Depends(get_thread_patient),
+    session: AsyncSession = Depends(get_session),
+) -> RelayOut:
+    """Relay one page of a list card's options, scoped by the SESSION like every thread route.
+
+    `tenant_id` and `external_id` upstream are `patient.tenant_id` and `patient.id` — nothing the
+    browser sent — so secretarIA, which owns the card, answers 404 unless the card was written for
+    THIS patient at THIS clinic; this edge cannot see the card, so it never decides ownership, it
+    only guarantees the identity that decision is made from.
+
+    The BODY is read and validated by hand, not declared as a parameter, for two reasons: the
+    contract names the refusals (`invalid_cursor`, `invalid_options_query`), and FastAPI's own 422
+    echoes the rejected `input` back — the offending value, or the whole body for a wrong-shaped
+    one — which, for `q`, would put the patient's search text in a response body and in whatever
+    records it. Here a body that is not `{cursor?, page_size?, q?}` is one 422 code that names the
+    field at fault and nothing it was sent (`_options_body`). An empty `cursor` or `q` is the same
+    as an absent one, and nothing about either is logged.
+
+    `q` is composed to NFC FIRST, then trimmed and measured: forty letters written as base letter +
+    combining accent are forty letters, not eighty code points, and the product receives the one
+    composed form whichever way the keyboard or the OS wrote it.
+    """
+    body = _options_body(await _options_raw(request))
+    cursor, q, page_size = body.cursor, body.q, body.page_size
+    if cursor and message_switchboard.OPTIONS_CURSOR.fullmatch(cursor) is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, message_switchboard.INVALID_CURSOR
+        )
+    search = unicodedata.normalize("NFC", q or "").strip()
+    if len(search) > message_switchboard.OPTIONS_QUERY_MAX_CHARS:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, message_switchboard.INVALID_OPTIONS_QUERY
+        )
+    if not _options_limiter.allow(str(patient.id)):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
+
+    ent = await resolve_entitlement(session, patient.tenant_id)
+    message_switchboard.require_product(ent, product)
+    if product not in message_switchboard.OPTIONS_PRODUCTS:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, message_switchboard.OPTIONS_NOT_FOUND)
+    # Scroll fires this in bursts: release the pooled connection before the upstream hop.
+    await session.close()
+
+    payload = await message_switchboard.list_options(
+        product,
+        tenant_id=patient.tenant_id,
+        patient_ref=str(patient.id),
+        message_id=message_id,
+        page_size=page_size,
+        cursor=cursor or None,
+        q=search or None,
+    )
+    return RelayOut(product=product, payload=payload, at=datetime.now(UTC))
 
 
 def _greet_if_secretaria(

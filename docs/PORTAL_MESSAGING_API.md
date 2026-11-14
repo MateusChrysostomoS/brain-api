@@ -487,7 +487,9 @@ secretarIA already uses for WhatsApp (`secretaria/src/secretaria/models/message.
   ],
   "button_label": null,              // "list" only
   "section_title": null,             // "list" only
-  "calendar": { "days": ["2026-12-14", "2027-01-05"] }  // optional, "list" only — see below
+  "calendar": { "days": ["2026-12-14", "2027-01-05"] },  // optional, "list" only — see below
+  "source": { "kind": "service", "total": 37, "pinned_ids": ["svchelp|0"],
+              "next_cursor": "eyJ2IjoxLCJvIjoxMH0" }       // optional, "list" only — see §5.1
 }
 ```
 
@@ -503,6 +505,16 @@ sits outside `options`, so the 10-row list cap does not apply to it. A tap on a 
 `interactive_reply_id: "day|<date>|0"`, and secretarIA accepts only dates on a recent card. This
 repo passes the field through unchanged. Details in
 `secretarIA/docs/CHECKPOINT_calendario_outra_data.md`.
+
+`source` is optional too (absent on old cards, WhatsApp cards, calendar cards and button cards; TASK-082,
+`tasks/TASK-082/CONTRACT.md` §c3) and marks a list that is **longer than the card shows**: `options` then
+holds page 1 (at most 10 rows, full titles) followed by the fixed rows named in `pinned_ids` ("Não sei",
+"Particular", "Outro" — an old Portal that ignores `source` still draws them all), `kind` is
+`service | professional | insurance`, `total` is the size of the list (fixed rows excluded) and
+`next_cursor` is the cursor of page 2, `null` when page 1 is everything. The stored card also holds a
+server-only scope and a version; neither is ever projected, because the browser needs neither — it reads the
+rest of the list by the card's own id (§5.1). secretarIA writes and projects the field; this repo relays the
+poll untouched (`RelayOut` allows extra keys), so reading it needs no code here.
 
 A tap becomes `interactive_reply_id` on the **inbound** side — the id of the button/row, not
 the label:
@@ -526,6 +538,87 @@ PreCheck's own rendered-question shape is channel-neutral by design
 (`PreCheck/app/schemas/brain_message.py::RenderedQuestion` — `type`/`options`/`list_options`),
 **not** a WhatsApp payload: n8n folds the Meta interactive shape for its channel; Brain-Message
 renders its own controls from the same flow data.
+
+### 5.1 Paged option lists — `POST /patient-access/threads/{product}/messages/{message_id}/options`
+
+TASK-082 (frozen contract: `tasks/TASK-082/CONTRACT.md` §c4/§c5, BRAIN root). A list card whose
+`interactive.source` is present carries only its first page; the rest of the list is read here, **ten rows
+at a time**, by scrolling and by a search that covers the **whole** list. The Portal never chooses what the
+list is: it names the card (the `id` the poll returned), a cursor and a few characters of text.
+
+**A POST with a JSON body `{cursor?, page_size?, q?}` — never a query string.** `q` is what the patient
+typed, and every hop on the way writes URLs to an access log (the Portal's nginx, the reverse proxy,
+uvicorn, httpx). With everything in the body, no URL on either hop carries a search, an id or a cursor.
+
+*State (2026-11-12): built and tested in this repo (`task/TASK-082-options-proxy`), not merged, not
+deployed. The secretarIA route it forwards to is built
+by a parallel session (`POST /internal/brain-message/messages/{id}/options`, body-only); this edge was proved against a fake upstream that follows the contract, including the
+ownership rule — the end-to-end proof is the integration session's.*
+
+| Part | Rule |
+|---|---|
+| Authentication | Clinic **or** pending bearer (`get_thread_patient`), checked before anything else: 401 |
+| `product` | Must be a product the clinic has on this channel, else 403 `product_unavailable` (same as every thread route). Owned but without paged lists (`precheck`) → 404 `options_not_found`, no network call. Only `secretaria` pages lists (`message_switchboard.OPTIONS_PRODUCTS`) |
+| `message_id` | `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` (the media-id pattern), else 422 (FastAPI's list) |
+| `page_size` | Body. Integer 1–10, **default 10 when the key is absent**; a JSON `null`, a non-integer or a value outside 1–10 → 422 `invalid_options_request` (the Portal omits the key rather than sending `null`) |
+| `cursor` | Body. Optional and **opaque** — send back exactly what `source.next_cursor` / the previous `payload.next_cursor` said. Only its alphabet and length are checked: `^[A-Za-z0-9_-]{1,200}$`, else 422 `invalid_cursor`. A `null` or an **empty string `""` = absent** (not a 422); any other type (number, list, object) → 422 `invalid_cursor` |
+| `q` | Body. Optional search text. **Composed to NFC first** (so 40 letters written as base letter + combining accent count as 40, and the product receives the composed form), then trimmed; more than **40** characters → 422 `invalid_options_query`. A `null`, or empty after trimming = no filter, and it is not forwarded. Any other type → 422 `invalid_options_query`. Accents, case and emoji are the product's business (secretarIA clamps at 60 as a safety net) |
+| Anything else | A `tenant_id`, `external_id`, `scope`, `kind`… in the body → 422 `invalid_options_request` (unknown keys are refused, like every patient body); a body that is not a JSON object (an array, a string, a number, not JSON at all) → the same; in the query string → **ignored**. Never forwarded |
+
+Checks run in this order, so each answer says only what the caller may know: 401 → 422 for `message_id` (FastAPI's
+list) → 422 for the body (`invalid_options_request` / `invalid_cursor` / `invalid_options_query` by field type) →
+422 `invalid_cursor` (alphabet/length) → 422 `invalid_options_query` (length) → 429 → 403 → 404 (product).
+
+**The body is read by hand, not declared as a parameter** (`_options_body`; the schema is still published in
+`/openapi.json` through `openapi_extra`). FastAPI's own 422 echoes `input` back — the rejected value, or the
+**entire body** when it is not an object — and for `q` that would put the patient's search text into a response
+body. The 422 here carries one of our codes and **nothing the caller sent**; a wrong-shaped body names no field
+beyond the code (`tests/test_patient_options.py`, section 8, probes a dozen shapes with a sentinel string).
+
+**What goes upstream.** `POST {SECRETARIA}/internal/brain-message/messages/{message_id}/options` with
+`X-Internal-Api-Key` and the JSON body `tenant_id` = the **session's** clinic, `external_id` = the **session's**
+patient, `page_size`, and `cursor` / `q` only when present. Nothing the browser sent can change the first
+two, so a card that is another patient's, another clinic's or unknown is the same upstream 404
+(`options_not_found`) — ownership is secretarIA's decision, taken from the identity this edge guarantees.
+The pooled DB connection is released before the hop (scroll fires this in bursts).
+
+**Response.** `RelayOut{product: "secretaria", payload, at}`. Unlike the poll, `payload` is **not** passed through
+untouched: it is rebuilt from an allowlist (`message_switchboard._options_page`) — exactly `{items, next_cursor,
+total}`, each item exactly `{id, title, description}` (a key an item lacks is simply absent). A field secretarIA
+adds later (a `scope`, a clinic id…) never reaches the browser; a page that is not an object with an `items`
+list of objects is a contract break and answers the opaque 502 `product_error`.
+
+```jsonc
+{ "items": [ { "id": "svc|Consulta de rotina", "title": "Consulta de rotina", "description": "" } ],
+  "next_cursor": "eyJ2IjoxLCJvIjoyMH0",   // null on the last page; an offset past the end is items: [], null
+  "total": 37 }                            // rows matching q (the whole list when q is empty)
+```
+
+The card's fixed rows (`source.pinned_ids`) are never in `items`.
+
+| Status | Code | Meaning |
+|---|---|---|
+| 401 | — | Missing/invalid/expired patient session |
+| 403 | `product_unavailable` | Product not offered on this channel (or channel off) |
+| 404 | `options_not_found` | **One answer for every reason**: unknown id, another patient's card, another clinic's, an inbound message, a card without `source`, a product without paged lists — and any upstream 404, including a secretarIA that predates the route. The patient cannot tell these apart; the operator can: an upstream 404 whose `detail.code` is **not** `options_not_found` (no route, wrong base URL or proxy path) is logged at **WARNING** as `switchboard_options_upstream_404_unexpected` (`status`, `code_present` — never the body, never `q`). Seeing it in production means a deploy-order mistake, not a patient asking for someone else's card |
+| 422 | `invalid_cursor` / `invalid_options_query` | See the table above. An **upstream** 422 becomes `invalid_cursor` when secretarIA's `detail.code` says so (the client drops the cursor and starts the list again), otherwise `invalid_options_query`; the mapped code is logged (`switchboard_options_upstream_422`, `status`, `mapped`). The upstream body is never echoed |
+| 422 | `invalid_options_request` | The body is not `{cursor?, page_size?, q?}`: not JSON, not an object, an unknown key, a bad `page_size`, JSON nested past the parser's recursion limit. Nothing the caller sent is echoed |
+| 400 | `There was an error parsing the body` | The client went away while the body was being read (same answer as §5's text route; never a 500) |
+| 422 | (FastAPI list) | Bad `message_id` only |
+| 429 | `Too many requests` | **60 per minute per patient** (`PATIENT_OPTIONS_RATE_LIMIT_PER_MINUTE`; 0 disables; in-process and fail-open like every limiter here). Keyed by the patient handle, so a pending visitor and a verified patient are throttled alike and one patient's scrolling never spends another's budget |
+| 502 / 503 | `product_unreachable`, `product_error` / `product_channel_unconfigured`, `product_temporarily_unavailable` | As §8.1. An upstream 401/403 (shared key wrong) or 429 is the opaque 502, never the patient's own 401/429 |
+
+**The search text is never stored or logged.** It travels only in request bodies (browser → brain-api →
+secretarIA), so no access log on the way — the Portal's nginx, the reverse proxy, uvicorn, httpx's URL line —
+receives it. `tests/test_patient_options.py` proves the outbound hop's URL is bare and that a GET form
+does not exist. (An earlier draft sent `q` in the URL and filtered the logs of this process; that left the
+proxies, so the contract moved `q` to a body on 2026-11-12, at the owner's request.)
+Handlers log tenant ids and counts, never `q`, not even its length next to a patient id.
+
+**Deploy order and compatibility.** secretarIA (API **and** worker) → brain-api → Brain-Message-Frontend; no
+migration. A brain-api live before secretarIA's route answers 404 `options_not_found` for every card, and the
+Portal only calls this route for a card that has `source`, which only the new secretarIA writes — so nothing
+breaks in either order. Old cards have no `source` and never reach this route.
 
 ---
 
@@ -718,7 +811,8 @@ place before this document.
 | 200 | Relayed successfully | Body is `RelayOut` — the product's own payload, passed through |
 | 401 | Missing/invalid/expired patient session | Clinic or pending token |
 | 403 | `product_unavailable` | Clinic does not have that product, or the Brain-Message channel is off — **one answer for both**, so a session cannot enumerate what a clinic pays for |
-| 422 | Malformed body | `extra="forbid"`, field length/shape violations (FastAPI validation) |
+| 404 | `options_not_found` | Only on `.../messages/{id}/options` (§5.1): one answer for every reason a list card cannot be read (unknown, another patient's or clinic's, no pointer, product without paged lists) |
+| 422 | Malformed body | `extra="forbid"`, field length/shape violations (FastAPI validation); `invalid_cursor` / `invalid_options_query` / `invalid_options_request` on §5.1 (its 422 never echoes the body) |
 | 429 | Rate limited | Per-IP/per-address/per-account limiters, route-dependent (`patient_access.py` header comments name each budget); uploads have their own per-patient budget |
 | 409 / 413 / 415 / 429 (+ some 404/422) | Attachment refusals | `{"detail": {"code", "message"}}` — full table in §7.4 |
 | 502 | `product_unreachable` / `product_error` | The product's leg is down, or answered something brain-api could not parse/trust. **Never** the same code as 403 — a missing tab and a real outage must read differently to a support call. **In production the browser never sees this JSON:** EasyPanel's gateway replaces any 502 the app sends with its own HTML "Service is not reachable" page (observed 2026-09-18/19; a 503 passes through intact) — a client must treat a non-JSON 502 as this row, and an operator must read brain-api's log (`switchboard_upstream_error status=...`) before assuming a crash |
@@ -1133,6 +1227,24 @@ e-mail address, a cookie, or a JWT from this channel.
   and corrects the old note that only WhatsApp wrote the column. No code change in this repo: the
   blob passes through the switchboard untouched. Pair in
   `secretarIA/docs/CHECKPOINT_calendario_outra_data.md`.
+- **2026-11-12** — TASK-082 (paged option lists, Portal): **§5.1** — `POST /patient-access/threads/{product}/messages/{message_id}/options`
+  (JSON body, never a query string) forwards to secretarIA's `POST /internal/brain-message/messages/{id}/options` with the session's clinic and
+  patient (a tenant/scope named by the browser is ignored); `cursor` opaque, `page_size` ≤ 10, `q` ≤ 40 once
+  trimmed; 404 `options_not_found`, 422 `invalid_cursor` / `invalid_options_query`; 429 at 60/min/patient
+  (`PATIENT_OPTIONS_RATE_LIMIT_PER_MINUTE`). `message_switchboard._call` gains a per-route `translate` hook
+  (upstream 404/422 for THIS route only; every other 4xx is still the opaque 502). The search text
+  travels only in bodies, so no access log on the way can hold it. **§5** gains the optional `interactive.source`;
+  **§8.1** gains the 404 row. Built, committed locally, not deployed, no migration.
+- **2026-11-13** — TASK-082 fix round F2 (D12), **§5.1** hardened, no route or contract change for a well-formed
+  caller: a wrong-shaped body is a 422 that echoes nothing (new code `invalid_options_request`; `cursor` / `q` of a
+  wrong type name their own code); `q` is NFC-composed before it is trimmed and measured, and forwarded composed;
+  `payload` is an allowlist `{items, next_cursor, total}` with items `{id, title, description}`; an upstream 404
+  without `detail.code == "options_not_found"` is logged at WARNING and the mapped 422 code is logged. `cursor: ""`
+  = absent and `page_size: null` → 422 are now stated in the table (review finding 11: accepted as is).
+- **2026-11-14** — TASK-082 F4 finding N1, **§5.1**: reading the body by hand had dropped FastAPI's own guards, so a
+  body nested past the recursion limit or a client disconnect mid-body escaped as a 500. Now: nested → 422
+  `invalid_options_request` (like any unreadable body), disconnect → 400 as on the text route. No contract change
+  for a well-formed caller.
 
 ## Typing — o contrato de digitação, qualquer produto
 
